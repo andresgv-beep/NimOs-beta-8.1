@@ -813,7 +813,8 @@ func (h *StorageHTTPHandler) handleDisksCategorized(w http.ResponseWriter, r *ht
 // Body: { "disk": "/dev/sdb" }
 
 type wipeRequest struct {
-	Disk string `json:"disk"`
+	Disk  string `json:"disk"`
+	Force bool   `json:"force"` // permite wipe de orphans (NO managed pools)
 }
 
 func (h *StorageHTTPHandler) handleWipe(w http.ResponseWriter, r *http.Request) {
@@ -830,7 +831,12 @@ func (h *StorageHTTPHandler) handleWipe(w http.ResponseWriter, r *http.Request) 
 		writeError(w, ErrCodeBadRequest, "disk path is required")
 		return
 	}
-	result := wipeDiskGo(req.Disk)
+	var result map[string]interface{}
+	if req.Force {
+		result = wipeDiskForce(req.Disk)
+	} else {
+		result = wipeDiskGo(req.Disk)
+	}
 	// wipeDiskGo devuelve {"ok": bool, "error"?: string}
 	if errStr, _ := result["error"].(string); errStr != "" {
 		writeError(w, ErrCodeBtrfsCommandFailed, errStr)

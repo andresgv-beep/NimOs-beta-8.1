@@ -339,6 +339,13 @@ func runSteps(op JournalOp, steps []Step) error {
 // Si el observer no está disponible (boot temprano, NIMOS_NO_STORAGE_OBSERVER=1),
 // se hace fallback a un check simple via `blkid` para no perder la salvaguarda.
 func preFlightCheck(diskPath string) error {
+	return preFlightCheckWithOptions(diskPath, false)
+}
+
+// preFlightCheckWithOptions ejecuta el preflight con la opción de permitir
+// wipe sobre filesystems huérfanos (no managed). Boot disk, kernel holders
+// y filesystems MANAGED siguen bloqueando aunque allowOrphanWipe=true.
+func preFlightCheckWithOptions(diskPath string, allowOrphanWipe bool) error {
 	diskName := strings.TrimPrefix(diskPath, "/dev/")
 
 	// Boot disk?
@@ -367,6 +374,14 @@ func preFlightCheck(diskPath string) error {
 	// Filesystem detection — consulta el observer si está disponible.
 	// Esto es lo que evita pérdida silenciosa de datos.
 	if fsErr := detectFilesystemOnDisk(diskPath); fsErr != nil {
+		// allowOrphanWipe=true permite saltarse esta protección SOLO si
+		// el FS detectado es huérfano (no managed por NimOS).
+		// Los pools managed siempre están protegidos.
+		if allowOrphanWipe {
+			if e, ok := fsErr.(*ErrDiskHasFilesystem); ok && !e.IsManaged {
+				return nil
+			}
+		}
 		return fsErr
 	}
 
@@ -468,10 +483,27 @@ func parseBlkidExport(out string) map[string]string {
 //   8. Force kernel to re-read partition table
 //   9. VERIFY: lsblk must show zero partitions
 func wipeDiskGo(diskPath string) map[string]interface{} {
+	return wipeDiskWithOptions(diskPath, false)
+}
+
+// wipeDiskForce permite wipear discos con filesystem detectado SIEMPRE
+// QUE NO estén managed por NimOS. Casos legítimos:
+//   · Destroy intencional de un orphan_filesystem desde la UI
+//   · Limpieza de un disco con BTRFS abandonado de una instalación previa
+//
+// SIEMPRE bloquea si:
+//   · Es el disco de boot
+//   · Tiene holders del kernel activos (LVM, dm, RAID)
+//   · Pertenece a un pool managed (protección dura contra borrado accidental)
+func wipeDiskForce(diskPath string) map[string]interface{} {
+	return wipeDiskWithOptions(diskPath, true)
+}
+
+func wipeDiskWithOptions(diskPath string, force bool) map[string]interface{} {
 	storageMu.Lock()
 	defer storageMu.Unlock()
 
-	result := wipeDiskInternal(diskPath)
+	result := wipeDiskInternalWithOptions(diskPath, force)
 
 	// Bloque C2: notificar al observer si el wipe fue exitoso. El disco
 	// pasa a ser loose device en el próximo snapshot.
@@ -484,9 +516,13 @@ func wipeDiskGo(diskPath string) map[string]interface{} {
 
 // wipeDiskInternal does the actual wipe — called with lock already held
 func wipeDiskInternal(diskPath string) map[string]interface{} {
+	return wipeDiskInternalWithOptions(diskPath, false)
+}
 
-	// Pre-flight
-	if err := preFlightCheck(diskPath); err != nil {
+func wipeDiskInternalWithOptions(diskPath string, force bool) map[string]interface{} {
+
+	// Pre-flight (con o sin permiso de orphan-bypass)
+	if err := preFlightCheckWithOptions(diskPath, force); err != nil {
 		return map[string]interface{}{"error": err.Error()}
 	}
 
