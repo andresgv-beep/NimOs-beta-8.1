@@ -1,12 +1,9 @@
 -- =============================================================================
--- NimOS Beta 8.2 — Storage Schema (Multi-filesystem)
+-- NimOS Beta 8.1 — Storage Schema
 -- =============================================================================
 --
 -- Source of truth para todo el subsistema de storage.
---
--- Beta 8.2 — DEUDA-ARQUI-OBSERVABLE-ENTITY:
--- Generalizado de "BTRFS pool" a "managed filesystem" pluggable.
--- Soporta btrfs, ext4, ntfs, fat32, xfs, exfat como ciudadanos primera clase.
+-- Reemplaza el antiguo storage.json (que desaparece).
 --
 -- Reglas:
 --   1. PRAGMA foreign_keys = ON es OBLIGATORIO en la conexión.
@@ -17,18 +14,13 @@
 --      NUNCA como representación principal de una entidad.
 --   4. Las invariantes críticas (1 layout-op activa por pool, 1 scrub por
 --      pool, generation >= 0) se garantizan al nivel del schema, no del Go.
---   5. fs_type determina qué columnas son válidas:
---      btrfs    → profile + compression aplican
---      ext4/xfs → mount_options aplican (compression no)
---      ntfs     → mount_options + uid_map aplican (sin perms UNIX)
---      fat/exfat → mount_options + uid_map aplican (sin perms UNIX)
 --
 -- Aplicación: este script es idempotente (IF NOT EXISTS). Se puede ejecutar
--- al arranque del daemon en cada boot. El migrador de v2→v3 vive en
--- storage_migrate_v3.go (no aquí — el SQL es idempotente puro).
+-- al arranque del daemon en cada boot. Las migraciones futuras se gestionarán
+-- por schema_version en storage_metadata.
 --
 -- Autor: Andrés + Claude Opus 4.7 — Mayo 2026
--- Versión: 3 (storage_version) · Beta 8.2 multi-filesystem
+-- Versión: 2 (storage_version)
 -- =============================================================================
 
 -- Activar foreign keys explícitamente. Esto en realidad debe estar también
@@ -67,63 +59,38 @@ CREATE TABLE IF NOT EXISTS storage_metadata (
 );
 
 -- Inicializar valores por defecto si no existen
-INSERT OR IGNORE INTO storage_metadata (key, value) VALUES ('schema_version', '3');
+INSERT OR IGNORE INTO storage_metadata (key, value) VALUES ('schema_version', '2');
 INSERT OR IGNORE INTO storage_metadata (key, value) VALUES ('global_generation', '0');
 
 -- =============================================================================
--- 2. storage_pools — Filesystems gestionados (multi-fs en Beta 8.2)
+-- 2. storage_pools — Pools BTRFS del sistema
 -- =============================================================================
--- Cada fila representa un filesystem managed u observed por NimOS.
+-- Cada fila representa un filesystem BTRFS, gestionado u observado.
 -- El id interno es estable (UUID); name puede cambiar sin romper FKs.
---
--- Beta 8.2: el supuesto "todo es BTRFS" se elimina. fs_type explícito.
 
 CREATE TABLE IF NOT EXISTS storage_pools (
     id            TEXT    PRIMARY KEY,                  -- UUID interno, estable
     name          TEXT    NOT NULL UNIQUE,              -- legible, mutable
-
-    -- fs_type: tipo de filesystem. Determina qué columnas aplican.
-    fs_type       TEXT    NOT NULL DEFAULT 'btrfs'
-        CHECK(fs_type IN ('btrfs', 'ext4', 'ntfs', 'fat32', 'xfs', 'exfat')),
-
-    -- fs_uuid: UUID nativo del filesystem (lo que reporta blkid).
-    -- Para fat32 puede ser short serial; para los demás es UUID estándar.
-    fs_uuid       TEXT    NOT NULL UNIQUE,
-
-    -- profile: layout BTRFS (single, raid1, ...). NULL para fs no-btrfs.
-    profile       TEXT
-        CHECK(profile IS NULL OR profile IN ('single', 'raid1', 'raid1c3', 'raid10')),
-
-    mount_point   TEXT    NOT NULL UNIQUE,              -- /nimos/pools/<name> o /mnt/usb/<name>
+    btrfs_uuid    TEXT    NOT NULL UNIQUE,              -- UUID del filesystem (blkid)
+    profile       TEXT    NOT NULL
+        CHECK(profile IN ('single', 'raid1', 'raid1c3', 'raid10')),
+    mount_point   TEXT    NOT NULL UNIQUE,              -- /nimos/pools/<name>
 
     -- Role: función del pool. Beta 8 todos 'data'. Consumers futuros.
     role          TEXT    NOT NULL DEFAULT 'data'
-        CHECK(role IN ('data', 'backup', 'cache', 'system', 'external')),
+        CHECK(role IN ('data', 'backup', 'cache', 'system')),
 
-    -- Compression: solo aplica a BTRFS. NULL para fs no-btrfs.
-    -- Para BTRFS: mutable vía POST /pools/:id/set-compression.
-    compression   TEXT
-        CHECK(compression IS NULL OR compression IN ('none', 'lzo',
-                                                      'zstd:1', 'zstd:3', 'zstd:5',
-                                                      'zstd:9', 'zstd:15')),
+    -- Compression: mutable vía POST /pools/:id/set-compression.
+    -- Solo afecta a archivos escritos a partir del cambio.
+    -- TODO(beta9): considerar split en compression_algo + compression_level
+    -- para queries más limpias. Por ahora string compuesto que coincide con
+    -- el formato nativo de BTRFS (`btrfs property set compression zstd:3`).
+    compression   TEXT    NOT NULL DEFAULT 'none'
+        CHECK(compression IN ('none', 'lzo',
+                              'zstd:1', 'zstd:3', 'zstd:5', 'zstd:9', 'zstd:15')),
 
-    -- mount_options: opciones extra para mount (fs no-btrfs principalmente).
-    -- Formato: string libre coma-separado tal cual va al kernel.
-    -- Ejemplo NTFS: "uid=1000,gid=1000,umask=0022"
-    -- Ejemplo ext4: "" (defaults)
-    mount_options TEXT    NOT NULL DEFAULT '',
-
-    -- read_only: monta el filesystem como read-only. Útil para datos
-    -- ajenos donde no se quiere riesgo (NTFS comercial, USB de terceros).
-    read_only     INTEGER NOT NULL DEFAULT 0
-        CHECK(read_only IN (0, 1)),
-
-    -- Control state: autoridad de NimOS sobre el filesystem.
-    -- managed   → NimOS lo monta al boot y lo gestiona
-    -- observed  → NimOS lo ve pero no lo toca (huérfano)
-    -- imported  → managed pero conserva sus datos originales
-    -- foreign   → fs detectado de tipo no entendido
-    -- recovery  → en proceso de reconciliación tras fallo
+    -- Control state: autoridad de NimOS sobre el pool.
+    -- Beta 8 runtime usa 'managed' y 'observed'. Otros reservados para Beta 9+.
     control_state TEXT    NOT NULL DEFAULT 'managed'
         CHECK(control_state IN ('managed', 'observed', 'imported', 'foreign', 'recovery')),
 
@@ -134,8 +101,7 @@ CREATE TABLE IF NOT EXISTS storage_pools (
 );
 
 CREATE INDEX IF NOT EXISTS idx_pools_name          ON storage_pools(name);
-CREATE INDEX IF NOT EXISTS idx_pools_fs_uuid       ON storage_pools(fs_uuid);
-CREATE INDEX IF NOT EXISTS idx_pools_fs_type       ON storage_pools(fs_type);
+CREATE INDEX IF NOT EXISTS idx_pools_btrfs_uuid    ON storage_pools(btrfs_uuid);
 CREATE INDEX IF NOT EXISTS idx_pools_control_state ON storage_pools(control_state);
 
 -- =============================================================================

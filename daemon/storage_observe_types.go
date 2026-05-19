@@ -27,11 +27,6 @@ type ObservedSnapshot struct {
 	// Cada uno puede ser Managed (cubierto por pool SQLite) o no.
 	Filesystems []ObservedBtrfs `json:"filesystems"`
 
-	// ForeignFilesystems: filesystems no-BTRFS detectados (ext4, ntfs, fat32,
-	// xfs, exfat). Beta 8.2: ciudadanos de primera clase, gestionables como
-	// pools managed (con FSType correspondiente) o solo observables.
-	ForeignFilesystems []ObservedFilesystem `json:"foreign_filesystems"`
-
 	// LooseDevices son discos sin filesystem útil (sin BTRFS, sin partición
 	// de sistema, no en uso). Es decir, candidatos para ser usados en un pool.
 	LooseDevices []ObservedDevice `json:"loose_devices"`
@@ -43,52 +38,6 @@ type ObservedSnapshot struct {
 	// Métricas internas (útiles para debug + dashboard NIMA futuro).
 	ScanDurationMs  int64    `json:"scan_duration_ms"`
 	FingerprintHash [32]byte `json:"-"` // no exponer en JSON
-}
-
-// ObservedFilesystem es un filesystem genérico (no-BTRFS) detectado en el
-// sistema vía blkid. Representa ext4, ntfs, fat32, xfs, exfat.
-//
-// Para BTRFS se usa ObservedBtrfs (que tiene metadata específica como
-// profile, devices múltiples, etc.). ObservedFilesystem es más simple:
-// un solo device, un UUID, opcionalmente un mount point.
-//
-// Beta 8.2: estos filesystems son ciudadanos primera clase. Pueden:
-//   · Montarse como managed (registrado en SQLite, fstab, automount al boot)
-//   · Visualizarse como observed (NimOS lo ve pero no lo toca)
-//   · Importarse a managed conservando datos
-type ObservedFilesystem struct {
-	// Identidad
-	UUID   string `json:"uuid"`
-	Label  string `json:"label,omitempty"`
-	FSType string `json:"fs_type"` // ext4, ntfs, fat32, xfs, exfat
-
-	// Device físico que contiene este filesystem.
-	// A diferencia de ObservedBtrfs (que puede ser multi-device), los FS
-	// generic son single-device (no soportamos LVM/mdraid aún).
-	Device ObservedDevice `json:"device"`
-
-	// Mount status
-	IsMounted  bool   `json:"is_mounted"`
-	MountPoint string `json:"mount_point,omitempty"`
-
-	// Capacidad (de statfs si está montado, vacío si no)
-	SizeBytes int64 `json:"size_bytes"`
-	UsedBytes int64 `json:"used_bytes"`
-	FreeBytes int64 `json:"free_bytes"`
-
-	// Cruce con managed state
-	IsManaged       bool   `json:"is_managed"`
-	ManagedPoolID   string `json:"managed_pool_id,omitempty"`
-	ManagedPoolName string `json:"managed_pool_name,omitempty"`
-
-	// Capacidades disponibles para este filesystem según FSType.
-	// Pre-calculadas para que la UI no tenga que hacer if/switch sobre FSType.
-	CanMount         bool `json:"can_mount"`         // siempre true en Beta 8.2
-	CanWrite         bool `json:"can_write"`         // ext4/xfs/fat/exfat: sí. ntfs: con ntfs-3g
-	CanImportManaged bool `json:"can_import_managed"` // todos los soportados
-	HasUnixPerms     bool `json:"has_unix_perms"`    // ext4, xfs: sí. ntfs/fat/exfat: no
-
-	LastSeen time.Time `json:"last_seen"`
 }
 
 // ObservedBtrfs es un filesystem BTRFS detectado en el sistema.

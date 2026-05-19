@@ -225,45 +225,21 @@ func (o *StorageObserver) tryReconcile() {
 		return
 	}
 
-	// 2b. Probe de filesystems no-BTRFS (Beta 8.2).
-	// Best-effort: si blkid no responde no es crítico, BTRFS sigue funcionando.
-	foreignFilesystems, _ := probeForeignFilesystems()
-
-	// Quitar de looseDevices los discos que ahora aparecen como foreign FS
-	// (un disco con ext4 NO es un disco libre).
-	if len(foreignFilesystems) > 0 {
-		foreignDevicePaths := map[string]bool{}
-		for _, fs := range foreignFilesystems {
-			if fs.Device.Path != "" {
-				foreignDevicePaths[fs.Device.Path] = true
-			}
-		}
-		filteredLoose := looseDevices[:0]
-		for _, d := range looseDevices {
-			if !foreignDevicePaths[d.Path] {
-				filteredLoose = append(filteredLoose, d)
-			}
-		}
-		looseDevices = filteredLoose
-	}
-
 	// 3. Cruzar con managed state (SQLite) para marcar IsManaged
 	enrichWithManagedState(filesystems)
-	enrichForeignWithManagedState(foreignFilesystems)
 
 	// 4. Análisis de divergencia
 	divergences := analyzeDivergences(filesystems)
 
 	// 5. Construir snapshot
 	newSnap := &ObservedSnapshot{
-		Generation:         o.generation.Add(1),
-		Timestamp:          time.Now().UTC(),
-		Filesystems:        filesystems,
-		ForeignFilesystems: foreignFilesystems,
-		LooseDevices:       looseDevices,
-		Divergences:        divergences,
-		ScanDurationMs:     time.Since(start).Milliseconds(),
-		FingerprintHash:    fp,
+		Generation:      o.generation.Add(1),
+		Timestamp:       time.Now().UTC(),
+		Filesystems:     filesystems,
+		LooseDevices:    looseDevices,
+		Divergences:     divergences,
+		ScanDurationMs:  time.Since(start).Milliseconds(),
+		FingerprintHash: fp,
 	}
 
 	o.lastFingerprint = fp
@@ -292,44 +268,13 @@ func enrichWithManagedState(filesystems []ObservedBtrfs) {
 	// Mapa UUID BTRFS → pool managed
 	byUUID := make(map[string]*Pool, len(pools))
 	for _, p := range pools {
-		// Solo BTRFS (Beta 8.2): los pools de otros FS no aplican a ObservedBtrfs
-		if p.FSType == "" || p.FSType == FSTypeBtrfs {
-			byUUID[p.BtrfsUUID] = p
-		}
+		byUUID[p.BtrfsUUID] = p
 	}
 	for i := range filesystems {
 		if p, ok := byUUID[filesystems[i].UUID]; ok {
 			filesystems[i].IsManaged = true
 			filesystems[i].ManagedPoolID = p.ID
 			filesystems[i].ManagedPoolName = p.Name
-		}
-	}
-}
-
-// enrichForeignWithManagedState (Beta 8.2) marca cada ObservedFilesystem
-// no-BTRFS con IsManaged/ManagedPool* según lo que haya en storage_pools.
-// Modifica fs in-place.
-func enrichForeignWithManagedState(fs []ObservedFilesystem) {
-	if storageService == nil || len(fs) == 0 {
-		return
-	}
-	ctx := context.Background()
-	pools, err := storageService.repo.ListPools(ctx)
-	if err != nil {
-		return
-	}
-	// Mapa UUID → pool managed (solo fs no-btrfs)
-	byUUID := make(map[string]*Pool)
-	for _, p := range pools {
-		if p.FSType != "" && p.FSType != FSTypeBtrfs {
-			byUUID[p.BtrfsUUID] = p
-		}
-	}
-	for i := range fs {
-		if p, ok := byUUID[fs[i].UUID]; ok {
-			fs[i].IsManaged = true
-			fs[i].ManagedPoolID = p.ID
-			fs[i].ManagedPoolName = p.Name
 		}
 	}
 }

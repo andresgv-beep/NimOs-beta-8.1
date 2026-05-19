@@ -22,79 +22,30 @@ import (
 // Pool
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Pool representa un filesystem gestionado u observado por NimOS.
+// Pool representa un filesystem BTRFS gestionado u observado por NimOS.
 // El ID interno es estable; el Name puede cambiar sin romper foreign keys.
-//
-// Beta 8.2: generalizado a multi-filesystem (btrfs, ext4, ntfs, fat32, xfs, exfat).
-// Los campos Profile y Compression solo aplican a FSType="btrfs".
 type Pool struct {
-	ID           string       `json:"id"`              // UUID interno, estable, nunca cambia
-	Name         string       `json:"name"`            // Nombre legible, único, puede cambiar (rename)
-	FSType       FSType       `json:"fs_type"`         // btrfs | ext4 | ntfs | fat32 | xfs | exfat
-	BtrfsUUID    string       `json:"btrfs_uuid"`      // UUID del filesystem (de blkid). JSON tag conservado por retrocompat de API — sirve para cualquier FS.
-	Profile      Profile      `json:"profile"`         // BTRFS: single | raid1 | raid1c3 | raid10. Vacío para otros FS.
-	MountPoint   string       `json:"mount_point"`     // /nimos/pools/<name>
-	Role         Role         `json:"role"`            // data | backup | cache | system | external
-	Compression  string       `json:"compression"`     // BTRFS: none | lzo | zstd:N. Vacío para otros FS.
-	MountOptions string       `json:"mount_options"`   // Opciones extra para mount (coma-separadas). Útil para ntfs/fat/exfat.
-	ReadOnly     bool         `json:"read_only"`       // Montado como read-only (para FS de terceros).
-	ControlState ControlState `json:"control_state"`   // managed | observed | imported | foreign | recovery
-	DiscoveredAt *time.Time   `json:"discovered_at"`   // primera vez que se vio, nullable
-	CreatedAt    time.Time    `json:"created_at"`
-	Generation   int64        `json:"generation"`      // incrementa en cada mutación
+	ID            string       `json:"id"`             // UUID interno, estable, nunca cambia
+	Name          string       `json:"name"`           // Nombre legible, único, puede cambiar (rename)
+	BtrfsUUID     string       `json:"btrfs_uuid"`     // UUID del filesystem (de blkid)
+	Profile       Profile      `json:"profile"`        // single | raid1 | raid1c3 | raid10
+	MountPoint    string       `json:"mount_point"`    // /nimos/pools/<name>
+	Role          Role         `json:"role"`           // Beta 8 siempre "data". Consumers futuros.
+	Compression   string       `json:"compression"`    // none | lzo | zstd:1..15
+	ControlState  ControlState `json:"control_state"`  // managed | observed (Beta 8)
+	DiscoveredAt  *time.Time   `json:"discovered_at"`  // primera vez que se vio, nullable
+	CreatedAt     time.Time    `json:"created_at"`
+	Generation    int64        `json:"generation"`     // incrementa en cada mutación
 
 	// Campos cargados bajo demanda (no siempre presentes)
 	Capabilities []string `json:"capabilities,omitempty"` // ["snapshots", "balance", "replace_device", ...]
 	Devices      []Device `json:"devices,omitempty"`      // miembros del pool
 
 	// Campos enriquecidos por ListPools (no almacenados en DB)
-	Usage     *PoolUsage  `json:"usage,omitempty"`      // Capacidad runtime (de df/btrfs filesystem usage)
+	Usage     *PoolUsage  `json:"usage,omitempty"`      // Capacidad runtime (de btrfs filesystem usage)
 	Health    *PoolHealth `json:"health,omitempty"`     // Estado de salud computado
 	IsPrimary bool        `json:"is_primary"`           // true si es el primary_pool
 	Mounted   bool        `json:"mounted"`              // true si está montado en MountPoint
-}
-
-// FSType representa el tipo de filesystem soportado por NimOS.
-type FSType string
-
-const (
-	FSTypeBtrfs FSType = "btrfs"
-	FSTypeExt4  FSType = "ext4"
-	FSTypeNTFS  FSType = "ntfs"
-	FSTypeFAT32 FSType = "fat32"
-	FSTypeXFS   FSType = "xfs"
-	FSTypeExFAT FSType = "exfat"
-)
-
-// SupportsSnapshots indica si el FS soporta snapshots nativos.
-func (t FSType) SupportsSnapshots() bool {
-	return t == FSTypeBtrfs
-}
-
-// SupportsCompression indica si NimOS gestiona compresión para este FS.
-func (t FSType) SupportsCompression() bool {
-	return t == FSTypeBtrfs
-}
-
-// SupportsUnixPerms indica si el FS tiene permisos UNIX nativos.
-// NTFS y FAT no — necesitan uid/gid en mount options.
-func (t FSType) SupportsUnixPerms() bool {
-	switch t {
-	case FSTypeBtrfs, FSTypeExt4, FSTypeXFS:
-		return true
-	default:
-		return false
-	}
-}
-
-// IsKnownFS comprueba si el tipo es uno de los soportados.
-func (t FSType) IsKnownFS() bool {
-	switch t {
-	case FSTypeBtrfs, FSTypeExt4, FSTypeNTFS, FSTypeFAT32, FSTypeXFS, FSTypeExFAT:
-		return true
-	default:
-		return false
-	}
 }
 
 // PoolUsage representa el uso de capacidad de un pool en runtime.

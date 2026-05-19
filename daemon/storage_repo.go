@@ -119,11 +119,8 @@ func timeFromNull(n sql.NullString) *time.Time {
 
 // poolColumns es la lista de columnas que devuelven todos los SELECT de pools.
 // Mantenerla constante simplifica el scanning.
-//
-// Beta 8.2: añadidos fs_type, mount_options, read_only.
-// profile y compression ahora son nullables (solo BTRFS los usa).
-const poolColumns = `id, name, fs_type, fs_uuid, profile, mount_point, role, compression,
-	mount_options, read_only, control_state, discovered_at, created_at, generation`
+const poolColumns = `id, name, btrfs_uuid, profile, mount_point, role, compression,
+	control_state, discovered_at, created_at, generation`
 
 // scanPool lee una fila en un *Pool. Compatible con poolColumns.
 func scanPool(rows interface {
@@ -132,30 +129,19 @@ func scanPool(rows interface {
 	var p Pool
 	var discoveredAt sql.NullString
 	var createdAt string
-	var fsType, role, controlState string
-	var profile, compression sql.NullString
-	var mountOptions string
-	var readOnlyInt int
+	var role, controlState, compression string
 
 	err := rows.Scan(
-		&p.ID, &p.Name, &fsType, &p.BtrfsUUID, &profile, &p.MountPoint,
-		&role, &compression, &mountOptions, &readOnlyInt, &controlState,
+		&p.ID, &p.Name, &p.BtrfsUUID, &p.Profile, &p.MountPoint,
+		&role, &compression, &controlState,
 		&discoveredAt, &createdAt, &p.Generation,
 	)
 	if err != nil {
 		return nil, err
 	}
-	p.FSType = FSType(fsType)
 	p.Role = Role(role)
 	p.ControlState = ControlState(controlState)
-	if profile.Valid {
-		p.Profile = Profile(profile.String)
-	}
-	if compression.Valid {
-		p.Compression = compression.String
-	}
-	p.MountOptions = mountOptions
-	p.ReadOnly = readOnlyInt == 1
+	p.Compression = compression
 	p.DiscoveredAt = timeFromNull(discoveredAt)
 	if t, err := time.Parse(time.RFC3339Nano, createdAt); err == nil {
 		p.CreatedAt = t
@@ -186,10 +172,9 @@ func (r *StorageRepo) GetPoolByName(ctx context.Context, name string) (*Pool, er
 }
 
 // GetPoolByBtrfsUUID devuelve un pool por su UUID de filesystem.
-// Nombre conservado por retrocompat. El UUID puede ser de cualquier FS soportado.
 func (r *StorageRepo) GetPoolByBtrfsUUID(ctx context.Context, uuid string) (*Pool, error) {
 	row := r.db.QueryRowContext(ctx,
-		`SELECT `+poolColumns+` FROM storage_pools WHERE fs_uuid = ?`, uuid)
+		`SELECT `+poolColumns+` FROM storage_pools WHERE btrfs_uuid = ?`, uuid)
 	p, err := scanPool(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -254,24 +239,11 @@ func (r *StorageRepo) HasAnyPool(ctx context.Context) (bool, error) {
 // POOLS — Mutaciones (transaccionales)
 // ═════════════════════════════════════════════════════════════════════════════
 
-// CreatePool inserta un nuevo pool. Falla si el name o fs_uuid ya existen.
+// CreatePool inserta un nuevo pool. Falla si el name o btrfs_uuid ya existen.
 // Debe llamarse dentro de una transacción.
-//
-// Beta 8.2: fs_type explícito. profile/compression solo se persisten si BTRFS.
 func (r *StorageRepo) CreatePool(ctx context.Context, tx *sql.Tx, p *Pool) error {
-	// Default a BTRFS si no se especifica (retrocompat con callers actuales)
-	if p.FSType == "" {
-		p.FSType = FSTypeBtrfs
-	}
-	if !p.FSType.IsKnownFS() {
-		return fmt.Errorf("CreatePool: invalid fs_type %q", p.FSType)
-	}
-
-	// Profile solo es obligatorio para BTRFS
-	if p.FSType == FSTypeBtrfs {
-		if !p.Profile.IsValid() {
-			return fmt.Errorf("CreatePool: invalid profile %q for btrfs", p.Profile)
-		}
+	if !p.Profile.IsValid() {
+		return fmt.Errorf("CreatePool: invalid profile %q", p.Profile)
 	}
 	if p.Role == "" {
 		p.Role = RoleData
@@ -279,34 +251,20 @@ func (r *StorageRepo) CreatePool(ctx context.Context, tx *sql.Tx, p *Pool) error
 	if p.ControlState == "" {
 		p.ControlState = ControlStateManaged
 	}
+	if p.Compression == "" {
+		p.Compression = "none"
+	}
 	if p.CreatedAt.IsZero() {
 		p.CreatedAt = time.Now().UTC()
 	}
 
-	// Profile y Compression son NULL para FS no-BTRFS (CHECK del schema lo exige)
-	var profileVal, compressionVal sql.NullString
-	if p.FSType == FSTypeBtrfs {
-		profileVal = sql.NullString{String: string(p.Profile), Valid: true}
-		compr := p.Compression
-		if compr == "" {
-			compr = "none"
-		}
-		compressionVal = sql.NullString{String: compr, Valid: true}
-	}
-
-	readOnlyInt := 0
-	if p.ReadOnly {
-		readOnlyInt = 1
-	}
-
 	_, err := tx.ExecContext(ctx,
 		`INSERT INTO storage_pools
-		 (id, name, fs_type, fs_uuid, profile, mount_point, role, compression,
-		  mount_options, read_only, control_state, discovered_at, created_at, generation)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
-		p.ID, p.Name, string(p.FSType), p.BtrfsUUID, profileVal, p.MountPoint,
-		string(p.Role), compressionVal, p.MountOptions, readOnlyInt,
-		string(p.ControlState),
+		 (id, name, btrfs_uuid, profile, mount_point, role, compression,
+		  control_state, discovered_at, created_at, generation)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+		p.ID, p.Name, p.BtrfsUUID, string(p.Profile), p.MountPoint,
+		string(p.Role), p.Compression, string(p.ControlState),
 		nullableTime(p.DiscoveredAt),
 		p.CreatedAt.Format(time.RFC3339Nano),
 	)
