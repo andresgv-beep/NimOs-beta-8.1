@@ -239,7 +239,7 @@ func importPoolBtrfs(body map[string]interface{}) map[string]interface{} {
 		MountPoint:   mountPoint,
 		Role:         RoleData,
 		ControlState: ControlStateManaged,
-		Compression:  "zstd:3",
+		Compression:  "zstd",
 	}
 
 	err := storageService.runInTx(ctx, func(tx *sql.Tx) error {
