@@ -75,17 +75,14 @@
   let capabilities = {};
   let status = {};
 
-  // Fase 7 Bloque C3.2 + Beta 8.2: Observed state
+  // Fase 7 Bloque C3.2: Observed state
   //
   // observedSnapshot: el snapshot completo del observer (con generation, etc.)
   // orphanFilesystems: filesystems BTRFS detectados que NO pertenecen a un pool
   //                    managed. Estos son los candidatos a "Importar" o "Destruir".
-  // foreignOrphans: filesystems no-BTRFS (ext4, ntfs, fat32, xfs, exfat)
-  //                 detectados sin gestionar. Beta 8.2.
   // divergences: lista pre-computada de problemas (pool_missing_device, io_errors...)
   let observedSnapshot = {};
   let orphanFilesystems = [];
-  let foreignOrphans = [];
   let divergences = [];
 
   // Estado del modal de import
@@ -234,7 +231,6 @@
       // Filtramos a los que NO están gestionados (orphans → importables).
       observedSnapshot = observedData || {};
       orphanFilesystems = (observedData?.filesystems || []).filter(fs => !fs.is_managed);
-      foreignOrphans = (observedData?.foreign_filesystems || []).filter(fs => !fs.is_managed);
       divergences = observedData?.divergences || [];
     } catch (e) {
       console.error('[StorageApp] loadAll failed', e);
@@ -269,18 +265,6 @@
     if (!importName) importName = 'imported-pool';
     importError = '';
     importProcessing = false;
-  }
-
-  // Beta 8.2 (DEUDA-ARQUI-OBSERVABLE-ENTITY): import de filesystems no-BTRFS.
-  // Stub temporal hasta que se implemente el endpoint /v2/foreign/import (Fase 5).
-  function openImportForeignModal(fs) {
-    alert(
-      `Import de filesystems ${fs.fs_type.toUpperCase()} estará disponible próximamente.\n\n` +
-      `Detectado: ${fs.label || '(sin label)'} en ${fs.device?.path}\n` +
-      `UUID: ${fs.uuid}\n\n` +
-      `Por ahora el filesystem se muestra para diagnóstico pero la importación ` +
-      `aún no está conectada al backend.`
-    );
   }
 
   // ─── Bloque C3.4: Bridge wizard create → modal import ──────────────────
@@ -1123,94 +1107,6 @@
               {/each}
             </div>
           {/if}
-        </div>
-      {/if}
-
-      <!--
-        ══════════════════════════════════════════════════════════════
-         FOREIGN FILESYSTEMS · ext4 / NTFS / FAT32 / XFS / exFAT
-        ══════════════════════════════════════════════════════════════
-        Beta 8.2 (DEUDA-ARQUI-OBSERVABLE-ENTITY):
-          Filesystems no-BTRFS detectados físicamente (USBs, discos
-          ajenos, particiones ext4 viejas). NimOS los reconoce como
-          ciudadanos primera clase: pueden montarse, registrarse como
-          managed (con su FS nativo, sin formatear), etc.
-      -->
-      {#if foreignOrphans.length > 0}
-        <div class="st-section">
-          <div class="section-row">
-            <SectionHead count="· {foreignOrphans.length}">
-              Filesystems externos · no gestionados
-            </SectionHead>
-          </div>
-
-          <div class="observed-list">
-            {#each foreignOrphans as fs (fs.uuid)}
-              <div class="observed-card">
-                <div class="obs-head">
-                  <div class="obs-title">
-                    <span class="obs-label">{fs.label || '(sin label)'}</span>
-                    <Badge size="sm" variant="info">
-                      {fs.fs_type.toUpperCase()}
-                    </Badge>
-                    {#if !fs.has_unix_perms}
-                      <Badge size="sm" variant="warn" title="No tiene permisos UNIX nativos">
-                        sin perms
-                      </Badge>
-                    {/if}
-                  </div>
-                  <div class="obs-uuid mono tc-mute">
-                    UUID: {fs.uuid}
-                  </div>
-                </div>
-
-                <div class="obs-info">
-                  <div class="obs-row">
-                    <span class="tc-mute">Tipo:</span>
-                    <span class="mono">{fs.fs_type}</span>
-                  </div>
-                  <div class="obs-row">
-                    <span class="tc-mute">Disco:</span>
-                    <span class="mono">{fs.device?.path || '—'}</span>
-                  </div>
-                  {#if fs.device?.model}
-                    <div class="obs-row">
-                      <span class="tc-mute">Modelo:</span>
-                      <span class="mono">{fs.device.model}</span>
-                    </div>
-                  {/if}
-                  {#if fs.size_bytes > 0}
-                    <div class="obs-row">
-                      <span class="tc-mute">Capacidad:</span>
-                      <span class="mono">{fmtBytes(fs.size_bytes)} · {fmtBytes(fs.used_bytes)} usados</span>
-                    </div>
-                  {/if}
-                  {#if fs.is_mounted}
-                    <div class="obs-row">
-                      <span class="tc-mute">Montado:</span>
-                      <span class="mono">{fs.mount_point}</span>
-                    </div>
-                  {:else}
-                    <div class="obs-row">
-                      <span class="tc-mute">Estado:</span>
-                      <span class="mono">desmontado</span>
-                    </div>
-                  {/if}
-                </div>
-
-                <div class="obs-actions">
-                  <BevelButton
-                    variant="primary"
-                    size="sm"
-                    onClick={() => openImportForeignModal(fs)}
-                    title="Registrar este filesystem como managed (preserva datos, NimOS lo gestionará)"
-                  >
-                    ⬇ Importar como managed
-                  </BevelButton>
-                </div>
-              </div>
-            {/each}
-          </div>
         </div>
       {/if}
 
