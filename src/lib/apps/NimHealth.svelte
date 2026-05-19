@@ -24,6 +24,7 @@
   import { token, hdrs } from '$lib/stores/auth.js';
   import { APP_META } from '$lib/apps.js';
   import AppShell from '$lib/components/AppShell.svelte';
+  import AppIcon from '$lib/ui/AppIcon.svelte';
   import {
     KPICard, DenseTable, LED, SectionHead, BevelButton,
     IconButton, TextInput, Tab, Badge, CmdOutputLog, EmptyState
@@ -383,7 +384,9 @@
 
               <div class="svc-cell">
                 {#if svcIcon(svc)}
-                  <img class="svc-icon" src={svcIcon(svc)} alt="" on:error={(e) => e.target.style.display = 'none'} />
+                  <div class="svc-icon-wrap">
+                    <AppIcon src={svcIcon(svc)} alt="" size="xs" fallback={svcDisplayName(svc).slice(0, 2).toUpperCase()} />
+                  </div>
                 {:else}
                   <div class="svc-fallback">{svcDisplayName(svc).slice(0, 2).toUpperCase()}</div>
                 {/if}
@@ -464,7 +467,9 @@
         <BevelButton size="sm" iconPrefix="‹" onClick={goBack}>Volver</BevelButton>
         <div class="detail-name">
           {#if svcIcon(selectedService)}
-            <img class="svc-icon lg" src={svcIcon(selectedService)} alt="" on:error={(e) => e.target.style.display = 'none'} />
+            <div class="svc-icon-wrap lg">
+              <AppIcon src={svcIcon(selectedService)} alt="" size="md" fallback={svcDisplayName(selectedService).slice(0, 2).toUpperCase()} />
+            </div>
           {:else}
             <div class="svc-fallback lg">{svcDisplayName(selectedService).slice(0, 2).toUpperCase()}</div>
           {/if}
