@@ -450,8 +450,8 @@
   /* ─── App icon · sin border-radius · LED bajo cuando está abierta ─── */
   .tb-app {
     position: relative;
-    width: 38px;
-    height: 36px;
+    width: 44px;
+    height: 44px;
     background: transparent;
     border: none;
     cursor: pointer;
@@ -464,26 +464,12 @@
   .tb-app:hover {
     background: rgba(255, 255, 255, 0.05);
   }
-  .tb-app :global(img) {
-    width: 22px;
-    height: 22px;
-    object-fit: contain;
-    filter: drop-shadow(0 0 3px rgba(220, 255, 235, 0.28));
-    transition: filter 0.12s;
-  }
-  .tb-app.open :global(img) {
-    filter:
-      drop-shadow(0 0 6px rgba(220, 255, 235, 0.6))
-      drop-shadow(0 0 2px rgba(255, 255, 255, 0.85));
-  }
+  /* AppIcon ya define width/height vía size="sm" (36px).
+     NO sobreescribimos width/height aquí (rompía la proporción)
+     ni añadimos drop-shadow (los SVG ya tienen su propio look). */
   .tb-emoji {
-    font-size: 20px;
-    filter: drop-shadow(0 0 3px rgba(220, 255, 235, 0.28));
-  }
-  .tb-app.open .tb-emoji {
-    filter:
-      drop-shadow(0 0 6px rgba(220, 255, 235, 0.6))
-      drop-shadow(0 0 2px rgba(255, 255, 255, 0.85));
+    font-size: 22px;
+    line-height: 1;
   }
 
   /* LED barrita bajo apps abiertas · 16×2px verde luminoso */

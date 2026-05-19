@@ -225,7 +225,7 @@
               title={app.name}
             >
               <div class="app-tile-icon">
-                <AppIcon src={app.icon} alt={app.name} fallback={app.fallback || '📦'} size="xs" />
+                <AppIcon src={app.icon} alt={app.name} fallback={app.fallback || '📦'} size="md" />
               </div>
               <div class="app-tile-text">
                 <div class="app-tile-name">{app.name}</div>
@@ -446,18 +446,16 @@
   }
 
   .app-tile-icon {
-    width: 32px;
-    height: 32px;
+    width: 48px;
+    height: 48px;
     flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    filter: drop-shadow(0 0 4px rgba(220, 255, 235, 0.35));
   }
   .app-emoji {
-    font-size: 22px;
+    font-size: 28px;
     line-height: 1;
-    filter: drop-shadow(0 0 4px rgba(220, 255, 235, 0.35));
   }
 
   .app-tile-text {
