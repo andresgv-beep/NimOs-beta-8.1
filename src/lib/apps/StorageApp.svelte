@@ -1463,8 +1463,6 @@
     <span class="sep">·</span>
     <span><span class="k">disks</span> <span class="v">{totalDisksAssigned + totalDisksFree}</span></span>
     <span class="sep">·</span>
-    <span><span class="k">zfs</span> <span class="v" class:tc-accent={capabilities.zfs}>{capabilities.zfs ? 'available' : 'n/a'}</span></span>
-    <span class="sep">·</span>
     <span><span class="k">btrfs</span> <span class="v" class:tc-accent={capabilities.btrfs}>{capabilities.btrfs ? 'available' : 'n/a'}</span></span>
   </svelte:fragment>
 
