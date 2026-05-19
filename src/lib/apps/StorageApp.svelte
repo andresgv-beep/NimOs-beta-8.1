@@ -355,18 +355,21 @@
     destroyOrphanProcessing = true;
     destroyOrphanError = '';
     try {
-      // Para destruir un orphan filesystem, hacemos wipefs sobre cada disco.
+      // Para destruir un orphan filesystem, hacemos wipefs sobre cada disco
+      // con force=true (saltea preflight de FS huérfano — NUNCA toca managed pools).
       // El observer detectará en el próximo scan que ya no hay BTRFS.
       const devicePaths = (destroyingOrphan.devices || []).map(d => d.path).filter(Boolean);
       for (const path of devicePaths) {
         const res = await fetch('/api/storage/v2/wipe', {
           method: 'POST',
           headers: jsonHdrs(),
-          body: JSON.stringify({ disk: path }),
+          body: JSON.stringify({ disk: path, force: true }),
         });
         await unwrapV2(res, 'wipe disk');
       }
       closeDestroyOrphanModal();
+      // Forzar re-scan del observer (los discos vuelven a estar libres).
+      await fetch('/api/storage/v2/observed?refresh=true', { headers: hdrs() });
       await loadAll();
     } catch (e) {
       destroyOrphanError = e.message || 'Error desconocido al destruir';
