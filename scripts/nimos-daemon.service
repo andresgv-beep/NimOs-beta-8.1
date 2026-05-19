@@ -1,0 +1,22 @@
+[Unit]
+Description=NimOS Daemon
+Documentation=https://github.com/andresgv-beep/NimOs-beta-8.1
+After=local-fs.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=-/etc/nimos/nimos.env
+ExecStart=/opt/nimos/daemon/nimos-daemon
+Restart=always
+RestartSec=3
+TimeoutStartSec=120
+
+# Logging
+StandardOutput=append:/var/log/nimos/daemon.log
+StandardError=append:/var/log/nimos/daemon-error.log
+
+[Install]
+WantedBy=multi-user.target

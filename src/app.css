@@ -1,0 +1,441 @@
+/* ═══════════════════════════════════════════════════════════════
+   NimOS · Design System Beta 8.1 · Multi-tema
+   ═══════════════════════════════════════════════════════════════
+   ARQUITECTURA DE TOKENS:
+
+     · Tokens NEUTRALES (en :root)
+         No cambian entre temas: tipografía, espaciado, sizes,
+         escalas, accent HSL editable, animaciones, sombras.
+
+     · Tokens SEMÁNTICOS POR TEMA ([data-theme="..."])
+         Cambian valores cuando cambia el tema:
+         --canvas, --panel, --ink, --line, etc.
+         Nombrados por FUNCIÓN no por valor.
+
+     · Tokens LEGACY (aliases en :root + por tema)
+         Compatibilidad con código existente. Migrar
+         progresivamente al lenguaje semántico nuevo.
+
+   TEMAS DISPONIBLES:
+     · [data-theme="dark"]  · Oscuro (default)
+     · [data-theme="cream"] · Crema neutro limpio
+
+   ACCENT COLOR:
+     Se controla con --signal-h / --signal-s / --signal-l (HSL)
+     desde Settings (prefs.accentColor). Defaults: verde #00ff9f.
+
+   COMPATIBILIDAD:
+     · Componentes viejos siguen funcionando (--bg, --fg, --accent...)
+     · Componentes nuevos usan tokens semánticos (--canvas, --ink...)
+     · Migración gradual sin romper nada.
+   ═══════════════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+/* ── Reset ── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+input, textarea, select, [contenteditable] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: var(--font-sans);
+  color: var(--ink);
+  background: var(--canvas);
+  transition: background 0.25s ease, color 0.25s ease;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   :root · TOKENS NEUTRALES (compartidos entre todos los temas)
+   ═══════════════════════════════════════════════════════════════ */
+:root {
+  /* ── Tipografía ──────────────────────────────────────────── */
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'IBM Plex Mono', monospace;
+
+  /* ── Escala tipográfica ──────────────────────────────────── */
+  --fs-9:  9px;
+  --fs-10: 10px;
+  --fs-11: 11px;
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-14: 14px;
+  --fs-18: 18px;
+  --fs-22: 22px;
+
+  /* ── Escala de espaciado (múltiplos de 4/8) ──────────────── */
+  --sp-1:  4px;
+  --sp-2:  8px;
+  --sp-3:  12px;
+  --sp-4:  16px;
+  --sp-5:  20px;
+  --sp-6:  24px;
+  --sp-8:  32px;
+
+  /* ── Layout ──────────────────────────────────────────────── */
+  --sidebar-width:   240px;
+  --titlebar-height: 36px;
+  --taskbar-height:  52px;
+
+  /* ── Radios glass (legacy) ──────────────────────────────── */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* ── Bevel NimOS (firma) ─────────────────────────────────── */
+  --bev-sm:     6px;    /* botones pequeños */
+  --bev-md:     10px;   /* cards, paneles */
+  --bev-lg:     16px;   /* drawers, ventanas estándar */
+  --bev-window: 22px;   /* firma macro de ventana */
+
+  /* ── ACCENT COLOR (customizable desde Settings) ──────────────
+     Usamos HSL para que el sistema pueda derivar variantes
+     (dim, hover, glow) sin recalcular hex.
+
+     Default: verde fósforo NimOS #00ff9f
+     hsl(155, 100%, 50%)
+
+     Para cambiar accent desde JS:
+       document.documentElement.style.setProperty('--signal-h', '210');
+       document.documentElement.style.setProperty('--signal-s', '100%');
+       document.documentElement.style.setProperty('--signal-l', '60%');
+  */
+  --signal-h:    155;
+  --signal-s:    100%;
+  --signal-l:    50%;
+  --signal:      hsl(var(--signal-h), var(--signal-s), var(--signal-l));
+  --signal-hover: hsl(var(--signal-h), var(--signal-s), calc(var(--signal-l) + 6%));
+  --signal-dim:  hsla(var(--signal-h), var(--signal-s), var(--signal-l), 0.15);
+  --signal-glow: hsla(var(--signal-h), var(--signal-s), var(--signal-l), 0.35);
+  --signal-soft: hsla(var(--signal-h), var(--signal-s), var(--signal-l), 0.07);
+
+  /* ── Colores semánticos ──────────────────────────────────── */
+  --warn:           #fbbf24;
+  --warn-glow:      rgba(251, 191, 36, 0.35);
+  --warn-dim:       rgba(251, 191, 36, 0.15);
+  --warn-border:    rgba(251, 191, 36, 0.30);
+
+  --crit:           #f87171;
+  --crit-glow:      rgba(248, 113, 113, 0.35);
+  --crit-dim:       rgba(248, 113, 113, 0.15);
+  --crit-border:    rgba(248, 113, 113, 0.30);
+
+  --info:           #4db8ff;
+  --info-glow:      rgba(77, 184, 255, 0.35);
+  --info-dim:       rgba(77, 184, 255, 0.15);
+  --info-border:    rgba(77, 184, 255, 0.30);
+
+  --magenta:        #e873ff;
+  --orange:         #ff8c3f;
+
+  /* ── Text scale / zoom (compat theme store) ──────────────── */
+  --text-scale: 1;
+  --ui-scale:   1;
+  --ui-zoom:    1;
+  --glow-intensity: 0.5;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   [data-theme="dark"] · TEMA OSCURO (default)
+   ═══════════════════════════════════════════════════════════════
+   Filosofía: NimOS técnico, fondo casi negro, paneles elevados
+   ligeramente, texto blanco roto.
+   ═══════════════════════════════════════════════════════════════ */
+:root,
+[data-theme="dark"] {
+  /* ── Fondos (escalera de elevación) ──────────────────────── */
+  --canvas:         #0a0a0a;
+  --canvas-soft:    #111111;
+  --panel:          #161616;
+  --panel-elev:     #1c1c1c;
+  --panel-deep:     #242429;
+
+  /* ── Texto (4 niveles de jerarquía) ──────────────────────── */
+  --ink:            #f2f2f5;
+  --ink-dim:        #c8c8cf;
+  --ink-mute:       #9a9aa3;
+  --ink-faint:      #6a6a72;
+  --ink-trace:      #44444a;
+
+  /* ── Bordes ──────────────────────────────────────────────── */
+  --line:           rgba(255, 255, 255, 0.08);
+  --line-bright:    rgba(255, 255, 255, 0.14);
+  --line-strong:    rgba(255, 255, 255, 0.22);
+
+  /* ── Ventanas (estética técnica NimOS) ───────────────────── */
+  --window-bg:      #161616;
+  --window-border:  rgba(255, 255, 255, 0.14);
+  --window-shadow:
+    5px 5px 0 rgba(0, 0, 0, 0.7),
+    0 0 60px rgba(255, 250, 240, 0.04);
+
+  /* ── Sidebar interno de apps ─────────────────────────────── */
+  --side-bg:        var(--panel-elev);
+  --side-border:    var(--line);
+  --side-hover:     rgba(255, 255, 255, 0.04);
+  --side-active-bg: var(--signal-soft);
+  --side-active-fg: var(--signal);
+
+  /* ── Taskbar · color sólido plano · sin gradient cromado ── */
+  --taskbar-bg:           #161616;
+  --taskbar-border-top:   rgba(255, 255, 255, 0.06);
+
+  /* ── Main content área ───────────────────────────────────── */
+  --main-bg:        var(--panel);
+  --main-fg:        var(--ink);
+  --main-fg-mute:   var(--ink-mute);
+  --main-fg-faint:  var(--ink-faint);
+  --main-hover:     rgba(255, 255, 255, 0.04);
+
+  /* ── Glow del logo / pestañas / iconos · firma del boot ── */
+  --accent-glow-soft: rgba(220, 255, 235, 0.6);
+  --accent-glow-hard: rgba(255, 255, 255, 0.7);
+
+  /* ── Wallpaper · NimOS blueprint técnico ──
+     Variante B · doble cuadrícula verde sutil + halos ambient
+     - Grid menor 12px @ 1.2% opacidad (subdivisión)
+     - Grid mayor 60px @ 3% opacidad (mayor visible)
+     - Halos verdes 5% (sup-izq) + 4% (inf-centro)
+     - Halo cálido 2.5% (sup-dcha) para contraste
+     - Vignette muy sutil en bordes
+     - Base negro casi puro */
+  --wallpaper:
+    /* Cuadrícula menor 12px */
+    linear-gradient(rgba(0, 255, 159, 0.012) 1px, transparent 1px) 0 0 / 12px 12px,
+    linear-gradient(90deg, rgba(0, 255, 159, 0.012) 1px, transparent 1px) 0 0 / 12px 12px,
+    /* Cuadrícula mayor 60px */
+    linear-gradient(rgba(0, 255, 159, 0.03) 1px, transparent 1px) 0 0 / 60px 60px,
+    linear-gradient(90deg, rgba(0, 255, 159, 0.03) 1px, transparent 1px) 0 0 / 60px 60px,
+    /* Halos verdes ambient */
+    radial-gradient(ellipse 50% 45% at 20% 25%, rgba(0, 255, 159, 0.05) 0%, rgba(0, 255, 159, 0.015) 35%, transparent 60%),
+    radial-gradient(ellipse 40% 35% at 85% 15%, rgba(255, 245, 230, 0.025) 0%, transparent 55%),
+    radial-gradient(ellipse 70% 50% at 50% 110%, rgba(0, 255, 159, 0.04) 0%, transparent 55%),
+    /* Vignette sutil */
+    radial-gradient(ellipse 100% 100% at 50% 50%, transparent 50%, rgba(0, 0, 0, 0.4) 100%),
+    /* Base */
+    #050505;
+
+  /* ── Scrollbar ───────────────────────────────────────────── */
+  --scroll-thumb:        rgba(255, 255, 255, 0.12);
+  --scroll-thumb-hover:  rgba(255, 255, 255, 0.2);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   [data-theme="cream"] · TEMA CREMA NEUTRO LIMPIO
+   ═══════════════════════════════════════════════════════════════
+   Filosofía: NimOS papel técnico, fondo crema #f5f5f0,
+   paneles ligeramente más claros, tinta gris oscuro.
+   Conserva la identidad NimOS (bevel firma, geometría dura)
+   pero en versión "blueprint claro".
+   ═══════════════════════════════════════════════════════════════ */
+[data-theme="cream"] {
+  /* ── Fondos (escalera de elevación inversa) ──────────────── */
+  --canvas:         #f5f5f0;
+  --canvas-soft:    #efefe8;
+  --panel:          #fdfdf7;
+  --panel-elev:     #ffffff;
+  --panel-deep:     #e8e8e0;
+
+  /* ── Texto (4 niveles de jerarquía, tinta) ───────────────── */
+  --ink:            #1a1a1a;
+  --ink-dim:        #44444a;
+  --ink-mute:       #6a6a72;
+  --ink-faint:      #98989e;
+  --ink-trace:      #c8c8c0;
+
+  /* ── Bordes (ahora oscuros sobre fondo claro) ────────────── */
+  --line:           rgba(0, 0, 0, 0.10);
+  --line-bright:    rgba(0, 0, 0, 0.18);
+  --line-strong:    rgba(0, 0, 0, 0.28);
+
+  /* ── Ventanas (sombra más sutil sobre fondo claro) ──────── */
+  --window-bg:      #fdfdf7;
+  --window-border:  rgba(0, 0, 0, 0.16);
+  --window-shadow:
+    5px 5px 0 rgba(0, 0, 0, 0.08),
+    0 0 60px rgba(0, 0, 0, 0.04);
+
+  /* ── Sidebar interno de apps ─────────────────────────────── */
+  --side-bg:        var(--panel-deep);
+  --side-border:    var(--line);
+  --side-hover:     rgba(0, 0, 0, 0.04);
+  --side-active-bg: var(--signal-soft);
+  --side-active-fg: var(--signal);
+
+  /* ── Taskbar · color sólido plano · versión crema ────────── */
+  --taskbar-bg:           #e8e8e0;
+  --taskbar-border-top:   rgba(0, 0, 0, 0.08);
+
+  /* ── Main content área ───────────────────────────────────── */
+  --main-bg:        var(--panel);
+  --main-fg:        var(--ink);
+  --main-fg-mute:   var(--ink-mute);
+  --main-fg-faint:  var(--ink-faint);
+  --main-hover:     rgba(0, 0, 0, 0.03);
+
+  /* ── Glow del logo / pestañas / iconos ──
+     En crema el glow blanco-lechoso no funciona (sería invisible).
+     Usamos un glow inverso oscuro muy sutil para profundidad. */
+  --accent-glow-soft: rgba(0, 0, 0, 0.18);
+  --accent-glow-hard: rgba(0, 0, 0, 0.28);
+
+  /* ── Wallpaper · papel técnico claro ──
+     Versión crema · misma estructura (doble grid + halos) pero inversa
+     - Grid sutil oscura sobre crema en lugar de verde sobre negro
+     - Halos verdes mantienen identidad NimOS pero más suaves */
+  --wallpaper:
+    /* Cuadrícula menor 12px (líneas oscuras sobre crema) */
+    linear-gradient(rgba(0, 0, 0, 0.012) 1px, transparent 1px) 0 0 / 12px 12px,
+    linear-gradient(90deg, rgba(0, 0, 0, 0.012) 1px, transparent 1px) 0 0 / 12px 12px,
+    /* Cuadrícula mayor 60px */
+    linear-gradient(rgba(0, 0, 0, 0.025) 1px, transparent 1px) 0 0 / 60px 60px,
+    linear-gradient(90deg, rgba(0, 0, 0, 0.025) 1px, transparent 1px) 0 0 / 60px 60px,
+    /* Halos verdes ambient (más suaves en crema) */
+    radial-gradient(ellipse 50% 45% at 20% 25%, rgba(0, 200, 130, 0.05) 0%, transparent 55%),
+    radial-gradient(ellipse 40% 35% at 85% 15%, rgba(200, 180, 140, 0.05) 0%, transparent 55%),
+    radial-gradient(ellipse 70% 50% at 50% 110%, rgba(0, 200, 130, 0.03) 0%, transparent 55%),
+    /* Vignette sutil */
+    radial-gradient(ellipse 100% 100% at 50% 50%, transparent 50%, rgba(0, 0, 0, 0.05) 100%),
+    /* Base crema */
+    var(--canvas);
+
+  /* ── Scrollbar ───────────────────────────────────────────── */
+  --scroll-thumb:        rgba(0, 0, 0, 0.18);
+  --scroll-thumb-hover:  rgba(0, 0, 0, 0.32);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ALIASES LEGACY · compatibilidad con código existente
+   ───────────────────────────────────────────────────────────────
+   Estos aliases mapean los tokens viejos a los semánticos nuevos.
+   Permiten que TODO el código existente siga funcionando mientras
+   migramos componente a componente al lenguaje nuevo.
+
+   Cuando un componente esté completamente migrado, sus referencias
+   a los aliases legacy se pueden quitar.
+   ═══════════════════════════════════════════════════════════════ */
+:root,
+[data-theme="dark"],
+[data-theme="cream"] {
+  /* Fondos legacy → semánticos */
+  --bg:          var(--canvas);
+  --bg-0:        var(--canvas);
+  --bg-1:        var(--canvas-soft);
+  --bg-2:        var(--panel);
+  --bg-3:        var(--panel-elev);
+  --bg-elev:     var(--panel-elev);
+  --bg-elev-1:   var(--canvas-soft);
+  --bg-elev-2:   var(--panel);
+
+  /* Texto legacy → semánticos */
+  --fg:          var(--ink);
+  --fg-dim:      var(--ink-dim);
+  --fg-mute:     var(--ink-mute);
+  --fg-faint:    var(--ink-faint);
+  --fg-trace:    var(--ink-trace);
+  --text-primary:   var(--ink);
+  --text-secondary: var(--ink-dim);
+  --text-muted:     var(--ink-mute);
+
+  /* Bordes legacy → semánticos */
+  --border:         var(--line);
+  --border-bright:  var(--line-bright);
+  --border-focus:   var(--line-strong);
+  --glass-border:   var(--line);
+
+  /* Acento legacy → señal */
+  --accent:         var(--signal);
+  --accent-hover:   var(--signal-hover);
+  --accent-dim:     var(--signal-dim);
+  --accent-glow:    var(--signal-glow);
+  --accent-color:   var(--signal);
+
+  /* Colores semánticos legacy (alias) */
+  --c-ok:    var(--signal);
+  --c-warn:  var(--warn);
+  --c-crit:  var(--crit);
+  --c-info:  var(--info);
+  --c-ok-dim:    var(--signal-dim);
+  --c-warn-dim:  var(--warn-dim);
+  --c-crit-dim:  var(--crit-dim);
+  --c-info-dim:  var(--info-dim);
+  --c-ok-border:   hsla(var(--signal-h), var(--signal-s), var(--signal-l), 0.30);
+  --c-warn-border: var(--warn-border);
+  --c-crit-border: var(--crit-border);
+
+  /* Sage (verde apagado) · derivado del signal en HSL */
+  --sage:        hsl(var(--signal-h), 45%, 65%);
+
+  /* Glass legacy → semánticos */
+  --glass-bg:        var(--window-bg);
+  --glass-bg-strong: var(--panel-elev);
+  --glass-blur:      none;  /* en estética NimOS no usamos blur */
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SCROLLBARS GLOBALES
+   ═══════════════════════════════════════════════════════════════ */
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 4px; }
+*::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
+* { scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; }
+
+/* ═══════════════════════════════════════════════════════════════
+   CLASES UTILITARIAS GLOBALES
+   ═══════════════════════════════════════════════════════════════ */
+.mono { font-family: var(--font-mono); font-feature-settings: "tnum"; }
+.sans { font-family: var(--font-sans); }
+.tnum { font-feature-settings: "tnum"; }
+
+.tc-accent  { color: var(--signal); }
+.tc-signal  { color: var(--signal); }
+.tc-warn    { color: var(--warn); }
+.tc-crit    { color: var(--crit); }
+.tc-info    { color: var(--info); }
+.tc-dim     { color: var(--ink-dim); }
+.tc-mute    { color: var(--ink-mute); }
+.tc-faint   { color: var(--ink-faint); }
+
+/* ═══════════════════════════════════════════════════════════════
+   ANIMACIONES COMPARTIDAS
+   ═══════════════════════════════════════════════════════════════ */
+@keyframes led-pulse {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 6px var(--signal-glow), 0 0 2px var(--signal);
+  }
+  50% {
+    opacity: 0.55;
+    box-shadow: 0 0 3px var(--signal-glow);
+  }
+}
+@keyframes led-pulse-warn {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px var(--warn-glow); }
+  50%      { opacity: 0.6; box-shadow: 0 0 3px var(--warn-dim); }
+}
+@keyframes led-pulse-crit {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px var(--crit-glow); }
+  50%      { opacity: 0.5; box-shadow: 0 0 3px var(--crit-dim); }
+}
+@keyframes stripe-move {
+  0%   { background-position: 0 0; }
+  100% { background-position: 12px 0; }
+}
+@keyframes cursor-blink {
+  0%, 50%       { opacity: 1; }
+  50.01%, 100%  { opacity: 0; }
+}
+@keyframes win-in {
+  from { opacity: 0; transform: scale(0.98) translateY(6px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
