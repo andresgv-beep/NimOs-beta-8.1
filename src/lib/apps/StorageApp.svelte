@@ -319,6 +319,10 @@
       });
       await unwrapV2(res, 'import pool');
       closeImportModal();
+      // Forzar re-scan del observer para que el FS importado deje de
+      // aparecer como huérfano. ?refresh=true bloquea 200ms en backend
+      // mientras el observer hace el scan completo.
+      await fetch('/api/storage/v2/observed?refresh=true', { headers: hdrs() });
       await loadAll();
     } catch (e) {
       importError = e.message || 'Error desconocido al importar';
@@ -506,6 +510,8 @@
 
   async function handleExportPoolDone() {
     exportPoolName = null;        // cerrar wizard
+    // Forzar re-scan del observer (tras export el FS aparece como huérfano).
+    await fetch('/api/storage/v2/observed?refresh=true', { headers: hdrs() });
     await loadAll();              // recargar lista de pools (el pool ya no debería estar)
   }
 
@@ -547,6 +553,8 @@
 
   async function handleDestroyPoolDone() {
     destroyPool = null;
+    // Forzar re-scan del observer (tras destroy los discos quedan libres).
+    await fetch('/api/storage/v2/observed?refresh=true', { headers: hdrs() });
     await loadAll();
   }
 
@@ -557,6 +565,8 @@
 
   async function handleCreatePoolDone() {
     creatingPool = false;
+    // Forzar re-scan del observer para reflejar el nuevo pool managed.
+    await fetch('/api/storage/v2/observed?refresh=true', { headers: hdrs() });
     await loadAll();
     active = 'overview'; // salta a resumen para ver el pool recién creado
   }
