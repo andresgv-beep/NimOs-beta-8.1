@@ -174,8 +174,6 @@
     else minimizeWindow(win.id);
   }
 
-  function isIconUrl(icon) { return icon && (icon.startsWith('/') || icon.startsWith('http')); }
-
   // ─── Apps open not pinned ───
   $: openUnpinned = $windowList.filter(w => !$pinnedApps.includes(w.appId));
 
@@ -248,17 +246,13 @@
             on:click={() => handleAppClick(appId)}
             on:contextmenu={(e) => openCtxMenu(e, appId, existing)}
           >
-            {#if isIconUrl(meta.icon)}
-              <AppIcon
-                src={meta.icon}
-                alt={meta.name}
-                size="sm"
-                fallback={meta.fallback}
-                active={isOpen}
-              />
-            {:else}
-              <span class="tb-emoji">{meta.fallback || meta.icon || '📦'}</span>
-            {/if}
+            <AppIcon
+              src={meta.icon}
+              alt={meta.name}
+              size="sm"
+              fallback={meta.fallback}
+              active={isOpen}
+            />
             <span class="tb-tooltip">{meta.name}</span>
           </button>
         {/if}
@@ -279,17 +273,13 @@
             on:click={() => toggleMinimize(win)}
             on:contextmenu={(e) => openCtxMenu(e, win.appId, win)}
           >
-            {#if isIconUrl(meta?.icon)}
-              <AppIcon
-                src={meta.icon}
-                alt={meta?.name}
-                size="sm"
-                fallback={meta?.fallback}
-                active={!win.minimized}
-              />
-            {:else}
-              <span class="tb-emoji">{meta?.fallback || '📦'}</span>
-            {/if}
+            <AppIcon
+              src={meta?.icon}
+              alt={meta?.name}
+              size="sm"
+              fallback={meta?.fallback}
+              active={!win.minimized}
+            />
             <span class="tb-tooltip">{meta?.name || win.appId}</span>
           </button>
         {/each}

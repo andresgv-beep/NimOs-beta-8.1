@@ -23,6 +23,7 @@
   import { APP_META, listAllApps } from '$lib/apps.js';
   import { openWindow, windowList } from '$lib/stores/windows.js';
   import { getToken } from '$lib/stores/auth.js';
+  import AppIcon from '$lib/ui/AppIcon.svelte';
 
   export let visible = false;
 
@@ -132,10 +133,6 @@
     }
   }
 
-  function isIconUrl(icon) {
-    return icon && (icon.startsWith('http') || icon.startsWith('/'));
-  }
-
   function handleKeydown(e) {
     if (!visible) return;
     if (e.key === 'Escape') {
@@ -228,11 +225,7 @@
               title={app.name}
             >
               <div class="app-tile-icon">
-                {#if isIconUrl(app.icon)}
-                  <img src={app.icon} alt={app.name} on:error={(e) => e.target.style.display = 'none'} />
-                {:else}
-                  <span class="app-emoji">{app.fallback || app.icon || '📦'}</span>
-                {/if}
+                <AppIcon src={app.icon} alt={app.name} fallback={app.fallback || '📦'} size="xs" />
               </div>
               <div class="app-tile-text">
                 <div class="app-tile-name">{app.name}</div>
@@ -453,20 +446,13 @@
   }
 
   .app-tile-icon {
-    width: 26px;
-    height: 26px;
+    width: 32px;
+    height: 32px;
     flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-  }
-  .app-tile-icon img {
-    width: 24px;
-    height: 24px;
-    object-fit: contain;
-    filter:
-      drop-shadow(0 0 4px rgba(220, 255, 235, 0.35))
-      drop-shadow(0 0 1px rgba(255, 255, 255, 0.5));
+    filter: drop-shadow(0 0 4px rgba(220, 255, 235, 0.35));
   }
   .app-emoji {
     font-size: 22px;
