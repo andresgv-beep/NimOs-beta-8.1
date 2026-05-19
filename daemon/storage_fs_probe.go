@@ -40,20 +40,130 @@ var supportedForeignFS = map[string]FSType{
 
 // systemMountPoints son rutas que NUNCA se reportan como pools observables.
 // Aunque tengan ext4 / etc., son partes del sistema operativo.
+//
+// IMPORTANTE: esto es defensa secundaria. El filtro PRIMARIO es
+// isSystemDisk() que excluye el disco físico donde está el sistema.
 var systemMountPoints = map[string]bool{
-	"/":            true,
-	"/boot":        true,
-	"/boot/efi":    true,
-	"/home":        true, // si está en partición separada, también es sistema
-	"/var":         true,
-	"/var/lib":     true,
-	"/tmp":         true,
-	"/usr":         true,
-	"/opt":         true,
-	"/proc":        true,
-	"/sys":         true,
-	"/run":         true,
-	"/dev":         true,
+	"/":             true,
+	"/boot":         true,
+	"/boot/efi":     true,
+	"/boot/firmware": true, // Raspberry Pi: partición FAT32 del bootloader
+	"/efi":          true,
+	"/home":         true, // si está en partición separada, también es sistema
+	"/var":          true,
+	"/var/lib":      true,
+	"/tmp":          true,
+	"/usr":          true,
+	"/opt":          true,
+	"/proc":         true,
+	"/sys":          true,
+	"/run":          true,
+	"/dev":          true,
+	"/recovery":     true, // particiones de recovery (Pi, etc.)
+}
+
+// isSystemDisk devuelve true si el disco contiene el rootfs del sistema.
+// Si /dev/sda contiene /, NINGUNA partición de /dev/sda (sda1, sda2, etc.)
+// debe aparecer como observable.
+//
+// La identificación se hace leyendo /proc/self/mounts y buscando qué disco
+// contiene la partición montada en /. Después comparando el "disco base"
+// (ej. /dev/sda) con el del filesystem candidato.
+//
+// Ejemplos:
+//   diskBase("/dev/sda1")      → "/dev/sda"
+//   diskBase("/dev/nvme0n1p1") → "/dev/nvme0n1"
+//   diskBase("/dev/mmcblk0p1") → "/dev/mmcblk0"
+func isSystemDisk(devicePath string) bool {
+	rootDevice := findRootDevicePath()
+	if rootDevice == "" {
+		return false
+	}
+	return diskBase(devicePath) == diskBase(rootDevice)
+}
+
+// findRootDevicePath lee /proc/self/mounts y devuelve el device que monta "/"
+func findRootDevicePath() string {
+	data, err := os.ReadFile("/proc/self/mounts")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		if fields[1] == "/" {
+			return fields[0]
+		}
+	}
+	return ""
+}
+
+// diskBase devuelve el disco "base" de una partición.
+//   /dev/sda1      → /dev/sda
+//   /dev/nvme0n1p1 → /dev/nvme0n1
+//   /dev/mmcblk0p1 → /dev/mmcblk0
+//   /dev/loop0p1   → /dev/loop0
+//   /dev/sda       → /dev/sda  (ya es base)
+//   /dev/loop0     → /dev/loop0 (ya es base)
+//
+// Estrategia: el separador "p" entre disco y partición SOLO aplica si
+// va precedido de un dígito (ej. "...0p1", "...n1p2"). Esto evita
+// trocear erróneamente "loop0" como "loo" + "0".
+func diskBase(devicePath string) string {
+	if !strings.HasPrefix(devicePath, "/dev/") {
+		return devicePath
+	}
+	name := devicePath[5:]
+
+	// Casos especiales con separador "p" entre disco y partición:
+	// El "p" SOLO es separador de partición si está entre un dígito y otro dígito.
+	// Ejemplos válidos: "0p1", "1p15"
+	// NO válido: "loop0" (la 'p' está entre letras)
+	for i := 1; i < len(name)-1; i++ {
+		if name[i] == 'p' &&
+			isDigit(name[i-1]) &&
+			isDigit(name[i+1]) {
+			// Verificar que TODO lo que sigue a "p" son dígitos
+			allDigits := true
+			for j := i + 1; j < len(name); j++ {
+				if !isDigit(name[j]) {
+					allDigits = false
+					break
+				}
+			}
+			if allDigits {
+				return "/dev/" + name[:i]
+			}
+		}
+	}
+
+	// Caso normal sin "p": sda, sdb, vda → quitar dígitos finales.
+	// PERO: si el nombre completo NO tiene dígitos finales (loop0 contado
+	// como base si no caímos en el "p" branch), devolvemos tal cual.
+	endsWithDigit := len(name) > 0 && isDigit(name[len(name)-1])
+	if !endsWithDigit {
+		return devicePath
+	}
+
+	// Distinguir entre "sda1" (quitar 1 → "sda") y "mmcblk0", "loop0",
+	// "nvme0n1" (donde el dígito final es parte del nombre del disco).
+	// Heurística: si el nombre empieza con prefijo conocido de disco
+	// "compuesto" (mmcblk, loop, nvme...), el dígito final NO se quita.
+	for _, prefix := range []string{"mmcblk", "loop", "nvme", "mtdblock"} {
+		if strings.HasPrefix(name, prefix) {
+			return devicePath
+		}
+	}
+
+	// Caso normal (sda1, sdb15, vda3): quitar dígitos finales
+	for i := len(name) - 1; i >= 0; i-- {
+		if !isDigit(name[i]) {
+			return "/dev/" + name[:i+1]
+		}
+	}
+	return devicePath
 }
 
 // probeForeignFilesystems escanea el sistema buscando filesystems no-BTRFS
@@ -98,7 +208,14 @@ func probeForeignFilesystems() ([]ObservedFilesystem, bool) {
 			continue
 		}
 
-		// Filtrar particiones del sistema
+		// FILTRO PRIMARIO: si el device está en el mismo disco físico que el
+		// rootfs, es del sistema → NUNCA gestionable.
+		// Esto cubre el caso Raspberry Pi (/boot/firmware en /dev/mmcblk0p1).
+		if isSystemDisk(fs.devicePath) {
+			continue
+		}
+
+		// FILTRO SECUNDARIO: por mount point conocido del sistema.
 		mp := mountMap[fs.devicePath]
 		if mp != "" && systemMountPoints[mp] {
 			continue
