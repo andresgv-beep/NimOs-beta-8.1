@@ -2,22 +2,22 @@
   /**
    * CreatePoolWizard · Wizard to create a new storage pool
    * ─────────────────────────────────────────────────────────
-   * 4 pasos: tipo → discos → nombre → confirmación.
+   * Beta 8.1: BTRFS-only. ZFS eliminado en Fase 5.
+   *
+   * 3 pasos: discos → nombre → confirmación.
    *
    * Filosofía: solo layouts seguros recomendados. El usuario NO elige layout,
-   * se calcula automáticamente según tipo y número de discos seleccionados.
-   *   ZFS:   1 disk → single, 2 → mirror, 3 → raidz1, 4+ → raidz2
-   *   BTRFS: 1 disk → single, 2 → raid1, 3 → raid1, 4+ → raid10
+   * se calcula automáticamente según número de discos seleccionados.
+   *   1 disk → single, 2 → raid1, 3 → raid1, 4+ → raid10
    *
    * Backend:
-   *   POST /api/storage/pool { type, name, vdevType|profile, disks: [paths] }
+   *   POST /api/storage/v2/pools { name, profile, disks: [paths], wipe_first }
    *
    * Validación de nombre idéntica a la del backend:
    *   ^[a-zA-Z0-9-]{1,32}$ + reserved list
    *
    * Usage:
    *   <CreatePoolWizard
-   *     capabilities={{ zfs: true, btrfs: true }}
    *     eligibleDisks={disks.eligible || []}
    *     on:done
    *     on:cancel
@@ -29,7 +29,9 @@
   import LED from '$lib/ui/LED.svelte';
   import Badge from '$lib/ui/Badge.svelte';
 
-  export let capabilities = { zfs: false, btrfs: false };
+  // capabilities prop mantenida por retrocompat con el caller, pero ignorada
+  // (Beta 8: siempre BTRFS, no se ofrece elección al usuario).
+  export let capabilities = { zfs: false, btrfs: true };
   export let eligibleDisks = [];
   // Bloque C3.3: props para indicar estado de los discos
   //
@@ -83,8 +85,8 @@
   const dispatch = createEventDispatcher();
 
   // ─── State ───
-  let step = 1;                // 1 = tipo · 2 = discos · 3 = nombre · 4 = confirmar
-  let fsType = '';             // 'zfs' | 'btrfs'
+  let step = 2;                // 1 = (DEPRECATED, BTRFS-only) · 2 = discos · 3 = nombre · 4 = confirmar
+  let fsType = 'btrfs';        // Beta 8: BTRFS-only · ZFS eliminado
   let selectedDisks = new Set(); // paths de discos seleccionados
   let poolName = '';
   let nameError = '';
@@ -92,26 +94,18 @@
   let processing = false;
   let errorMsg = '';
 
-  // Nombres reservados (espejo exacto del backend)
-  const RESERVED_NAMES_ZFS   = ['system', 'config', 'temp', 'swap', 'root', 'boot', 'rpool'];
+  // Nombres reservados (espejo exacto del backend, BTRFS-only en Beta 8)
   const RESERVED_NAMES_BTRFS = ['system', 'config', 'temp', 'swap', 'root', 'boot'];
-  $: reservedNames = fsType === 'zfs' ? RESERVED_NAMES_ZFS : RESERVED_NAMES_BTRFS;
+  $: reservedNames = RESERVED_NAMES_BTRFS;
 
   // ─── Derived ───
 
-  // Default fsType cuando el usuario aterriza en paso 1
-  $: if (step === 1 && !fsType) {
-    if (capabilities.zfs) fsType = 'zfs';
-    else if (capabilities.btrfs) fsType = 'btrfs';
-  }
-
   $: diskCount = selectedDisks.size;
 
-  // Calcular layout seguro según tipo + número de discos
+  // Calcular layout seguro según número de discos (BTRFS-only)
   $: layout = computeLayout(fsType, diskCount);
 
   // Capacidad útil estimada (en bytes)
-  // ZFS mirror: size * 1 (el menor) | raidz1: (n-1) * size_menor | raidz2: (n-2) * size_menor
   // BTRFS raid1: total / 2 | raid10: total / 2 | single: suma de todos
   $: selectedDisksArr = eligibleDisks.filter(d => selectedDisks.has(d.path || `/dev/${d.name}`));
   $: usableCapacity = computeUsableCapacity(fsType, layout, selectedDisksArr);
@@ -131,7 +125,6 @@
   }
 
   $: canAdvance = processing ? false
-                : step === 1 ? (fsType === 'zfs' && capabilities.zfs) || (fsType === 'btrfs' && capabilities.btrfs)
                 : step === 2 ? diskCount >= 1
                 : step === 3 ? poolName.length > 0 && nameError === ''
                 : step === 4 ? confirmInput === 'CREAR'
@@ -140,16 +133,9 @@
   $: nextLabel = step === 4 ? (processing ? 'Creando...' : 'Crear pool') : 'Continuar →';
   $: nextVariant = step === 4 ? 'primary' : 'primary';
 
-  // ─── Layout computation ───
+  // ─── Layout computation (Beta 8: BTRFS-only) ───
   function computeLayout(fs, n) {
-    if (!fs || n < 1) return { id: '', label: '—', redundancy: 'none', desc: '' };
-    if (fs === 'zfs') {
-      if (n === 1) return { id: 'single',  label: 'Single',        redundancy: 'none',   desc: 'Sin redundancia · toda la capacidad disponible' };
-      if (n === 2) return { id: 'mirror',  label: 'Mirror (RAID1)', redundancy: 'n-1',    desc: 'Tolera fallo de 1 disco · capacidad = disco menor' };
-      if (n === 3) return { id: 'raidz1',  label: 'RAIDZ1',        redundancy: '1 parity', desc: 'Tolera fallo de 1 disco · capacidad = (n-1) × disco menor' };
-      return                { id: 'raidz2',  label: 'RAIDZ2',        redundancy: '2 parity', desc: 'Tolera fallo de 2 discos · capacidad = (n-2) × disco menor' };
-    }
-    // btrfs
+    if (n < 1) return { id: '', label: '—', redundancy: 'none', desc: '' };
     if (n === 1) return { id: 'single', label: 'Single',       redundancy: 'none', desc: 'Sin redundancia · toda la capacidad disponible' };
     if (n === 2) return { id: 'raid1',  label: 'RAID1',        redundancy: 'n-1',  desc: 'Duplica cada bloque · capacidad = total / 2' };
     if (n === 3) return { id: 'raid1',  label: 'RAID1',        redundancy: 'n-1',  desc: 'BTRFS distribuye copias entre discos · capacidad ~ total / 2' };
@@ -160,25 +146,15 @@
     if (disks.length === 0) return 0;
     const sizes = disks.map(d => d.size || 0).filter(s => s > 0);
     if (sizes.length === 0) return 0;
-    const smallest = Math.min(...sizes);
     const total = sizes.reduce((a, b) => a + b, 0);
-    const n = sizes.length;
 
-    if (lay.id === 'single' || lay.id === 'stripe') return total;
-    if (lay.id === 'mirror') return smallest;
-    if (lay.id === 'raidz1') return smallest * (n - 1);
-    if (lay.id === 'raidz2') return smallest * (n - 2);
+    if (lay.id === 'single') return total;
     if (lay.id === 'raid1')  return Math.floor(total / 2);
     if (lay.id === 'raid10') return Math.floor(total / 2);
     return total;
   }
 
   // ─── Handlers ───
-  function selectFsType(t) {
-    if (t === 'zfs' && !capabilities.zfs) return;
-    if (t === 'btrfs' && !capabilities.btrfs) return;
-    fsType = t;
-  }
 
   function toggleDisk(path) {
     if (selectedDisks.has(path)) selectedDisks.delete(path);
@@ -196,7 +172,8 @@
   }
 
   function handleBack() {
-    if (step > 1) {
+    // Beta 8.1: step=2 es el entry point (BTRFS-only, no hay step 1)
+    if (step > 2) {
       step -= 1;
       errorMsg = '';
     }
@@ -389,81 +366,16 @@
   on:cancel={handleCancel}
 >
 
-  <!-- PASO 1 · Tipo de pool -->
-  {#if step === 1}
-    <div class="pretitle">PASO 1 · SISTEMA DE ARCHIVOS</div>
-    <div class="h">¿ZFS o BTRFS?</div>
-    <div class="desc">
-      Los dos son sistemas modernos con snapshots e integridad de datos.
-      Elige según tus necesidades.
-    </div>
-
-    <div class="fs-options">
-      <button
-        class="fs-card"
-        class:selected={fsType === 'zfs'}
-        class:disabled={!capabilities.zfs}
-        on:click={() => selectFsType('zfs')}
-        disabled={!capabilities.zfs}
-      >
-        <div class="fs-head">
-          <div class="fs-name">ZFS</div>
-          {#if !capabilities.zfs}
-            <Badge size="sm" variant="warn">no disponible</Badge>
-          {:else if fsType === 'zfs'}
-            <LED size={7} variant="ok" />
-          {/if}
-        </div>
-        <div class="fs-desc">
-          Más maduro y robusto. Snapshots instantáneos, replicación,
-          compresión automática. Ideal para datos críticos.
-        </div>
-        <div class="fs-tags">
-          <span class="fs-tag">RAIDZ1/Z2</span>
-          <span class="fs-tag">ARC cache</span>
-          <span class="fs-tag">dedup</span>
-        </div>
-      </button>
-
-      <button
-        class="fs-card"
-        class:selected={fsType === 'btrfs'}
-        class:disabled={!capabilities.btrfs}
-        on:click={() => selectFsType('btrfs')}
-        disabled={!capabilities.btrfs}
-      >
-        <div class="fs-head">
-          <div class="fs-name">BTRFS</div>
-          {#if !capabilities.btrfs}
-            <Badge size="sm" variant="warn">no disponible</Badge>
-          {:else if fsType === 'btrfs'}
-            <LED size={7} variant="ok" />
-          {/if}
-        </div>
-        <div class="fs-desc">
-          Más flexible. Permite añadir discos de uno en uno, mezclar
-          tamaños y cambiar el perfil RAID en caliente.
-        </div>
-        <div class="fs-tags">
-          <span class="fs-tag">RAID1/10</span>
-          <span class="fs-tag">balance</span>
-          <span class="fs-tag">resize</span>
-        </div>
-      </button>
-    </div>
-  {/if}
+  <!-- PASO 1 · (DEPRECATED — Beta 8 es BTRFS-only, ZFS eliminado) -->
+  <!-- Se mantiene step=2 como entry point del wizard. -->
 
   <!-- PASO 2 · Selección de discos -->
   {#if step === 2}
-    <div class="pretitle">PASO 2 · DISCOS</div>
+    <div class="pretitle">PASO 1 · DISCOS</div>
     <div class="h">Selecciona los discos del pool</div>
     <div class="desc">
       Los datos existentes en estos discos se <b>borrarán</b> al crear el pool.
-      {#if fsType === 'zfs'}
-        ZFS usará el tamaño del <b>disco menor</b> si mezclas capacidades.
-      {:else}
-        BTRFS puede mezclar capacidades sin desperdiciar espacio.
-      {/if}
+      BTRFS puede mezclar capacidades sin desperdiciar espacio.
     </div>
 
     {#if eligibleDisks.length === 0}
@@ -536,19 +448,13 @@
           <span class="lp-cap-label">Capacidad útil estimada:</span>
           <span class="lp-cap-val">{fmtBytes(usableCapacity)}</span>
         </div>
-        {#if hasMixedSizes && fsType === 'zfs'}
-          <div class="lp-warn">
-            ⚠ Los discos tienen tamaños distintos. ZFS usará el del disco
-            menor y desaprovechará el resto.
-          </div>
-        {/if}
       </div>
     {/if}
   {/if}
 
   <!-- PASO 3 · Nombre -->
   {#if step === 3}
-    <div class="pretitle">PASO 3 · NOMBRE</div>
+    <div class="pretitle">PASO 2 · NOMBRE</div>
     <div class="h">Dale un nombre al pool</div>
     <div class="desc">
       Este nombre se usará en la ruta de montaje (<span class="mono">/nimos/pools/{poolName || 'nombre'}</span>)
@@ -606,7 +512,7 @@
 
   <!-- PASO 4 · Confirmación -->
   {#if step === 4}
-    <div class="pretitle">PASO 4 · CONFIRMACIÓN</div>
+    <div class="pretitle">PASO 3 · CONFIRMACIÓN</div>
     <div class="h">Última comprobación</div>
     <div class="desc">
       Vas a crear el pool <b class="mono">{poolName}</b> con
@@ -616,9 +522,6 @@
     <ul class="bullets">
       <li>Los datos existentes en los discos se <b>borrarán</b></li>
       <li>El pool se montará en <span class="mono">/nimos/pools/{poolName}</span></li>
-      {#if fsType === 'zfs'}
-        <li>El zpool interno se llamará <span class="mono">nimos-{poolName}</span></li>
-      {/if}
       <li>Podrás gestionar shares, snapshots y apps desde NimOS</li>
     </ul>
 
