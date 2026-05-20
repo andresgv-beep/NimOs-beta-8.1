@@ -22,6 +22,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -190,6 +191,14 @@ func createBtrfsSubvolIfMissing(folderPath string, quotaBytes int64) error {
 	if existing.Stdout != "" && existing.Code == 0 {
 		// Ya existe → respetar
 		return nil
+	}
+
+	// Garantizar que el directorio padre existe (ej: /nimos/pools/X/shares).
+	// btrfs subvolume create falla con "Could not open: No such file or directory"
+	// si el padre no existe. mkdir -p es idempotente.
+	parentDir := filepath.Dir(folderPath)
+	if err := os.MkdirAll(parentDir, 0755); err != nil {
+		return fmt.Errorf("create parent dir %s: %w", parentDir, err)
 	}
 
 	// Crear subvolumen (auto-mounted al estar dentro del filesystem BTRFS)
