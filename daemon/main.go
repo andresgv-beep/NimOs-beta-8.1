@@ -700,11 +700,6 @@ func main() {
 	// loggean pero no abortan el daemon.
 	runStorageStartupTasks(context.Background())
 
-	// Fase 7 Bloque 3 · Migración one-shot storage.json → SQLite.
-	// Se ejecuta SOLO si SQLite está vacío y JSON tiene pools.
-	// Idempotente: en arranques sucesivos no hace nada.
-	migrateStorageJSONOnce()
-
 	// Beta 8.1 · Apps bootstrap: escanea apps native ya instaladas en el
 	// sistema (samba, kvm, transmission...) y las registra en native_apps
 	// con auto_detected=1. Las apps desinstaladas manualmente se purgan.
