@@ -690,6 +690,12 @@ func (s *StorageService) CreatePool(ctx context.Context, req CreatePoolRequest) 
 // DestroyPool destruye un pool BTRFS y libera sus devices.
 // Asíncrona conceptualmente; ejecuta inline en Beta 8.
 func (s *StorageService) DestroyPool(ctx context.Context, poolID string) (*Operation, error) {
+	// HARD-3 fix (completar): lock global. Ver comentario en CreatePool.
+	// Antes faltaba en DestroyPool del Service (sí lo tenía destroyPoolBtrfs
+	// del path legacy, pero no esta función). Cierre auditoría 20/05/2026.
+	storageMu.Lock()
+	defer storageMu.Unlock()
+
 	pool, err := s.GetPool(ctx, poolID)
 	if err != nil {
 		return nil, err

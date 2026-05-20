@@ -172,12 +172,6 @@ type DiagnosticInput struct {
 	VdevType    string
 	ConfigDisks []string // raw disk paths from config, e.g. "/dev/sda"
 	MountPoint  string
-
-	// Campos legacy. Mantienen el struct retrocompatible con callers que
-	// los rellenan con "" — Beta 9 borrará estos junto con el resto del
-	// código que aún los referencia.
-	ZpoolName   string
-	ZpoolHealth string
 }
 
 func CollectDiagnostics(input DiagnosticInput) []Diagnostic {

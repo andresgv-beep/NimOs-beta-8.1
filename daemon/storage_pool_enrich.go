@@ -71,9 +71,7 @@ func enrichPool(p *Pool, primaryPool string) {
 		PoolType:    "btrfs",
 		VdevType:    vdevType,
 		ConfigDisks: configDisks,
-		ZpoolName:   "",
 		MountPoint:  p.MountPoint,
-		ZpoolHealth: "",
 	})
 	p.Health = &health
 }

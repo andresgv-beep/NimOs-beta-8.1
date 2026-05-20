@@ -6,6 +6,61 @@
 //   3. La implementación real (storage_executor_real.go) wrappea el
 //      código BTRFS existente de Beta 7 sin reescribirlo.
 //
+// ═══════════════════════════════════════════════════════════════════════
+// SCOPE CONOCIDO (HARD-2 — auditoría 20/05/2026)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// BtrfsExecutor cubre el camino "service-mediated" del módulo:
+//   ✓ CreateFilesystem
+//   ✓ MountFilesystem / UnmountFilesystem
+//   ✓ AddDevice / RemoveDevice / ReplaceDevice
+//   ✓ ConvertProfile
+//   ✓ ReadIdentity / SetCompression
+//
+// PERO operaciones BTRFS adicionales usan `runCmd` global directamente,
+// SIN pasar por este interface:
+//
+//   · storage_btrfs_features.go  → scrub start/cancel, balance status
+//   · storage_btrfs_import.go    → import desde disco existente
+//   · storage_btrfs_pool.go      → destroyPoolBtrfs, exportPoolBtrfs
+//   · storage_wipe.go            → wipe* (define su propio runCmd local)
+//   · storage_scanner.go         → exec.Command directo para scan
+//   · storage_common.go          → helpers shell
+//
+// CONSECUENCIA OPERATIVA:
+//   · Tests de Service con MockBtrfsExecutor cubren bien CreatePool y similares
+//   · Pero NO cubren destroyPoolBtrfs ni exportPoolBtrfs en unit tests
+//     (necesitan integration tests con BTRFS real o sudo)
+//   · Coverage de storage_btrfs_pool.go, storage_btrfs_features.go,
+//     storage_wipe.go es 0-27% por esta razón (no por código sin tests
+//     sino por imposibilidad de mockear el shell).
+//
+// MITIGACIONES ACTUALES:
+//   · storageMu (sync.Mutex global definido en storage_wipe.go) protege
+//     concurrencia entre destroyPool/exportPool/wipe Y CreatePool/etc.
+//   · preflightChecks consulta globalObserver antes de operaciones
+//     destructivas → defensa en profundidad.
+//   · Journal en storage_wipe.go → recovery post-crash.
+//
+// ROADMAP:
+//   Beta 8.2 o Beta 9 — extender BtrfsExecutor a:
+//     · ScrubStart / ScrubCancel / ScrubStatus
+//     · ImportFromDisk
+//     · WipeDevice / WipeBackend (con journal lifecycle)
+//     · ScanDevices (con FilesystemProbe abstraction)
+//   Esto subiría el coverage del módulo del 70-90% actual (capa lógica)
+//   al 95%+ y permitiría tests unitarios para escenarios de error real
+//   (DB lock, shell timeout, FS corrupto, etc.).
+//
+// Por qué NO se hizo en Beta 8.1:
+//   El refactor a Executor cubrió el "happy path" del Service. Cubrir
+//   destroy/export/wipe requiere refactorizar ~600 LOC + reescribir
+//   tests existentes. Estimado: 1-2 semanas dedicadas. No urgente
+//   porque (a) la concurrencia ya está cubierta por storageMu, y
+//   (b) las operaciones destructivas tienen journal + preflight.
+//
+// ═══════════════════════════════════════════════════════════════════════
+//
 // see docs/storage_api.md §6 (BtrfsExecutor)
 // see docs/storage_invariants.md#4 (No borrar a ciegas)
 
