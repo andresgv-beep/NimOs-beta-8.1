@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 )
 
@@ -428,9 +429,46 @@ func TestStorageServiceDestroyPoolExecutorFails(t *testing.T) {
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper común para verificar el código de error
-// ─────────────────────────────────────────────────────────────────────────────
+// TestCreatePool_Concurrent: N goroutines llaman a CreatePool sobre los
+// mismos devices. Verifica que no hay panic/deadlock y que la DB queda
+// consistente (exactamente 1 pool). Ejecutar con `-race` activa también
+// el detector de data races sobre el flujo concurrente.
+func TestCreatePool_Concurrent(t *testing.T) {
+	service, _, cleanup := setupTestService(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	deviceIDs := registerTestDevices(t, service, 2)
+
+	const N = 5
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(N)
+
+	for i := 0; i < N; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			_, _ = service.CreatePool(ctx, CreatePoolRequest{
+				Name:      fmt.Sprintf("p-%d", idx),
+				Profile:   ProfileRaid1,
+				DeviceIDs: deviceIDs,
+			})
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	pools, err := service.ListPools(ctx)
+	if err != nil {
+		t.Fatalf("ListPools: %v", err)
+	}
+	if len(pools) != 1 {
+		t.Fatalf("estado final: esperaba 1 pool, hay %d", len(pools))
+	}
+}
+
+
 
 func assertErrorCode(t *testing.T, err error, expectedCode string) {
 	t.Helper()
