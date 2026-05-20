@@ -99,20 +99,34 @@ func destroyPoolBtrfs(poolName string) map[string]interface{} {
 			return err
 		}
 		// Si era el primario, transferir a otro pool restante o limpiar
+		// CRIT-2 fix: propagamos errores DB para que la tx haga rollback
+		// si algo falla. Antes se ignoraban con `_`, lo que podía dejar
+		// `primary_pool` apuntando a un pool inexistente tras un commit
+		// "exitoso" pero parcial.
 		var currentPrimaryID string
-		_ = tx.QueryRowContext(ctx,
-			`SELECT value FROM storage_metadata WHERE key = 'primary_pool'`).Scan(&currentPrimaryID)
+		if err := tx.QueryRowContext(ctx,
+			`SELECT value FROM storage_metadata WHERE key = 'primary_pool'`).Scan(&currentPrimaryID); err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("read primary_pool: %w", err)
+		}
 		if currentPrimaryID == targetPool.ID {
 			// Buscar otro pool managed
 			var newPrimaryID string
-			_ = tx.QueryRowContext(ctx,
-				`SELECT id FROM storage_pools WHERE control_state = 'managed' LIMIT 1`).Scan(&newPrimaryID)
+			if err := tx.QueryRowContext(ctx,
+				`SELECT id FROM storage_pools WHERE control_state = 'managed' LIMIT 1`).Scan(&newPrimaryID); err != nil && err != sql.ErrNoRows {
+				return fmt.Errorf("find new primary: %w", err)
+			}
 			if newPrimaryID != "" {
-				_, _ = tx.ExecContext(ctx,
-					`INSERT OR REPLACE INTO storage_metadata (key, value) VALUES ('primary_pool', ?)`, newPrimaryID)
+				if _, err := tx.ExecContext(ctx,
+					`INSERT OR REPLACE INTO storage_metadata (key, value) VALUES ('primary_pool', ?)`, newPrimaryID); err != nil {
+					return fmt.Errorf("transfer primary_pool: %w", err)
+				}
 			} else {
-				_, _ = tx.ExecContext(ctx, `DELETE FROM storage_metadata WHERE key = 'primary_pool'`)
-				_, _ = tx.ExecContext(ctx, `DELETE FROM storage_metadata WHERE key = 'configured_at'`)
+				if _, err := tx.ExecContext(ctx, `DELETE FROM storage_metadata WHERE key = 'primary_pool'`); err != nil {
+					return fmt.Errorf("delete primary_pool: %w", err)
+				}
+				if _, err := tx.ExecContext(ctx, `DELETE FROM storage_metadata WHERE key = 'configured_at'`); err != nil {
+					return fmt.Errorf("delete configured_at: %w", err)
+				}
 			}
 		}
 		return nil
@@ -202,20 +216,31 @@ func exportPoolBtrfs(poolName string) map[string]interface{} {
 		if err := storageService.repo.DeletePool(ctx, tx, targetPool.ID); err != nil {
 			return err
 		}
-		// Si era primario, transferir o limpiar
+		// Si era primario, transferir o limpiar.
+		// CRIT-2 fix: propagamos errores DB para rollback atómico.
 		var currentPrimaryID string
-		_ = tx.QueryRowContext(ctx,
-			`SELECT value FROM storage_metadata WHERE key = 'primary_pool'`).Scan(&currentPrimaryID)
+		if err := tx.QueryRowContext(ctx,
+			`SELECT value FROM storage_metadata WHERE key = 'primary_pool'`).Scan(&currentPrimaryID); err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("read primary_pool: %w", err)
+		}
 		if currentPrimaryID == targetPool.ID {
 			var newPrimaryID string
-			_ = tx.QueryRowContext(ctx,
-				`SELECT id FROM storage_pools WHERE control_state = 'managed' LIMIT 1`).Scan(&newPrimaryID)
+			if err := tx.QueryRowContext(ctx,
+				`SELECT id FROM storage_pools WHERE control_state = 'managed' LIMIT 1`).Scan(&newPrimaryID); err != nil && err != sql.ErrNoRows {
+				return fmt.Errorf("find new primary: %w", err)
+			}
 			if newPrimaryID != "" {
-				_, _ = tx.ExecContext(ctx,
-					`INSERT OR REPLACE INTO storage_metadata (key, value) VALUES ('primary_pool', ?)`, newPrimaryID)
+				if _, err := tx.ExecContext(ctx,
+					`INSERT OR REPLACE INTO storage_metadata (key, value) VALUES ('primary_pool', ?)`, newPrimaryID); err != nil {
+					return fmt.Errorf("transfer primary_pool: %w", err)
+				}
 			} else {
-				_, _ = tx.ExecContext(ctx, `DELETE FROM storage_metadata WHERE key = 'primary_pool'`)
-				_, _ = tx.ExecContext(ctx, `DELETE FROM storage_metadata WHERE key = 'configured_at'`)
+				if _, err := tx.ExecContext(ctx, `DELETE FROM storage_metadata WHERE key = 'primary_pool'`); err != nil {
+					return fmt.Errorf("delete primary_pool: %w", err)
+				}
+				if _, err := tx.ExecContext(ctx, `DELETE FROM storage_metadata WHERE key = 'configured_at'`); err != nil {
+					return fmt.Errorf("delete configured_at: %w", err)
+				}
 			}
 		}
 		return nil

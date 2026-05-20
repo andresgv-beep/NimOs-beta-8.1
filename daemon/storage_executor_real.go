@@ -83,7 +83,14 @@ func (e *RealBtrfsExecutor) CreateFilesystem(ctx context.Context, req CreateFile
 	}
 
 	// Construir args de mkfs.btrfs
-	args := []string{"-f", "-L", req.Label}
+	// HARD-5 fix: -f (force) solo si WipeFirst=true. Sin -f, mkfs falla
+	// limpio si encuentra un filesystem existente, lo cual actúa como
+	// last line of defense del kernel contra races entre preflight check
+	// y el mkfs real.
+	args := []string{"-L", req.Label}
+	if req.WipeFirst {
+		args = append([]string{"-f"}, args...)
+	}
 	switch req.Profile {
 	case ProfileSingle:
 		// single: si hay >1 disco, metadata raid1 igual (BTRFS default sano)

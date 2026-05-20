@@ -24,7 +24,19 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"regexp"
 )
+
+// validPoolName valida nombres de pool en Beta 8.1.
+// Reglas:
+//   - 2-32 caracteres
+//   - Solo letras minúsculas, dígitos, guion (-) y guion-bajo (_)
+//   - Debe empezar con letra (no número ni símbolo)
+//
+// Razón (HARD-1 fix): el nombre se usa como BTRFS label, mountpoint,
+// SMB share name, fstab entry. Limitarlo evita problemas con caracteres
+// especiales en cualquiera de esos contextos.
+var validPoolName = regexp.MustCompile(`^[a-z][a-z0-9_-]{1,31}$`)
 
 // ═════════════════════════════════════════════════════════════════════════════
 // StorageService
@@ -438,6 +450,13 @@ func (req *CreatePoolRequest) Validate(ctx context.Context, repo *StorageRepo) e
 	if req.Name == "" {
 		return errFromCode(ErrCodeBadRequest, "pool name is required")
 	}
+	// HARD-1 fix: validar charset + length del nombre del pool.
+	// Si esto falla, el nombre podría romper BTRFS label, fstab,
+	// SMB share name, o cualquier integración shell aguas abajo.
+	if !validPoolName.MatchString(req.Name) {
+		return errFromCode(ErrCodeBadRequest,
+			"pool name must be 2-32 chars, lowercase letters/digits/-/_, starting with a letter")
+	}
 	if !req.Profile.IsValid() {
 		return errFromCode(ErrCodeProfileInvalid,
 			fmt.Sprintf("invalid profile %q", req.Profile))
@@ -502,6 +521,15 @@ func (req *CreatePoolRequest) Validate(ctx context.Context, repo *StorageRepo) e
 //   5. Marcar Operation completed (o failed con rollback)
 //   6. Devolver la Operation
 func (s *StorageService) CreatePool(ctx context.Context, req CreatePoolRequest) (*Operation, error) {
+	// HARD-3 fix: lock global de mutación storage. Garantiza que
+	// CreatePool no haga race con otro CreatePool/Destroy/Export
+	// que toque los mismos discos. Sin esto, dos creates concurrentes
+	// con `mkfs.btrfs -f` (cuando WipeFirst=true) podrían sobreescribirse.
+	// Es el mismo mutex que ya usan destroy/export/wipe; CreatePool
+	// debe estar bajo la misma disciplina.
+	storageMu.Lock()
+	defer storageMu.Unlock()
+
 	// ─── Validación + normalización (Disks → DeviceIDs si aplica) ──────
 	// req.Validate() es el contrato:
 	//   · Name no vacío
@@ -863,6 +891,10 @@ type AddDeviceRequest struct {
 //   5. Persistir la asignación en DB
 //   6. Marcar Operation completed (o failed con rollback)
 func (s *StorageService) AddDevice(ctx context.Context, req AddDeviceRequest) (*Operation, error) {
+	// HARD-3 fix: lock global. Ver comentario en CreatePool.
+	storageMu.Lock()
+	defer storageMu.Unlock()
+
 	// ─── Validaciones ──────────────────────────────────────────────────
 	pool, err := s.GetPool(ctx, req.PoolID)
 	if err != nil {
@@ -959,6 +991,10 @@ type RemoveDeviceRequest struct {
 //   - Tras quitar este device, el pool sigue teniendo >= MinDisks()
 //     para su profile (no degradar el profile)
 func (s *StorageService) RemoveDevice(ctx context.Context, req RemoveDeviceRequest) (*Operation, error) {
+	// HARD-3 fix: lock global. Ver comentario en CreatePool.
+	storageMu.Lock()
+	defer storageMu.Unlock()
+
 	pool, err := s.GetPool(ctx, req.PoolID)
 	if err != nil {
 		return nil, err
@@ -1046,6 +1082,10 @@ type ReplaceDeviceRequest struct {
 // IMPORTANTE: el old device se hace wipefs SEGURO (no a ciegas).
 // see docs/storage_invariants.md#4.2
 func (s *StorageService) ReplaceDevice(ctx context.Context, req ReplaceDeviceRequest) (*Operation, error) {
+	// HARD-3 fix: lock global. Ver comentario en CreatePool.
+	storageMu.Lock()
+	defer storageMu.Unlock()
+
 	pool, err := s.GetPool(ctx, req.PoolID)
 	if err != nil {
 		return nil, err
@@ -1153,6 +1193,10 @@ type ConvertProfileRequest struct {
 //   - El profile destino es válido y compatible con número de discos actual
 //   - El profile destino es DIFERENTE al actual
 func (s *StorageService) ConvertProfile(ctx context.Context, req ConvertProfileRequest) (*Operation, error) {
+	// HARD-3 fix: lock global. Ver comentario en CreatePool.
+	storageMu.Lock()
+	defer storageMu.Unlock()
+
 	pool, err := s.GetPool(ctx, req.PoolID)
 	if err != nil {
 		return nil, err

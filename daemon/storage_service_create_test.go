@@ -148,7 +148,7 @@ func TestStorageServiceCreatePoolInvalidProfile(t *testing.T) {
 	defer cleanup()
 
 	_, err := service.CreatePool(context.Background(), CreatePoolRequest{
-		Name: "x", Profile: "raid5", DeviceIDs: []string{"a"},
+		Name: "validname", Profile: "raid5", DeviceIDs: []string{"a"},
 	})
 	if err == nil {
 		t.Fatal("expected error for invalid profile")
@@ -161,7 +161,7 @@ func TestStorageServiceCreatePoolInsufficientDisks(t *testing.T) {
 	defer cleanup()
 
 	_, err := service.CreatePool(context.Background(), CreatePoolRequest{
-		Name: "x", Profile: ProfileRaid10, DeviceIDs: []string{"a", "b"}, // raid10 necesita 4
+		Name: "validname", Profile: ProfileRaid10, DeviceIDs: []string{"a", "b"}, // raid10 necesita 4
 	})
 	if err == nil {
 		t.Fatal("expected error for insufficient disks")
