@@ -700,6 +700,28 @@ func main() {
 	// loggean pero no abortan el daemon.
 	runStorageStartupTasks(context.Background())
 
+	// Beta 8.1 v4 · Network module bootstrap.
+	//
+	// Orden estricto:
+	//   1. nimos_core_schema  (secrets + breakers + capabilities globales)
+	//   2. network_schema     (ports/ddns/certs/observed/operations/events)
+	//   3. initNetworkModule  (singletons NetworkRepo + EventEmitter + Scheduler)
+	//
+	// Si cualquier paso falla, abortamos: el módulo network no puede
+	// inicializarse parcialmente sin dejar la DB en estado inconsistente.
+	if err := initNimosCoreSchema(db); err != nil {
+		logMsg("ERROR: cannot initialize nimos core schema: %v", err)
+		os.Exit(1)
+	}
+	if err := initNetworkSchema(db); err != nil {
+		logMsg("ERROR: cannot initialize network schema: %v", err)
+		os.Exit(1)
+	}
+	if err := initNetworkModule(); err != nil {
+		logMsg("ERROR: cannot initialize network module: %v", err)
+		os.Exit(1)
+	}
+
 	// Beta 8.1 · Apps bootstrap: escanea apps native ya instaladas en el
 	// sistema (samba, kvm, transmission...) y las registra en native_apps
 	// con auto_detected=1. Las apps desinstaladas manualmente se purgan.
