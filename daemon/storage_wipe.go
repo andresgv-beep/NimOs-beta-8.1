@@ -148,7 +148,7 @@ type ErrDiskHasFilesystem struct {
 	PoolName  string `json:"pool_name,omitempty"`
 
 	// Estado computado por el observer (healthy/incomplete/degraded/partial/unknown)
-	ObservationHealth string `json:"observation_health,omitempty"`
+	ObservationHealth HealthStatus `json:"observation_health,omitempty"`
 
 	// Capacidad y uso reales (si están disponibles)
 	SizeBytes int64 `json:"size_bytes,omitempty"`

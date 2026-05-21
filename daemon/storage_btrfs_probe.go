@@ -349,7 +349,7 @@ func resolveByIDPath(devPath string) string {
 
 // computeObservationHealth determina el ObservationHealth basado en el
 // estado del FS. Función pura (testeable sin mocks).
-func computeObservationHealth(fs *ObservedBtrfs) string {
+func computeObservationHealth(fs *ObservedBtrfs) HealthStatus {
 	if !fs.CanProbe {
 		return HealthUnknown
 	}

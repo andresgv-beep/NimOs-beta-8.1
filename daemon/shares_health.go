@@ -32,9 +32,9 @@ package main
 // ShareHealth describe la salud de un share en un momento dado.
 // Es un VALOR calculado en runtime, NO se persiste en SQLite.
 type ShareHealth struct {
-	Status string `json:"status"` // "healthy" | "degraded" | "partial" | "unknown"
-	Reason string `json:"reason"` // "over_quota" | "near_quota" | "orphan_pool" | "not_mounted" | ""
-	Detail string `json:"detail"` // descripción legible (UI-friendly)
+	Status HealthStatus `json:"status"` // "healthy" | "degraded" | "partial" | "unknown"
+	Reason string       `json:"reason"` // "over_quota" | "near_quota" | "orphan_pool" | "not_mounted" | ""
+	Detail string       `json:"detail"` // descripción legible (UI-friendly)
 
 	// Campos opcionales para enriquecer la UI:
 	UsagePercent int `json:"usagePercent,omitempty"` // 0-100+ (puede pasarse de 100 si over)

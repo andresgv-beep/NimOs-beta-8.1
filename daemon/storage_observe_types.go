@@ -76,7 +76,7 @@ type ObservedBtrfs struct {
 	ManagedPoolName string `json:"managed_pool_name,omitempty"`
 
 	// Estado computado (uno de: healthy/incomplete/degraded/partial/unknown)
-	ObservationHealth string `json:"observation_health"`
+	ObservationHealth HealthStatus `json:"observation_health"`
 
 	// Diagnóstico
 	CanProbe bool      `json:"can_probe"` // true si todos los comandos respondieron
@@ -121,14 +121,9 @@ type Divergence struct {
 	Hint   string `json:"hint,omitempty"` // sugerencia de acción
 }
 
-// ObservationHealth values (constantes para evitar typos)
-const (
-	HealthHealthy    = "healthy"
-	HealthIncomplete = "incomplete"
-	HealthDegraded   = "degraded"
-	HealthPartial    = "partial"
-	HealthUnknown    = "unknown"
-)
+// ObservationHealth values: las constantes HealthHealthy, HealthDegraded,
+// HealthFailed, HealthPartial, HealthIncomplete, HealthUnknown, HealthStale
+// son globales y viven en nimos_health.go (tipo HealthStatus).
 
 // Divergence severities
 const (

@@ -149,7 +149,7 @@ func TestObserver_RunOnce_EmptyDB(t *testing.T) {
 	if snap == nil {
 		t.Fatal("snapshot is nil after RunOnce")
 	}
-	if snap.OverallHealth != NetHealthHealthy {
+	if snap.OverallHealth != HealthHealthy {
 		t.Errorf("health = %s, want healthy", snap.OverallHealth)
 	}
 	if snap.DivergenceCount != 0 {
@@ -251,7 +251,7 @@ func TestObserver_PortDivergence_NotListening(t *testing.T) {
 	if d.PortID != "http" || d.Reason != "not_listening" {
 		t.Errorf("divergence = %+v", d)
 	}
-	if snap.OverallHealth != NetHealthFailed {
+	if snap.OverallHealth != HealthFailed {
 		t.Errorf("health = %s, want critical (not_listening)", snap.OverallHealth)
 	}
 
@@ -290,7 +290,7 @@ func TestObserver_PortDivergence_ConfigMismatch(t *testing.T) {
 		t.Errorf("reason = %q, want config_mismatch", d.Reason)
 	}
 	// config_mismatch ≠ critical (la web sí está respondiendo en otro puerto).
-	if snap.OverallHealth != NetHealthDegraded {
+	if snap.OverallHealth != HealthDegraded {
 		t.Errorf("health = %s, want degraded", snap.OverallHealth)
 	}
 }
@@ -392,7 +392,7 @@ func TestObserver_CertDivergence_MissingFullchain(t *testing.T) {
 		t.Errorf("reason = %q", snap.CertDivergences[0].Reason)
 	}
 	// Missing pero NO expired → degraded (no critical).
-	if snap.OverallHealth != NetHealthDegraded {
+	if snap.OverallHealth != HealthDegraded {
 		t.Errorf("health = %s, want degraded", snap.OverallHealth)
 	}
 }
@@ -422,7 +422,7 @@ func TestObserver_CertDivergence_Expired(t *testing.T) {
 	if len(snap.CertDivergences) != 1 || snap.CertDivergences[0].Reason != "expired" {
 		t.Errorf("divergences = %+v", snap.CertDivergences)
 	}
-	if snap.OverallHealth != NetHealthFailed {
+	if snap.OverallHealth != HealthFailed {
 		t.Errorf("health = %s, want critical (expired)", snap.OverallHealth)
 	}
 }
@@ -485,7 +485,7 @@ func TestObserver_CertExpiringNotDivergence(t *testing.T) {
 		t.Errorf("CertsExpiring = %d, want 1", snap.CertsExpiring)
 	}
 	// Sin divergence pero con expiring → degraded.
-	if snap.OverallHealth != NetHealthDegraded {
+	if snap.OverallHealth != HealthDegraded {
 		t.Errorf("health = %s, want degraded (only expiring)", snap.OverallHealth)
 	}
 }

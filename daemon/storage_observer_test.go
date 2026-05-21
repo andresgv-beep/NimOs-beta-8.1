@@ -268,7 +268,7 @@ func TestComputeObservationHealth(t *testing.T) {
 	cases := []struct {
 		name string
 		fs   ObservedBtrfs
-		want string
+		want HealthStatus
 	}{
 		{
 			"healthy",

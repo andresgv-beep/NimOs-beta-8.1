@@ -39,25 +39,10 @@ import (
 // Tipos públicos
 // ─────────────────────────────────────────────────────────────────────────────
 
-// HealthStatus es el estado global agregado del módulo network.
-// NOTA: storage tiene constantes string "healthy"/"degraded" con
-// nombres similares (NetHealthHealthy, NetHealthDegraded). Aquí usamos un
-// tipo HealthStatus específico con valores Net* para evitar colisión
-// y mantener type-safety en el módulo network.
-//
-// Los valores string siguen la convención del schema (network_observed
-// CHECK), que coincide con la del módulo storage:
-//
-//   - "healthy":  cero divergencias y cero certs próximos a expirar.
-//   - "degraded": hay drift O hay certs <30d sin renovar todavía.
-//   - "failed":   certs expirados, puertos críticos no listening, etc.
-type HealthStatus string
-
-const (
-	NetHealthHealthy  HealthStatus = "healthy"
-	NetHealthDegraded HealthStatus = "degraded"
-	NetHealthFailed   HealthStatus = "failed"
-)
+// Health del módulo network: usamos las constantes globales definidas
+// en nimos_health.go (HealthHealthy, HealthDegraded, HealthFailed).
+// El schema CHECK de network_observed acepta estos valores + 'partial',
+// 'unknown', 'stale'.
 
 // PortDivergence reporta una diferencia entre un port en DB y el estado real.
 //
@@ -487,18 +472,18 @@ func countExpiringCerts(certs []*NetworkCert, probed []ProbedCert, now time.Time
 func computeHealth(portDivs []PortDivergence, certDivs []CertDivergence, expiring int) HealthStatus {
 	for _, d := range portDivs {
 		if d.Reason == "not_listening" {
-			return NetHealthFailed
+			return HealthFailed
 		}
 	}
 	for _, d := range certDivs {
 		if d.Reason == "expired" {
-			return NetHealthFailed
+			return HealthFailed
 		}
 	}
 	if len(portDivs) > 0 || len(certDivs) > 0 || expiring > 0 {
-		return NetHealthDegraded
+		return HealthDegraded
 	}
-	return NetHealthHealthy
+	return HealthHealthy
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -620,7 +605,7 @@ func (o *NetworkObserver) emitDivergenceEvents(ctx context.Context, portDivs []P
 
 	// Resumen de salud: solo si cambió o si es crítica (info en healthy
 	// es ruido — dejamos que la dedupe lo absorba con la ventana de 5min).
-	if health == NetHealthFailed {
+	if health == HealthFailed {
 		_, err := o.emitter.Emit(ctx, EventInput{
 			Category: CategoryObserver,
 			Event:    "overall_health_critical",
