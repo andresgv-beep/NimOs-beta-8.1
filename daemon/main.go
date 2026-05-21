@@ -722,6 +722,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Arrancar el scheduler de reconcilers del módulo network. El
+	// contexto es Background — el scheduler vivirá lo que el proceso.
+	// Si el daemon muere, las goroutines terminan con el proceso.
+	//
+	// El observer se ejecutará cada 60s (DefaultObserverConfig) detectando
+	// drift de ports/certs. F-004+ añadirán más reconcilers (DDNS, certs).
+	if err := networkReconcilers.Start(context.Background()); err != nil {
+		logMsg("ERROR: cannot start network reconcilers: %v", err)
+		os.Exit(1)
+	}
+
 	// Beta 8.1 · Apps bootstrap: escanea apps native ya instaladas en el
 	// sistema (samba, kvm, transmission...) y las registra en native_apps
 	// con auto_detected=1. Las apps desinstaladas manualmente se purgan.
