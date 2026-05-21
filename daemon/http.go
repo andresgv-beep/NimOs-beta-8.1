@@ -388,6 +388,12 @@ func startHTTPServer() {
 	// ── Network + VMs routes ──
 	registerNetworkRoutes(mux)
 
+	// ── Network module v4 (Beta 8.1) ──
+	// Endpoints bajo /api/v4/network/* separados del API legacy para
+	// permitir migración progresiva. El módulo v4 vive en network_*.go.
+	mux.HandleFunc("/api/v4/network/ports", handleNetworkPortsRoutes)
+	mux.HandleFunc("/api/v4/network/ports/", handleNetworkPortsRoutes)
+
 	// ── App Access management (admin only) ──
 	mux.HandleFunc("/api/app-access", handleAppAccessRoutes)
 	mux.HandleFunc("/api/app-access/", handleAppAccessRoutes)
