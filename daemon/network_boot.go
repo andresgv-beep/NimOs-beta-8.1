@@ -34,6 +34,7 @@ var (
 	networkRepo            *NetworkRepo
 	networkEventEmitter    *EventEmitter
 	networkSecretsStore    *SecretsStore
+	networkCapabilities    *CapabilitiesStore
 	networkProbe           NetworkProbe
 	networkObserver        *NetworkObserver
 	networkDDNSReconciler  *DDNSReconciler
@@ -62,6 +63,17 @@ func initNetworkModule() error {
 		return fmt.Errorf("initNetworkModule: build secrets store: %w", err)
 	}
 	networkSecretsStore = store
+
+	// CapabilitiesStore — detección on-demand de binarios del sistema
+	// (certbot, openssl, dig, upnpc, nft/iptables...). El detector real
+	// ejecuta LookPath y subprocesos, así que NO refrescamos en boot
+	// para no añadir latencia al arranque. El primer GET refresca si
+	// nunca se detectó.
+	caps, err := NewCapabilitiesStore(db, clock, RealDetect)
+	if err != nil {
+		return fmt.Errorf("initNetworkModule: build capabilities store: %w", err)
+	}
+	networkCapabilities = caps
 
 	// Probe real. Las funciones HTTPListener/HTTPSListener se inyectarán
 	// cuando F-003 wirees el HTTP server — hasta entonces, el probe
