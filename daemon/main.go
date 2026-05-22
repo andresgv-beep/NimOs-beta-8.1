@@ -733,6 +733,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Arrancar el retention runner (F-008): goroutine que ejecuta las
+	// purgas de retention 1 vez al día (03:00 UTC). NO bloquea boot —
+	// la primera pasada se ejecuta en el próximo 03:00 UTC. Si quieres
+	// disparar una pasada manual, llama networkRetentionRunner.RunOnce(ctx).
+	networkRetentionRunner.Start(context.Background())
+
 	// Beta 8.1 · Apps bootstrap: escanea apps native ya instaladas en el
 	// sistema (samba, kvm, transmission...) y las registra en native_apps
 	// con auto_detected=1. Las apps desinstaladas manualmente se purgan.
