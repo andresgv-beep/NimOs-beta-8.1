@@ -393,6 +393,8 @@ func startHTTPServer() {
 	// permitir migración progresiva. El módulo v4 vive en network_*.go.
 	mux.HandleFunc("/api/v4/network/ports", handleNetworkPortsRoutes)
 	mux.HandleFunc("/api/v4/network/ports/", handleNetworkPortsRoutes)
+	mux.HandleFunc("/api/v4/network/ddns", handleNetworkDdnsRoutes)
+	mux.HandleFunc("/api/v4/network/ddns/", handleNetworkDdnsRoutes)
 
 	// ── App Access management (admin only) ──
 	mux.HandleFunc("/api/app-access", handleAppAccessRoutes)
