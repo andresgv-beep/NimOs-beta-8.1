@@ -397,6 +397,9 @@ func startHTTPServer() {
 	mux.HandleFunc("/api/v4/network/ddns/", handleNetworkDdnsRoutes)
 	mux.HandleFunc("/api/v4/network/certs", handleNetworkCertsRoutes)
 	mux.HandleFunc("/api/v4/network/certs/", handleNetworkCertsRoutes)
+	mux.HandleFunc("/api/v4/network/capabilities", handleNetworkCapabilitiesRoutes)
+	mux.HandleFunc("/api/v4/network/capabilities/refresh", handleNetworkCapabilitiesRoutes)
+	mux.HandleFunc("/api/v4/network/diagnose/cert", handleNetworkDiagnoseRoutes)
 
 	// ── App Access management (admin only) ──
 	mux.HandleFunc("/api/app-access", handleAppAccessRoutes)
