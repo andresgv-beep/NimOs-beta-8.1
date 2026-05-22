@@ -400,6 +400,7 @@ func startHTTPServer() {
 	mux.HandleFunc("/api/v4/network/capabilities", handleNetworkCapabilitiesRoutes)
 	mux.HandleFunc("/api/v4/network/capabilities/refresh", handleNetworkCapabilitiesRoutes)
 	mux.HandleFunc("/api/v4/network/diagnose/cert", handleNetworkDiagnoseRoutes)
+	mux.HandleFunc("/api/v4/network/router", handleNetworkRouterRoutes)
 
 	// ── App Access management (admin only) ──
 	mux.HandleFunc("/api/app-access", handleAppAccessRoutes)

@@ -31,15 +31,17 @@ import (
 
 // Singletons globales del módulo network.
 var (
-	networkRepo            *NetworkRepo
-	networkEventEmitter    *EventEmitter
-	networkSecretsStore    *SecretsStore
-	networkCapabilities    *CapabilitiesStore
-	networkProbe           NetworkProbe
-	networkObserver        *NetworkObserver
-	networkDDNSReconciler  *DDNSReconciler
-	networkCertReconciler  *CertReconciler
-	networkReconcilers     *ReconcilerScheduler
+	networkRepo             *NetworkRepo
+	networkEventEmitter     *EventEmitter
+	networkSecretsStore     *SecretsStore
+	networkCapabilities     *CapabilitiesStore
+	networkProbe            NetworkProbe
+	networkObserver         *NetworkObserver
+	networkDDNSReconciler   *DDNSReconciler
+	networkCertReconciler   *CertReconciler
+	networkRouterProvider   RouterProvider
+	networkRouterReconciler *RouterReconciler
+	networkReconcilers      *ReconcilerScheduler
 )
 
 // initNetworkModule inicializa el módulo network v4.
@@ -191,6 +193,28 @@ func initNetworkModule() error {
 		return fmt.Errorf("initNetworkModule: register cert reconciler: %w", err)
 	}
 
+	// Router provider (UPnP) y reconciler. Best-effort: si upnpc no
+	// está instalado o no hay router UPnP en la red, el reconciler
+	// emite warn y sigue funcionando.
+	upnpBreaker := NewCircuitBreaker(DefaultBreakerConfig("upnp.router"))
+	upnpProvider, err := NewUPnPRouterProvider(UPnPRouterProviderConfig{
+		Breaker: upnpBreaker,
+	})
+	if err != nil {
+		return fmt.Errorf("initNetworkModule: build upnp provider: %w", err)
+	}
+	networkRouterProvider = upnpProvider
+
+	routerRec, err := NewRouterReconciler(networkRepo, networkEventEmitter,
+		clock, networkRouterProvider, DefaultRouterReconcilerConfig())
+	if err != nil {
+		return fmt.Errorf("initNetworkModule: build router reconciler: %w", err)
+	}
+	networkRouterReconciler = routerRec
+	if err := networkReconcilers.Register(networkRouterReconciler); err != nil {
+		return fmt.Errorf("initNetworkModule: register router reconciler: %w", err)
+	}
+
 	// Verificación defensiva: probar una query trivial contra las tablas
 	// network_*. Si el schema no está creado o la conexión está rota,
 	// queremos saberlo aquí, no en el primer request HTTP.
@@ -198,6 +222,6 @@ func initNetworkModule() error {
 		return fmt.Errorf("initNetworkModule: defensive query failed: %w", err)
 	}
 
-	logMsg("Network module v4 ready (3 reconcilers: network_observer, ddns_updater, cert_renewer)")
+	logMsg("Network module v4 ready (4 reconcilers: network_observer, ddns_updater, cert_renewer, router_upnp)")
 	return nil
 }
