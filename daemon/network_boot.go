@@ -37,6 +37,7 @@ var (
 	networkProbe           NetworkProbe
 	networkObserver        *NetworkObserver
 	networkDDNSReconciler  *DDNSReconciler
+	networkCertReconciler  *CertReconciler
 	networkReconcilers     *ReconcilerScheduler
 )
 
@@ -83,23 +84,99 @@ func initNetworkModule() error {
 	}
 	networkDDNSReconciler = ddnsRec
 
-	// DuckDNS provider con su breaker propio.
-	duckBreaker := NewCircuitBreaker(DefaultBreakerConfig("ddns.duckdns"))
-	duckProvider, err := NewDuckDNSProvider(DuckDNSProviderConfig{
-		Breaker: duckBreaker,
+	// DuckDNS update provider (para el reconciler DDNS).
+	duckUpdateBreaker := NewCircuitBreaker(DefaultBreakerConfig("ddns.duckdns"))
+	duckUpdateProvider, err := NewDuckDNSProvider(DuckDNSProviderConfig{
+		Breaker: duckUpdateBreaker,
 	})
 	if err != nil {
 		return fmt.Errorf("initNetworkModule: build duckdns provider: %w", err)
 	}
-	networkDDNSReconciler.RegisterProvider(duckProvider)
+	networkDDNSReconciler.RegisterProvider(duckUpdateProvider)
 
-	// Scheduler con observer + ddns reconciler.
+	// Cert Reconciler con su factory de DNSChallengeProviders.
+	// La factory crea el challenger correcto según el nombre del DNS
+	// provider y el token DDNS descifrado.
+	dnsChallengerFactory := func(name, token string) (DNSChallengeProvider, error) {
+		switch name {
+		case "duckdns":
+			// Breaker separado del de update — son interacciones distintas
+			// con el mismo servidor pero con expectativas de fallo y
+			// frecuencia distintas (DNS challenge se invoca solo al
+			// renovar cert, update se invoca cada 15min).
+			breaker := NewCircuitBreaker(DefaultBreakerConfig("ddns.duckdns.challenge"))
+			return NewDuckDNSChallengeProvider(DuckDNSChallengeProviderConfig{
+				Token:   token,
+				Breaker: breaker,
+			})
+		default:
+			return nil, fmt.Errorf("DNS challenger %q not implemented", name)
+		}
+	}
+
+	certRec, err := NewCertReconciler(networkRepo, networkSecretsStore,
+		networkEventEmitter, clock, dnsChallengerFactory,
+		DefaultCertReconcilerConfig())
+	if err != nil {
+		return fmt.Errorf("initNetworkModule: build cert reconciler: %w", err)
+	}
+	networkCertReconciler = certRec
+
+	// SelfSigned provider (sin red, sin breaker).
+	selfsignedProvider := NewSelfSignedProvider(SelfSignedProviderConfig{Clock: clock})
+	networkCertReconciler.RegisterProvider(selfsignedProvider)
+
+	// Let's Encrypt providers: prod + staging. Cada uno con su breaker
+	// y su account key (compartida entre prod y staging porque ACME
+	// usa la pubkey para identificar la cuenta, pero los CAs distintos
+	// tienen registros distintos — la misma key se puede registrar en
+	// ambos).
+	acctKey, err := LoadOrCreateACMEAccountKey(DefaultACMEAccountKeyPath)
+	if err != nil {
+		// No-fatal: si no se puede cargar la account key, los CertProviders
+		// ACME no funcionarán, pero el resto del módulo sí. SelfSigned
+		// queda como fallback. Log y seguimos.
+		logMsg("Network module: ACME account key unavailable (%v); ACME providers not registered", err)
+	} else {
+		leStagingBreaker := NewCircuitBreaker(DefaultBreakerConfig("cert.letsencrypt_staging"))
+		leStaging, err := NewLetsEncryptProvider(LetsEncryptProviderConfig{
+			Name:         "letsencrypt_staging",
+			DirectoryURL: LetsEncryptStagingURL,
+			AccountKey:   acctKey,
+			Breaker:      leStagingBreaker,
+			Clock:        clock,
+		})
+		if err == nil {
+			networkCertReconciler.RegisterProvider(leStaging)
+		} else {
+			logMsg("Network module: register letsencrypt_staging: %v", err)
+		}
+
+		leProdBreaker := NewCircuitBreaker(DefaultBreakerConfig("cert.letsencrypt"))
+		leProd, err := NewLetsEncryptProvider(LetsEncryptProviderConfig{
+			Name:         "letsencrypt",
+			DirectoryURL: LetsEncryptProdURL,
+			AccountKey:   acctKey,
+			Breaker:      leProdBreaker,
+			Clock:        clock,
+		})
+		if err == nil {
+			networkCertReconciler.RegisterProvider(leProd)
+		} else {
+			logMsg("Network module: register letsencrypt: %v", err)
+		}
+	}
+
+	// Scheduler con observer + ddns reconciler + cert reconciler.
 	networkReconcilers = NewReconcilerScheduler(clock)
 	if err := networkReconcilers.Register(networkObserver); err != nil {
 		return fmt.Errorf("initNetworkModule: register observer: %w", err)
 	}
 	if err := networkReconcilers.Register(networkDDNSReconciler); err != nil {
 		return fmt.Errorf("initNetworkModule: register ddns reconciler: %w", err)
+	}
+	if err := networkReconcilers.Register(networkCertReconciler); err != nil {
+		return fmt.Errorf("initNetworkModule: register cert reconciler: %w", err)
 	}
 
 	// Verificación defensiva: probar una query trivial contra las tablas
@@ -109,6 +186,6 @@ func initNetworkModule() error {
 		return fmt.Errorf("initNetworkModule: defensive query failed: %w", err)
 	}
 
-	logMsg("Network module v4 ready (2 reconcilers: network_observer, ddns_updater)")
+	logMsg("Network module v4 ready (3 reconcilers: network_observer, ddns_updater, cert_renewer)")
 	return nil
 }
