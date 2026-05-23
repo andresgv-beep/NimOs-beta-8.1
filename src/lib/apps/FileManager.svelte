@@ -172,16 +172,21 @@
   function getZoom() { return parseFloat(document.documentElement.style.zoom) || 1; }
 
   /**
-   * v3.1: ctx-menu pasa a position:fixed. Las coords son del viewport
-   * divididas por zoom (que afecta a clientX/Y al renderizarse dentro
-   * de la página zoomada). Ya no depende de un wrapper .files-root.
+   * v3.1 fix: el ctx-menu se posiciona con position:absolute relative
+   * al .window ancestro (WindowFrame tiene will-change:transform, lo que
+   * crea un contenedor positional para sus descendientes). Restamos el
+   * rect del .window para convertir clientX/Y (coords del viewport) a
+   * coords locales del WindowFrame. Luego dividimos por zoom para CSS units.
    */
   function calcMenuPos(e, menuW = 200, menuH = 290) {
     const z = getZoom();
-    const x = e.clientX / z;
-    const y = e.clientY / z;
-    const maxX = window.innerWidth  / z - menuW - 8;
-    const maxY = window.innerHeight / z - menuH - 8;
+    const win = e.target.closest('.window');
+    if (!win) return { x: 0, y: 0 };
+    const rect = win.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / z;
+    const y = (e.clientY - rect.top) / z;
+    const maxX = rect.width  / z - menuW - 8;
+    const maxY = rect.height / z - menuH - 8;
     return {
       x: Math.max(0, Math.min(x, maxX)),
       y: Math.max(0, Math.min(y, maxY)),
@@ -1108,10 +1113,16 @@
   }
 
   /* ═══════════════════════════════════════════════════════════
-     CTX MENU · position:fixed
+     CTX MENU · position:absolute relative al .window padre
+     ───────────────────────────────────────────────────────────
+     WindowFrame tiene will-change:transform → es contenedor
+     positional para sus descendants. position:absolute lo
+     coloca dentro del .window correcto cuando hay múltiples
+     ventanas abiertas. Las coords vienen de calcMenuPos() ya
+     ajustadas con getBoundingClientRect del .window.
      ═══════════════════════════════════════════════════════════ */
   .ctx-menu {
-    position: fixed;
+    position: absolute;
     z-index: 500;
     background: var(--bg-inner, #101015);
     border: 1px solid var(--line, rgba(255,255,255,0.08));
