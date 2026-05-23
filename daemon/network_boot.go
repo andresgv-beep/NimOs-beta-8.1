@@ -41,6 +41,7 @@ var (
 	networkCertReconciler   *CertReconciler
 	networkRouterProvider   RouterProvider
 	networkRouterReconciler *RouterReconciler
+	networkRetentionRunner  *RetentionRunner
 	networkReconcilers      *ReconcilerScheduler
 )
 
@@ -215,6 +216,16 @@ func initNetworkModule() error {
 		return fmt.Errorf("initNetworkModule: register router reconciler: %w", err)
 	}
 
+	// Retention runner. NO se arranca aquí: el caller (main.go) llama
+	// .Start(ctx) tras inicializar todo lo demás. Mantenemos el patrón
+	// del scheduler para consistencia.
+	retentionRunner, err := NewRetentionRunner(networkRepo, networkEventEmitter,
+		clock, DefaultRetentionRunnerConfig())
+	if err != nil {
+		return fmt.Errorf("initNetworkModule: build retention runner: %w", err)
+	}
+	networkRetentionRunner = retentionRunner
+
 	// Verificación defensiva: probar una query trivial contra las tablas
 	// network_*. Si el schema no está creado o la conexión está rota,
 	// queremos saberlo aquí, no en el primer request HTTP.
@@ -222,6 +233,6 @@ func initNetworkModule() error {
 		return fmt.Errorf("initNetworkModule: defensive query failed: %w", err)
 	}
 
-	logMsg("Network module v4 ready (4 reconcilers: network_observer, ddns_updater, cert_renewer, router_upnp)")
+	logMsg("Network module v4 ready (4 reconcilers + retention runner)")
 	return nil
 }

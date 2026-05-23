@@ -127,6 +127,16 @@ func (f *FakeClock) Advance(d time.Duration) {
 	}
 }
 
+// SetTime fija el reloj a un momento absoluto. Útil para tests que
+// quieren simular distintos puntos del calendario sin calcular deltas.
+// NO dispara tickers — solo cambia el "now". Si necesitas que los
+// tickers reaccionen, usa Advance.
+func (f *FakeClock) SetTime(t time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.now = t
+}
+
 type fakeTicker struct {
 	mu       sync.Mutex
 	ch       chan time.Time
