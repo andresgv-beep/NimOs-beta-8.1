@@ -437,8 +437,14 @@ html, body {
 
   /* Color de identidad para shares/recursos remotos.
      Pareja semántica con --signal (verde NimOS = local).
-     Usado en TreeNode (sidebar Files) y nav-item-ico del mockup. */
-  --nim-remote:        #b48fff;
+     Usado en TreeNode (sidebar Files) — dot de origen y cubo. */
+  --nim-remote:        #4db8ff;
+
+  /* Color de identidad para carpetas (cubo TreeNode).
+     Naranja universal de "folder", separado de los tokens
+     semánticos (--warn, etc.) para que no se confunda con
+     estados de sistema. */
+  --nim-folder:        #ff9c5a;
 
   /* Fondos del mockup · valores literales */
   --bg-window:         #16161a;
@@ -455,8 +461,11 @@ html, body {
   --ui-select-border:  rgba(74, 104, 120, 0.32);
   --bd-2:              rgba(0, 0, 0, 0.14);
 
-  /* Púrpura más oscuro y saturado para legibilidad sobre fondo claro */
-  --nim-remote:        #6b4fb8;
+  /* Azul más oscuro y saturado para legibilidad sobre fondo claro */
+  --nim-remote:        #1e6dd6;
+
+  /* Naranja más oscuro para legibilidad sobre fondo claro */
+  --nim-folder:        #d97706;
 
   /* Fondos del mockup · versión clara equivalente */
   --bg-window:         #fdfdf7;
