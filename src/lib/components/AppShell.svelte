@@ -424,20 +424,8 @@
     color: var(--ink, #f2f2f5);
   }
   .sb-item.active {
-    background: var(--side-active-bg, rgba(0, 255, 159, 0.07));
-    color: var(--side-active-fg, var(--signal, #00ff9f));
-  }
-  /* Borde izquierdo cuando activa · LED line indicator */
-  .sb-item.active::before {
-    content: '';
-    position: absolute;
-    left: 0;
-    margin-left: -10px;
-    top: 25%;
-    bottom: 25%;
-    width: 2px;
-    background: var(--signal, #00ff9f);
-    box-shadow: 0 0 4px var(--signal-glow, rgba(0, 255, 159, 0.35));
+    background: var(--side-active-bg, rgba(122, 158, 177, 0.10));
+    color: var(--side-active-fg, #7a9eb1);
   }
   .sb-item {
     position: relative;
