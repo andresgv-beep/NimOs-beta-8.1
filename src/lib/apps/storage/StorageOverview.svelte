@@ -195,6 +195,16 @@
                 <span class="pa-num">03</span>
                 <span>Desmontar</span>
               </button>
+              <button
+                class="pa-btn"
+                on:click={() => { dispatch('destroy-pool', { pool }); kebabOpenFor = null; }}
+                disabled={pool.mounted}
+                title={pool.mounted ? 'Desmonta el pool primero para poder destruirlo' : 'Destruir el pool permanentemente'}
+              >
+                <span class="pa-num">04</span>
+                <span>Destruir</span>
+                {#if pool.mounted}<span class="pa-tag">Desmonta 1º</span>{/if}
+              </button>
             </div>
           {/if}
 
