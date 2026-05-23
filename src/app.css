@@ -384,19 +384,15 @@ html, body {
      ALIASES MOCKUP · lenguaje del mockup nimos-storage validado
      ───────────────────────────────────────────────────────────────
      Los nuevos componentes (WindowFrame v2, Taskbar v2, Launcher,
-     Storage v2, Files v2) usan estos nombres cortos. Mapeo directo
-     a los semánticos existentes. Aditivo, no rompe nada.
+     Storage v2, Files v2) usan estos nombres cortos.
+
+     Los --bg-* tienen valores LITERALES del mockup, definidos en
+     cada tema más abajo. Los aliases de texto/borde/estados se
+     comparten porque mapean a tokens semánticos universales.
      ═══════════════════════════════════════════════════════════════ */
 
   /* Identidad de marca */
   --nim-green:   var(--signal);
-
-  /* Fondos (estilo mockup) */
-  --bg-window:   var(--window-bg);
-  --bg-main:     var(--main-bg);
-  --bg-side:     var(--side-bg);
-  --bg-card:     var(--panel-elev);
-  --bg-inner:    var(--canvas-soft);
 
   /* Texto (estilo mockup) */
   --fg-2:        var(--ink-dim);
@@ -424,6 +420,11 @@ html, body {
        NO es estado semántico → necesita identidad propia.
    · --bd-2: borde de elementos a nivel medio (entre --line y
        --line-bright), usado en mockup para card-borders internos.
+   · --bg-window / --bg-main / --bg-side / --bg-card / --bg-inner:
+       fondos del mockup nimos-storage validado. Valores LITERALES
+       (no apuntan a --window-bg/--panel del sistema viejo porque
+       el mockup usa tonos ligeramente más oscuros y con saturación
+       hacia azul-violeta sutil — más identidad NimOS).
    ═══════════════════════════════════════════════════════════════ */
 :root,
 [data-theme="dark"] {
@@ -431,6 +432,13 @@ html, body {
   --ui-select-bg:      rgba(122, 158, 177, 0.10);
   --ui-select-border:  rgba(122, 158, 177, 0.35);
   --bd-2:              #20202a;
+
+  /* Fondos del mockup · valores literales */
+  --bg-window:         #16161a;
+  --bg-main:           #1a1a1f;
+  --bg-side:           #131316;
+  --bg-card:           #15151a;
+  --bg-inner:          #101015;
 }
 
 [data-theme="cream"] {
@@ -439,6 +447,13 @@ html, body {
   --ui-select-bg:      rgba(74, 104, 120, 0.12);
   --ui-select-border:  rgba(74, 104, 120, 0.32);
   --bd-2:              rgba(0, 0, 0, 0.14);
+
+  /* Fondos del mockup · versión clara equivalente */
+  --bg-window:         #fdfdf7;
+  --bg-main:           #f8f8f2;
+  --bg-side:           #efefe8;
+  --bg-card:           #fbfbf3;
+  --bg-inner:          #e8e8e0;
 }
 
 /* ═══════════════════════════════════════════════════════════════
