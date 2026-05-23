@@ -52,6 +52,10 @@
   import CreatePoolWizard from './storage/CreatePoolWizard.svelte';
   import ImportOrphanModal from './storage/ImportOrphanModal.svelte';
   import DestroyOrphanModal from './storage/DestroyOrphanModal.svelte';
+  import StorageScrub from './storage/StorageScrub.svelte';
+  import StorageSmart from './storage/StorageSmart.svelte';
+  import StorageSnapshots from './storage/StorageSnapshots.svelte';
+  import StorageDisks from './storage/StorageDisks.svelte';
   import { ConfirmDialog } from '$lib/ui';
   import {
     fmtBytes, fmtDate, inferDiskRole,
@@ -59,6 +63,7 @@
     usageVariant, ledVariantForHealth, smartVariant,
   } from './storage/formatters.js';
   import * as api from './storage/api.js';
+  import './storage/views-styles.css';
 
   // ─── State ───
   let active = 'overview'; // 'overview' | 'disks' | 'snapshots' | 'scrub' | 'smart'
@@ -931,322 +936,39 @@
 
     <!-- ══ DISCOS ══ -->
     {#if active === 'disks'}
-      <div class="st-section">
-        <div class="section-row">
-          <SectionHead count={`· ${totalDisksAssigned + totalDisksFree} detectados`}>
-            Discos del sistema
-          </SectionHead>
-          <div class="section-actions">
-            <BevelButton size="sm" onClick={rescanDisks} disabled={scanning}>
-              {scanning ? '▸ Escaneando...' : '↻ Rescan buses'}
-            </BevelButton>
-            <BevelButton
-              variant="primary"
-              size="sm"
-              onClick={openCreatePoolWizard}
-              disabled={!(disks.eligible?.length > 0)}
-              title={disks.eligible?.length > 0
-                ? 'Crear un nuevo pool con los discos libres'
-                : 'No hay discos libres para crear un pool'}
-            >
-              + Crear volumen
-            </BevelButton>
-          </div>
-        </div>
-
-        <!-- Discos asignados a pools -->
-        {#if totalDisksAssigned > 0}
-          <SectionHead count={`· ${totalDisksAssigned}`}>Asignados a pools</SectionHead>
-          {#each pools as pool}
-            <div class="pool-group">
-              <div class="pool-group-head">
-                <div class="pool-group-title">
-                  <Badge size="sm" variant="accent">{pool.name}</Badge>
-                  <span class="sm tc-dim">· {(pool.devices || []).length} {(pool.devices || []).length === 1 ? 'disco' : 'discos'}</span>
-                </div>
-                <span class="sm tc-faint mono">montado · para destruir, desmóntalo primero</span>
-              </div>
-              <div class="disk-table cols-6-assigned">
-                <div class="disk-thead">
-                  <div>Dispositivo</div>
-                  <div>Modelo</div>
-                  <div>Capacidad</div>
-                  <div>Pool</div>
-                  <div>SMART</div>
-                  <div>Acción</div>
-                </div>
-                {#each (pool.devices || []) as disk}
-                  <div class="disk-row">
-                    <div class="disk-cell mono">{disk.current_path || '—'}</div>
-                    <div class="disk-cell mono">{disk.model || '—'}</div>
-                    <div class="disk-cell">{fmtBytes(disk.size_bytes) || '—'}</div>
-                    <div class="disk-cell">
-                      <Badge size="sm" variant="accent">{pool.name}</Badge>
-                    </div>
-                    <div class="disk-cell">
-                      <LED size={7} variant={smartVariant(disk.smart_status)} />
-                      <span class="tc-dim sm">{disk.smart_status || 'unknown'}</span>
-                    </div>
-                    <div class="disk-cell disk-actions">
-                      <button class="disk-action-btn" disabled title="Disponible en Fase B7">
-                        Desasignar <span class="action-tag">B7</span>
-                      </button>
-                      <button class="disk-action-btn" disabled title="Disponible en Fase B7">
-                        Reemplazar <span class="action-tag">B7</span>
-                      </button>
-                    </div>
-                  </div>
-                {/each}
-              </div>
-            </div>
-          {/each}
-        {/if}
-
-        <!-- Discos libres -->
-        <div style="margin-top:24px">
-          <SectionHead count={`· ${disks.eligible?.length || 0}`}>Discos libres (elegibles)</SectionHead>
-          {#if !disks.eligible || disks.eligible.length === 0}
-            <EmptyState icon="◌" title="Sin discos libres" hint="Todos los discos están asignados a pools" />
-          {:else}
-            <div class="disk-table cols-6-free">
-              <div class="disk-thead">
-                <div>Dispositivo</div>
-                <div>Modelo</div>
-                <div>Capacidad</div>
-                <div>Tipo</div>
-                <div>Estado</div>
-                <div>Acción</div>
-              </div>
-              {#each disks.eligible as disk}
-                {@const dPath = disk.path || '/dev/' + disk.name}
-                {@const dStatus = diskStatus(dPath)}
-                <div class="disk-row" class:has-orphan={dStatus.kind === 'orphan'}>
-                  <div class="disk-cell mono">{dPath}</div>
-                  <div class="disk-cell mono">{disk.model || '—'}</div>
-                  <div class="disk-cell">{disk.sizeH || fmtBytes(disk.size)}</div>
-                  <div class="disk-cell">
-                    <Badge size="sm" variant={disk.rotational ? 'default' : 'info'}>
-                      {disk.rotational ? 'HDD' : 'SSD'}
-                    </Badge>
-                  </div>
-                  <div class="disk-cell" title={dStatus.tooltip || ''}>
-                    <Badge size="sm" variant={dStatus.variant}>
-                      {dStatus.label}
-                    </Badge>
-                    {#if dStatus.kind === 'orphan'}
-                      <div class="disk-orphan-hint tc-mute sm">
-                        Datos preservables · ver Observados
-                      </div>
-                    {/if}
-                  </div>
-                  <div class="disk-cell disk-actions">
-                    <button
-                      class="disk-action-btn primary"
-                      disabled
-                      title="Crear un volumen nuevo con este disco · Disponible en Fase B5"
-                    >
-                      + Usar en volumen <span class="action-tag">B5</span>
-                    </button>
-                    <button
-                      class="disk-action-btn warn"
-                      on:click={() => openWipeDialog(dPath)}
-                      title={dStatus.kind === 'orphan'
-                        ? '⚠ Atención: este disco tiene datos. Formatear los borrará permanentemente.'
-                        : 'Formatear disco (borra restos de formatos anteriores)'}
-                    >
-                      Formatear
-                    </button>
-                  </div>
-                </div>
-              {/each}
-            </div>
-          {/if}
-        </div>
-
-        <!-- USB si hay -->
-        {#if disks.usb?.length > 0}
-          <div style="margin-top:24px">
-            <SectionHead count={`· ${disks.usb.length}`}>Dispositivos USB</SectionHead>
-            <div class="disk-table cols-5-disk">
-              <div class="disk-thead">
-                <div>Dispositivo</div>
-                <div>Modelo</div>
-                <div>Capacidad</div>
-                <div>Tipo</div>
-                <div>Estado</div>
-              </div>
-              {#each disks.usb as disk}
-                <div class="disk-row">
-                  <div class="disk-cell mono">{disk.path || '/dev/' + disk.name}</div>
-                  <div class="disk-cell mono">{disk.model || '—'}</div>
-                  <div class="disk-cell">{disk.sizeH || fmtBytes(disk.size)}</div>
-                  <div class="disk-cell"><Badge size="sm" variant="warn">USB</Badge></div>
-                  <div class="disk-cell"><Badge size="sm">externo</Badge></div>
-                </div>
-              {/each}
-            </div>
-          </div>
-        {/if}
-      </div>
+      <StorageDisks
+        pools={pools}
+        disks={disks}
+        orphanFilesystems={orphanFilesystems}
+        scanning={scanning}
+        on:rescan={rescanDisks}
+        on:create-pool={openCreatePoolWizard}
+        on:wipe={(e) => openWipeDialog(e.detail.path)}
+      />
     {/if}
 
-    <!-- ══ SNAPSHOTS ══ -->
+        <!-- ══ SNAPSHOTS ══ -->
     {#if active === 'snapshots'}
-      <div class="st-section">
-        <SectionHead>Snapshots</SectionHead>
-
-        {#if pools.length === 0}
-          <EmptyState icon="◇" title="Sin pools configurados" hint="Crea o restaura un pool ZFS para gestionar snapshots" />
-        {:else}
-          {#each pools.filter(p => p.type === 'zfs' || p.filesystem === 'zfs') as pool}
-            <div class="snap-block">
-              <div class="snap-block-head">
-                <div class="pool-head-icon sm">◆</div>
-                <span class="mono">{pool.name}</span>
-                {#if !snapshots[pool.name]}
-                  <BevelButton size="sm" onClick={() => loadSnapshots(pool.name)}>Cargar</BevelButton>
-                {/if}
-                <div style="flex:1"></div>
-                <BevelButton variant="primary" size="sm" disabled>
-                  + Crear snapshot <span class="tc-mute">(Fase B)</span>
-                </BevelButton>
-              </div>
-
-              {#if snapshots[pool.name]}
-                {#if snapshots[pool.name].length === 0}
-                  <EmptyState icon="◌" title="Sin snapshots" hint={`No hay snapshots en "${pool.name}"`} />
-                {:else}
-                  <div class="disk-table cols-4-snap">
-                    <div class="disk-thead">
-                      <div>Nombre</div>
-                      <div>Usado</div>
-                      <div>Creado</div>
-                      <div>Acciones</div>
-                    </div>
-                    {#each snapshots[pool.name] as snap}
-                      <div class="disk-row">
-                        <div class="disk-cell mono">{snap.name || snap}</div>
-                        <div class="disk-cell">{snap.used ? fmtBytes(snap.used) : '—'}</div>
-                        <div class="disk-cell">{fmtDate(snap.created)}</div>
-                        <div class="disk-cell">
-                          <IconButton size="sm" title="Rollback" disabled>↺</IconButton>
-                          <IconButton size="sm" variant="danger" title="Eliminar" disabled>×</IconButton>
-                        </div>
-                      </div>
-                    {/each}
-                  </div>
-                {/if}
-              {/if}
-            </div>
-          {/each}
-
-          {#if pools.filter(p => p.type === 'zfs' || p.filesystem === 'zfs').length === 0}
-            <EmptyState icon="!" title="Sin pools ZFS" hint="Los snapshots solo están disponibles en pools ZFS. Tus pools son BTRFS." />
-          {/if}
-        {/if}
-      </div>
+      <StorageSnapshots
+        pools={pools}
+        snapshots={snapshots}
+        on:load={(e) => loadSnapshots(e.detail.poolName)}
+      />
     {/if}
 
     <!-- ══ SCRUB ══ -->
     {#if active === 'scrub'}
-      <div class="st-section">
-        <SectionHead>Scrub manual</SectionHead>
-
-        {#if pools.length === 0}
-          <EmptyState icon="◇" title="Sin pools" hint="No hay pools para ejecutar scrub" />
-        {:else}
-          <div class="hint-box">
-            <b>¿Qué es scrub?</b> Es un chequeo de integridad que recorre todos los datos del pool
-            y verifica checksums. Útil mensualmente para detectar errores silenciosos.
-            Puede tardar horas y el sistema irá más lento mientras corre.
-          </div>
-
-          <div class="disk-table cols-5-scrub">
-            <div class="disk-thead">
-              <div>Pool</div>
-              <div>Tipo</div>
-              <div>Tamaño</div>
-              <div>Último scrub</div>
-              <div>Acción</div>
-            </div>
-            {#each pools as pool}
-              <div class="disk-row">
-                <div class="disk-cell mono">{pool.name}</div>
-                <div class="disk-cell">BTRFS</div>
-                <div class="disk-cell">{fmtBytes(pool.usage?.total_bytes)}</div>
-                <div class="disk-cell tc-mute">—</div>
-                <div class="disk-cell">
-                  <BevelButton
-                    size="sm"
-                    onClick={() => startScrub(pool.name)}
-                    disabled={scrubbing[pool.name]}
-                  >
-                    {scrubbing[pool.name] ? '▸ Iniciando...' : '▸ Scrub ahora'}
-                  </BevelButton>
-                </div>
-              </div>
-            {/each}
-          </div>
-
-          {#if scrubMsg}
-            <div class="msg">{scrubMsg}</div>
-          {/if}
-        {/if}
-      </div>
+      <StorageScrub
+        pools={pools}
+        scrubbing={scrubbing}
+        scrubMsg={scrubMsg}
+        on:start={(e) => startScrub(e.detail.poolName)}
+      />
     {/if}
 
     <!-- ══ SMART ══ -->
     {#if active === 'smart'}
-      <div class="st-section">
-        <SectionHead>SMART de discos</SectionHead>
-
-        <div class="hint-box">
-          <b>SMART</b> (Self-Monitoring, Analysis and Reporting Technology) es una tecnología
-          que permite a los discos auto-diagnosticarse. Un SMART status <span class="tc-accent">ok</span>
-          significa que el disco no reporta errores. <span class="tc-warn">warning</span> y
-          <span class="tc-crit">critical</span> requieren atención.
-        </div>
-
-        {#if pools.length === 0 && (!disks.eligible || disks.eligible.length === 0)}
-          <EmptyState icon="◌" title="Sin discos" hint="No hay discos detectados en el sistema" />
-        {:else}
-          <div class="disk-table cols-6-smart">
-            <div class="disk-thead">
-              <div>Dispositivo</div>
-              <div>Modelo</div>
-              <div>Capacidad</div>
-              <div>Pool</div>
-              <div>SMART</div>
-              <div>Notas</div>
-            </div>
-            {#each pools as pool}
-              {#each (pool.devices || []) as disk}
-                <div class="disk-row">
-                  <div class="disk-cell mono">{disk.current_path || '—'}</div>
-                  <div class="disk-cell mono">{disk.model || '—'}</div>
-                  <div class="disk-cell">{fmtBytes(disk.size_bytes) || '—'}</div>
-                  <div class="disk-cell"><Badge size="sm" variant="accent">{pool.name}</Badge></div>
-                  <div class="disk-cell">
-                    <LED size={7} variant={smartVariant(disk.smart_status)} />
-                    <span class="sm">{disk.smart_status || 'unknown'}</span>
-                  </div>
-                  <div class="disk-cell tc-mute sm">
-                    {#if disk.smart_status === 'critical'}Reemplazar cuanto antes
-                    {:else if disk.smart_status === 'warning'}Monitorizar
-                    {:else if disk.smart_status === 'missing'}Disco desconectado
-                    {:else if disk.smart_status === 'ok'}Sin incidencias
-                    {:else}—{/if}
-                  </div>
-                </div>
-              {/each}
-            {/each}
-          </div>
-
-          <div class="todo-note">
-            <b>TODO</b> · temperatura, horas de operación y errores detallados pendientes de añadir al backend.
-          </div>
-        {/if}
-      </div>
+      <StorageSmart pools={pools} disks={disks} />
     {/if}
 
   </div>
