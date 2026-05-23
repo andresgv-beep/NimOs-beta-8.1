@@ -10,7 +10,7 @@
 // Diseño:
 //   · enrichPool() toma un Pool ya cargado del repo y le añade campos runtime
 //   · Reusa helpers existentes (runSafe, buildPoolHealth, btrfsVdevTypeForProfile)
-//   · No reinventa la lógica que ya estaba en getBtrfsPoolInfo (legacy)
+//   · No reinventa la lógica que ya estaba en getBtrfsPoolInfo
 //
 // Principios aplicados:
 //   · Principio 1 — SQLite=entidades, JSON=payload. Estos campos son derivados.
@@ -46,9 +46,9 @@ func enrichPool(p *Pool, primaryPool string) {
 	// device with SmartStatus (runtime, from smartctl cache).
 	configDisks := make([]string, 0, len(p.Devices))
 	for i, d := range p.Devices {
-		// La lógica legacy usa nombres como "sda" (sin /dev/), pero el
-		// servicio Beta 8 usa rutas completas. Pasamos el nombre corto
-		// para compatibilidad con getDiskStatusForBtrfs y getSmartDetailsForDisk.
+		// getDiskStatusForBtrfs y getSmartDetailsForDisk esperan nombres
+		// cortos como "sda" (sin /dev/), pero el servicio Beta 8 usa rutas
+		// completas. Convertimos aquí para compatibilidad con esas funciones.
 		name := d.CurrentPath
 		if strings.HasPrefix(name, "/dev/") {
 			name = strings.TrimPrefix(name, "/dev/")
@@ -108,7 +108,7 @@ func isPoolMounted(mountPoint string) bool {
 // usando `btrfs filesystem usage -b` (correcto para RAID asimétrico) con
 // fallback a `df -B1` si btrfs no responde.
 //
-// IMPORTANTE: el cálculo legacy en getBtrfsPoolInfo usa el mismo método.
+// IMPORTANTE: el cálculo en getBtrfsPoolInfo usa el mismo método.
 // Aquí mantenemos la fórmula correcta: total = used + available (capacidad
 // usable real, NO el tamaño bruto de los discos).
 //
@@ -171,8 +171,9 @@ func computePoolUsage(mountPoint string) *PoolUsage {
 }
 
 // getPrimaryPoolName devuelve el nombre del pool primario configurado.
-// Beta 8.1: lee storage_metadata directamente (sin pasar por adapter legacy).
-// El valor se almacena como UUID y se resuelve a nombre vía repo.GetPool.
+// Beta 8.1: lee storage_metadata directamente (sin pasar por el adapter
+// de Beta 7, que fue eliminado). El valor se almacena como UUID y se
+// resuelve a nombre vía repo.GetPool.
 func getPrimaryPoolName() string {
 	if storageService == nil {
 		return ""

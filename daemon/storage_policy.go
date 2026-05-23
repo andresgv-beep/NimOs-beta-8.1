@@ -29,8 +29,8 @@ func NewPolicyChecker() *PolicyChecker {
 	return &PolicyChecker{}
 }
 
-// Instancia global, conveniente para legacy code. Código nuevo debería
-// inyectarla explícitamente.
+// Instancia global, conveniente para código que no recibe el PolicyChecker
+// por parámetro. Código nuevo debería inyectarla explícitamente.
 var storagePolicy *PolicyChecker
 
 // initStoragePolicy crea la instancia global. Llamar tras initStorageRepo.

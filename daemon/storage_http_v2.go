@@ -206,8 +206,8 @@ func (h *StorageHTTPHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/storage/v2/generation", h.requireAdmin(h.handleGeneration))
 	mux.HandleFunc("/api/storage/v2/scan", h.requireAdmin(h.handleScan))
 
-	// Bloque 1 Fase 7 · endpoints añadidos para que la UI pueda migrar
-	// de legacy a v2 completamente.
+	// Endpoints añadidos en Fase 7 (Bloque 1) para que la UI pudiera migrar
+	// del /api/storage/* original al stack v2 completo.
 	mux.HandleFunc("/api/storage/v2/capabilities", h.requireAdmin(h.handleCapabilities))
 	mux.HandleFunc("/api/storage/v2/status", h.requireAdmin(h.handleStatus))
 	mux.HandleFunc("/api/storage/v2/alerts", h.requireAdmin(h.handleAlerts))
@@ -219,8 +219,8 @@ func (h *StorageHTTPHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/storage/v2/pool/export", h.requireAdmin(h.handlePoolExport))
 	mux.HandleFunc("/api/storage/v2/pool/destroy", h.requireAdmin(h.handlePoolDestroyByName))
 
-	// Sesión 2 Fase 7 · paridad funcional con legacy (cierra los 4 gaps
-	// que impedían a la UI migrar completamente a /v2/*).
+	// Endpoints añadidos en Fase 7 (Sesión 2) que cerraron los 4 gaps
+	// funcionales restantes para que la UI pudiera salir del stack /api/storage/*.
 	mux.HandleFunc("/api/storage/v2/observed", h.requireAdmin(h.handleObserved))
 	mux.HandleFunc("/api/storage/v2/pools/import", h.requireAdmin(h.handleImport))
 	mux.HandleFunc("/api/storage/v2/snapshots/rollback", h.requireAdmin(h.handleSnapshotRollback))
@@ -697,15 +697,15 @@ func decodeJSONBody(r *http.Request, dest interface{}) error {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Bloque 1 Fase 7 · Endpoints v2 añadidos para migración UI desde legacy
+// Handlers v2 que delegan en funciones BTRFS nativas
 // ─────────────────────────────────────────────────────────────────────────
-// Estos handlers delegan en código legacy (getStoragePoolsGo, startScrub, etc.)
-// durante la transición. En Bloque 4 se reescribirán para usar StorageService
-// directamente y se eliminará el código legacy.
+// Estos handlers delegan en funciones BTRFS nativas (startScrub,
+// listSnapshots, createSnapshot, rollbackSnapshot, detectStorageDisksGo)
+// que viven fuera del Service v2 — en storage_btrfs_features.go y
+// storage_startup.go.
 //
-// Decisión: aceptar duplicación temporal para que la UI pueda migrar a v2
-// SIN cambios en el contrato de respuesta. Una vez la UI esté toda en v2,
-// borramos el código legacy de un golpe.
+// Se mantienen así porque no hay problema concreto que justifique
+// moverlas al Service. NIMOS_DISCIPLINE: no refactorizar "por consistencia".
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ─── GET /v2/capabilities ─────────────────────────────────────────────────
@@ -796,10 +796,9 @@ func (h *StorageHTTPHandler) handleAlerts(w http.ResponseWriter, r *http.Request
 //   · /v2/devices  → array plano de Device structs (canónico, interno)
 //   · /v2/disks    → categorización por estado/tecnología para UI humana
 //
-// Beta 8: delega en detectStorageDisksGo() (legacy). El cuerpo de la
-// función tiene la lógica de categorización: filtrar root disk, marcar
-// los que están en pool, separar USB/NVMe. En Bloque 4 esto se
-// reimplementa en Go nativo del nuevo stack.
+// Delega en detectStorageDisksGo() (storage_startup.go). La función
+// tiene la lógica de categorización: filtrar root disk, marcar los
+// que están en pool, separar USB/NVMe, detectar orphan filesystems.
 func (h *StorageHTTPHandler) handleDisksCategorized(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w, "GET")
@@ -890,11 +889,12 @@ func (h *StorageHTTPHandler) handleScrubStatus(w http.ResponseWriter, r *http.Re
 }
 
 // ─── /v2/snapshots ────────────────────────────────────────────────────────
-// GET  ?pool=NAME   → lista snapshots (delegado a listSnapshots legacy)
-// POST {pool,name}  → crea snapshot (delegado a createSnapshot legacy)
+// GET  ?pool=NAME   → lista snapshots (delegado a listSnapshots, BTRFS nativo)
+// POST {pool,name}  → crea snapshot (delegado a createSnapshot, BTRFS nativo)
 //
 // Beta 8: listSnapshots devuelve {snapshots: []}, BTRFS subvolume listing
 // pendiente Beta 9. createSnapshot sí está implementado en BTRFS.
+// Ambas funciones viven en storage_btrfs_features.go.
 
 func (h *StorageHTTPHandler) handleSnapshots(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -1075,7 +1075,7 @@ func (h *StorageHTTPHandler) handleImport(w http.ResponseWriter, r *http.Request
 // Rollback un snapshot a su pool de origen.
 // Body: {"pool": "name", "snapshot": "snapshot-name"}
 //
-// Delegado a rollbackSnapshot legacy (storage_btrfs_features.go).
+// Delegado a rollbackSnapshot (BTRFS nativo, storage_btrfs_features.go).
 
 func (h *StorageHTTPHandler) handleSnapshotRollback(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

@@ -190,7 +190,7 @@ func CollectDiagnostics(input DiagnosticInput) []Diagnostic {
 	//
 	// Beta 8.1: solo BTRFS. La rama ZFS (parseZpoolDiskStatus) fue
 	// eliminada. PoolType="zfs" ya no llega aquí desde producción
-	// pero queda el guard para input legacy malformado.
+	// pero queda el guard defensivo por si algo pasa input malformado.
 
 	var diskStatuses map[string]DiskStatus
 	if input.PoolType == "btrfs" && input.MountPoint != "" {

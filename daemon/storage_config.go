@@ -3,9 +3,10 @@ package main
 // NimOS Storage — Constants, globals, JSON helpers
 //
 // Beta 8.1 Bloque C (Sesión 3): este archivo ya no contiene wrappers
-// del adapter legacy (eliminados getStorageConfigFull, saveStorageConfigFull,
-// getStoragePoolsGo, hasPoolGo). Toda la lectura/escritura de pools va
-// directa al storageService (storage_service.go).
+// del antiguo adapter de Beta 7 (eliminados getStorageConfigFull,
+// saveStorageConfigFull, getStoragePoolsGo, hasPoolGo). Toda la
+// lectura/escritura de pools va directa al storageService
+// (storage_service.go).
 
 import (
 	"encoding/json"
@@ -16,7 +17,7 @@ import (
 
 const nimosPoolsDir = "/nimos/pools"
 
-// storageConfigFile · ruta legacy del JSON storage.json.
+// storageConfigFile · ruta del JSON storage.json de Beta 7.
 //
 // Usada solo por el migrador one-shot al boot (storage_migrate_json.go).
 // Tras el primer arranque, el path está renombrado a

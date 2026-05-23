@@ -5,7 +5,7 @@
 //
 // Orden de arranque del módulo:
 //   1. openDB              ← db.go (PRAGMA foreign_keys + WAL)
-//   2. createTables        ← db.go (tablas legacy de Beta 7)
+//   2. createTables        ← db.go (tablas base del daemon)
 //   3. migrateFromJSON     ← db.go (compatibilidad con JSON viejo)
 //   4. initStorageSchema   ← storage_schema.go (tablas storage_* Beta 8)
 //   5. initStorageModule   ← este archivo (Repo + Policy listos)

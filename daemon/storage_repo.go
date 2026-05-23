@@ -42,8 +42,8 @@ func NewStorageRepo(db *sql.DB) *StorageRepo {
 }
 
 // storageRepo es la instancia global del repo. Se inicializa al arranque
-// junto con la DB. Acceso conveniente para legacy code; el código nuevo
-// debe usar inyección explícita.
+// junto con la DB. Acceso conveniente para código que no recibe el repo
+// por parámetro; el código nuevo debe usar inyección explícita.
 var storageRepo *StorageRepo
 
 // initStorageRepo crea la instancia global del repo. Llamar tras
@@ -224,7 +224,8 @@ func (r *StorageRepo) ListPoolsByControlState(ctx context.Context, state Control
 }
 
 // HasAnyPool devuelve true si hay al menos un pool en la DB.
-// Útil para el flag hasPool del daemon (compatibilidad con código legacy).
+// Pública porque puede ser útil para verificar si el sistema tiene
+// storage configurado (ej. wizards de bootstrap, checks de health).
 func (r *StorageRepo) HasAnyPool(ctx context.Context) (bool, error) {
 	var count int
 	err := r.db.QueryRowContext(ctx,
