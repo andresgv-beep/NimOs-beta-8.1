@@ -30,7 +30,7 @@
    */
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
   import {
-    SectionHead, BevelButton, Badge, LED, EmptyState, StripeProgressBar,
+    SectionHead, Badge, LED, EmptyState, StripeProgressBar,
   } from '$lib/ui';
   import {
     fmtBytes, fmtDate, inferDiskRole,
@@ -92,20 +92,19 @@
       Volúmenes
     </SectionHead>
     <div class="section-actions">
-      <BevelButton size="sm" onClick={() => dispatch('rescan')} disabled={scanning}>
+      <button class="btn-secondary" on:click={() => dispatch('rescan')} disabled={scanning}>
         {scanning ? '▸ Escaneando...' : '↻ Escanear'}
-      </BevelButton>
-      <BevelButton
-        variant="primary"
-        size="sm"
-        onClick={() => dispatch('create-pool')}
+      </button>
+      <button
+        class="btn-primary"
+        on:click={() => dispatch('create-pool')}
         disabled={!(disks.eligible?.length > 0)}
         title={disks.eligible?.length > 0
           ? 'Crear un nuevo pool de almacenamiento'
           : 'No hay discos libres para crear un pool'}
       >
         + Nuevo volumen
-      </BevelButton>
+      </button>
     </div>
   </div>
 
@@ -318,9 +317,9 @@
         Observados · no gestionados
       </SectionHead>
       <div class="section-actions">
-        <BevelButton size="sm" onClick={() => dispatch('refresh-observed')} disabled={refreshing}>
+        <button class="btn-secondary" on:click={() => dispatch('refresh-observed')} disabled={refreshing}>
           {refreshing ? '▸ Actualizando...' : '↻ Refrescar'}
-        </BevelButton>
+        </button>
       </div>
     </div>
 
@@ -382,24 +381,23 @@
           </div>
 
           <div class="obs-actions">
-            <BevelButton
-              variant="primary"
-              size="sm"
-              onClick={() => dispatch('import-orphan', { fs })}
+            <button
+              class="btn-primary"
+              on:click={() => dispatch('import-orphan', { fs })}
               disabled={fs.devices_missing > 0}
               title={fs.devices_missing > 0
                 ? 'No se puede importar: faltan discos'
                 : 'Importar como pool gestionado (preserva datos)'}
             >
               ⬇ Importar como pool
-            </BevelButton>
-            <BevelButton
-              size="sm"
-              onClick={() => dispatch('destroy-orphan', { fs })}
+            </button>
+            <button
+              class="btn-secondary"
+              on:click={() => dispatch('destroy-orphan', { fs })}
               title="DESTRUIR — borra todos los datos de los discos"
             >
               ⚠ Destruir
-            </BevelButton>
+            </button>
           </div>
         </div>
       {/each}
@@ -456,14 +454,16 @@
     gap: 10px;
   }
   .pool {
-    background: var(--bg-1);
-    border: 1px solid var(--border);
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
     font-family: var(--font-mono);
-    transition: border-color 0.12s;
+    transition: border-color 0.12s, background 0.12s;
+    overflow: hidden;
   }
-  .pool.open { border-color: var(--border-bright); }
-  .pool.degraded { border-left: 2px solid var(--warn); }
-  .pool.crit { border-left: 2px solid var(--crit); }
+  .pool.open { border-color: rgba(255, 255, 255, 0.14); }
+  .pool.degraded { border-left: 3px solid var(--warn); }
+  .pool.crit { border-left: 3px solid var(--crit); }
 
   .pool-head {
     display: grid;
@@ -474,10 +474,10 @@
     cursor: pointer;
     user-select: none;
   }
-  .pool-head:hover { background: var(--bg-2); }
+  .pool-head:hover { background: var(--side-hover); }
 
   .pool-head-icon {
-    color: var(--accent);
+    color: var(--signal);
     font-size: 14px;
     text-align: center;
   }
@@ -490,7 +490,7 @@
   }
   .pool-name {
     font-size: 13px;
-    color: var(--fg);
+    color: var(--ink);
     font-weight: 600;
     letter-spacing: 0.3px;
     display: flex;
@@ -499,14 +499,14 @@
   }
   .pool-meta {
     font-size: 10px;
-    color: var(--fg-mute);
+    color: var(--ink-mute);
     letter-spacing: 0.3px;
   }
 
   .pool-bar-wrap { min-width: 0; }
   .pool-size {
     font-size: 11px;
-    color: var(--fg);
+    color: var(--ink);
     text-align: right;
     font-feature-settings: "tnum";
   }
@@ -516,28 +516,28 @@
     justify-content: center;
   }
   .pool-chev {
-    color: var(--fg-mute);
+    color: var(--ink-mute);
     font-size: 14px;
     transition: transform 0.15s;
     text-align: center;
   }
-  .pool-chev.rot { transform: rotate(90deg); color: var(--accent); }
+  .pool-chev.rot { transform: rotate(90deg); color: var(--signal); }
 
   .pool-kebab {
     width: 24px;
     height: 24px;
     background: transparent;
     border: none;
-    color: var(--fg-mute);
+    color: var(--ink-mute);
     cursor: pointer;
     font-size: 14px;
     font-family: var(--font-mono);
     transition: color 0.12s;
   }
-  .pool-kebab:hover { color: var(--accent); }
+  .pool-kebab:hover { color: var(--signal); }
   .pool-kebab.active {
-    color: var(--accent);
-    background: var(--bg-2);
+    color: var(--signal);
+    background: var(--side-hover);
   }
 
   /* Toolbar inline ───── */
@@ -695,9 +695,10 @@
   }
 
   .observed-card {
-    background: var(--bg-1);
-    border: 1px solid var(--border);
+    background: var(--bg-card);
+    border: 1px solid var(--line);
     border-left: 3px solid var(--warn);
+    border-radius: 10px;
     padding: 16px;
     display: flex;
     flex-direction: column;
@@ -718,7 +719,7 @@
 
   .obs-label {
     font-weight: 600;
-    color: var(--fg);
+    color: var(--ink);
   }
 
   .obs-uuid {
@@ -758,17 +759,19 @@
   }
 
   .obs-disk-pill {
-    background: var(--bg-2);
+    background: var(--bg-inner);
     padding: 2px 8px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--line);
+    border-radius: 3px;
     font-size: 12px;
+    color: var(--ink-dim);
   }
 
   .obs-actions {
     display: flex;
     gap: 8px;
-    padding-top: 8px;
-    border-top: 1px solid var(--border);
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
   }
 
   .divergences {
@@ -825,5 +828,52 @@
   .alert-meta {
     font-size: 9px;
     color: var(--fg-mute);
+  }
+
+  /* ─── Botones (Design System Beta 8.1) ─── */
+  .btn-secondary {
+    padding: 5px 12px;
+    border-radius: 5px;
+    border: 1px solid var(--line);
+    background: var(--bg-card);
+    color: var(--ink-dim);
+    font-size: 10px;
+    font-weight: 500;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .btn-secondary:hover:not(:disabled) {
+    color: var(--ink);
+    background: var(--side-hover);
+  }
+  .btn-secondary:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .btn-primary {
+    padding: 5px 12px;
+    border-radius: 5px;
+    border: 1px solid rgba(0, 255, 159, 0.3);
+    background: rgba(0, 255, 159, 0.06);
+    color: var(--signal);
+    font-size: 10px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+  }
+  .btn-primary:hover:not(:disabled) {
+    border-color: var(--signal);
+    background: rgba(0, 255, 159, 0.12);
+  }
+  .btn-primary:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
   }
 </style>
