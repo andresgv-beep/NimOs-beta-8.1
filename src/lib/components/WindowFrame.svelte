@@ -64,7 +64,9 @@
 
   function onTitleMouseDown(e) {
     if (e.target.closest('.wc-led')) return;
-    if (e.target.closest('.tb-actions button')) return;
+    // v3.1 fix: cubre cualquier hijo del slot titlebar-actions
+    // (button, input, select, span clickable, etc.) — no solo <button>
+    if (e.target.closest('.tb-actions')) return;
     if (win.maximized) return;
     focusWindow(win.id);
     dragging = true;
