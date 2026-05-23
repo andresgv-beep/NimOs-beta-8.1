@@ -45,7 +45,7 @@
   import AppShell from '$lib/components/AppShell.svelte';
   import { Spinner, ConfirmDialog } from '$lib/ui';
   import ExportPoolWizard from './storage/ExportPoolWizard.svelte';
-  import DestroyPoolWizard from './storage/DestroyPoolWizard.svelte';
+
   import CreatePoolWizard from './storage/CreatePoolWizard.svelte';
   import ImportOrphanModal from './storage/ImportOrphanModal.svelte';
   import DestroyOrphanModal from './storage/DestroyOrphanModal.svelte';
@@ -65,7 +65,6 @@
   let exportPoolName = null;   // nombre del pool a desmontar (null = wizard cerrado)
 
   // Destroy pool wizard state (destrucción definitiva · 3 pasos)
-  let destroyPool = null;  // objeto pool a destruir (null = wizard cerrado)
 
   // Create pool wizard state
   let creatingPool = false;  // true = wizard abierto
@@ -379,18 +378,6 @@
     }
   }
 
-  // ─── Destruir pool (wizard 3 pasos · solo pools desmontados) ───
-  function openDestroyPoolWizard(poolObj) {
-    destroyPool = poolObj;
-  }
-
-  async function handleDestroyPoolDone() {
-    destroyPool = null;
-    // Forzar re-scan del observer (tras destroy los discos quedan libres).
-    await api.getObserved({ refresh: true });
-    await loadAll();
-  }
-
   // ─── Crear pool (wizard 4 pasos · desde discos libres) ───
   function openCreatePoolWizard() {
     creatingPool = true;
@@ -583,15 +570,6 @@
     <div class="dialog-err">{wipeError}</div>
   {/if}
 </ConfirmDialog>
-
-<!-- Destroy pool wizard · 4 pasos: detección → servicios → desmontaje → confirmación -->
-{#if destroyPool}
-  <DestroyPoolWizard
-    pool={destroyPool}
-    on:done={handleDestroyPoolDone}
-    on:cancel={() => destroyPool = null}
-  />
-{/if}
 
 <!-- Create pool wizard · 4 pasos: tipo → discos → nombre → confirmación -->
 {#if creatingPool}
