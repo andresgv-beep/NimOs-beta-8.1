@@ -435,6 +435,11 @@ html, body {
   --ui-select-border:  rgba(122, 158, 177, 0.35);
   --bd-2:              #20202a;
 
+  /* Color de identidad para shares/recursos remotos.
+     Pareja semántica con --signal (verde NimOS = local).
+     Usado en TreeNode (sidebar Files) y nav-item-ico del mockup. */
+  --nim-remote:        #b48fff;
+
   /* Fondos del mockup · valores literales */
   --bg-window:         #16161a;
   --bg-main:           #1a1a1f;
@@ -449,6 +454,9 @@ html, body {
   --ui-select-bg:      rgba(74, 104, 120, 0.12);
   --ui-select-border:  rgba(74, 104, 120, 0.32);
   --bd-2:              rgba(0, 0, 0, 0.14);
+
+  /* Púrpura más oscuro y saturado para legibilidad sobre fondo claro */
+  --nim-remote:        #6b4fb8;
 
   /* Fondos del mockup · versión clara equivalente */
   --bg-window:         #fdfdf7;
