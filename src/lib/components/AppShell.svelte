@@ -1,11 +1,31 @@
 <script>
   /**
-   * AppShell · Envoltorio estándar de apps NimOS Beta 8.1
-   * ──────────────────────────────────────────────────────
+   * AppShell · Envoltorio estándar de apps NimOS Beta 8.1 · v3.1
+   * ─────────────────────────────────────────────────────────────
    * Provee el chrome común: titlebar con cubo 45° + path + LEDs,
    * sidebar con secciones, main area, footer interno opcional.
    *
-   * Uso:
+   * CAMBIOS v3.1 (aditivos, sin romper apps existentes):
+   *   · Nueva prop `sidebarWidth` (default 220px, antes 240px del CSS var).
+   *     Storage/NimHealth/Settings/etc pasan a 220 sin modificar nada.
+   *   · Nueva prop `showSidebar` (default true). Modo false declarado,
+   *     diseño visual PENDIENTE de mockup — ver TODO abajo.
+   *   · Nuevo slot `sidebar-content` que sustituye al render automático
+   *     de `sections` cuando se pasa. Permite TreeNode (Files), o
+   *     cualquier sidebar dinámico que no cabe en items planos.
+   *   · Nuevo slot `sidebar-header` que sustituye al `.sb-header`
+   *     interno (icono+título). Permite SVG inline en apps que lo
+   *     necesiten sin perder consistencia.
+   *
+   * APP SHELL · ÚNICA FUENTE de:
+   *   - dimensiones del sidebar (--sidebar-width)
+   *   - estética del titlebar (cubo + path + LEDs)
+   *   - patrón de items del sidebar (sb-item, sb-section)
+   *
+   * `documents/sidebar-tokens (1).css` queda DEPRECADO en este v3.1.
+   * Eliminar en el paso 2 del refactor (limpieza tokens).
+   *
+   * Uso típico (sin cambios respecto a v3):
    *   <AppShell
    *     appId="nimhealth"
    *     title="NimHealth"
@@ -18,18 +38,28 @@
    *     bind:active
    *     pathSegments={['health', 'task-manager']}
    *   >
-   *     <svelte:fragment slot="page-header">
-   *       <b>Remote Access</b>
-   *     </svelte:fragment>
-   *
    *     [contenido principal de la app]
-   *
-   *     <svelte:fragment slot="footer">
-   *       <span class="k">items:</span> <span class="v">13</span>
-   *     </svelte:fragment>
    *   </AppShell>
    *
-   * Estética Beta 8.1:
+   * Uso avanzado v3.1 (Files):
+   *   <AppShell
+   *     appId="files"
+   *     title="Files"
+   *     pathSegments={['files', ...]}
+   *   >
+   *     <svelte:fragment slot="sidebar-content">
+   *       <!-- TreeNode + grupos Local/Remoto -->
+   *     </svelte:fragment>
+   *     [contenido]
+   *   </AppShell>
+   *
+   * TODO (Beta 8.2 o cuando llegue mockup):
+   *   - Implementar estética modo `showSidebar={false}`. La prop ya
+   *     existe y oculta el aside, pero el main hereda padding/spacing
+   *     pensados para la versión con sidebar. Diseñar cuando haya
+   *     mockup canónico de ventana sin sidebar.
+   *
+   * Estética Beta 8.1 (sin cambios):
    *   - Cubo 45° blanco con drop-shadow lechoso del boot (firma NimOS)
    *   - Path mono `nimos://app/seccion` · app luminoso, contexto en gris
    *   - LEDs C2: min/max/close cuadrados 10×10 con glow dramático
@@ -52,6 +82,12 @@
   /** Footer interno que muestra daemon status + versión */
   export let showDaemonStatus = true;
 
+  /* ─── v3.1 props (aditivas) ─────────────────────────────────── */
+  /** Si false, oculta el aside completo. TODO: diseño pendiente. */
+  export let showSidebar = true;
+  /** Ancho del sidebar. Default 220px (canónico Beta 8.1). */
+  export let sidebarWidth = '220px';
+
   const wc = getContext('windowControls');
 
   $: hostname = typeof window !== 'undefined' ? (window.location.hostname || 'nimos') : 'nimos';
@@ -62,7 +98,7 @@
   }
 </script>
 
-<div class="app-shell">
+<div class="app-shell" style="--sidebar-width: {sidebarWidth};">
   <!-- ═══════════ TITLEBAR · cubo + path + LEDs ═══════════ -->
   <div class="titlebar">
 
@@ -113,56 +149,66 @@
   </div>
 
   <!-- ═══════════ APP BODY · sidebar + main ═══════════ -->
-  <div class="app-body">
+  <div class="app-body" class:no-sidebar={!showSidebar}>
 
-    <!-- Sidebar -->
-    <aside class="sidebar">
-      <div class="sb-header">
-        <div class="sb-header-icon">{headerIcon}</div>
-        <div class="sb-title">{title}</div>
-      </div>
+    {#if showSidebar}
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        {#if $$slots['sidebar-header']}
+          <slot name="sidebar-header" />
+        {:else}
+          <div class="sb-header">
+            <div class="sb-header-icon">{headerIcon}</div>
+            <div class="sb-title">{title}</div>
+          </div>
+        {/if}
 
-      <div class="sb-scroll">
-        {#each sections as section}
-          <div class="sb-section">
-            <span>{section.label}</span>
-          </div>
-          {#each section.items as item}
-            <div
-              class="sb-item"
-              class:active={active === item.id}
-              on:click={() => handleItem(item.id)}
-              on:keydown={(e) => e.key === 'Enter' && handleItem(item.id)}
-              role="button"
-              tabindex="0"
-            >
-              <span class="sb-prefix">{active === item.id ? '▸' : '\u00A0'}</span>
-              <span class="sb-label">{item.label}</span>
-              {#if item.badge !== undefined && item.badge !== null && item.badge !== 0}
-                <Badge size="sm" variant={item.badgeVariant || 'default'}>{item.badge}</Badge>
-              {/if}
-              {#if item.keyHint}
-                <KeyBind key={item.keyHint} active={active === item.id} />
-              {/if}
-            </div>
-          {/each}
-        {/each}
-      </div>
-
-      {#if showDaemonStatus}
-        <div class="sb-footer">
-          <div class="sb-footer-row">
-            <LED size={7} />
-            <span class="k">daemon</span>
-            <span class="v">running</span>
-          </div>
-          <div class="sb-footer-row">
-            <span class="k">user</span>
-            <span class="v">{userName}</span>
-          </div>
+        <div class="sb-scroll">
+          {#if $$slots['sidebar-content']}
+            <slot name="sidebar-content" />
+          {:else}
+            {#each sections as section}
+              <div class="sb-section">
+                <span>{section.label}</span>
+              </div>
+              {#each section.items as item}
+                <div
+                  class="sb-item"
+                  class:active={active === item.id}
+                  on:click={() => handleItem(item.id)}
+                  on:keydown={(e) => e.key === 'Enter' && handleItem(item.id)}
+                  role="button"
+                  tabindex="0"
+                >
+                  <span class="sb-prefix">{active === item.id ? '▸' : '\u00A0'}</span>
+                  <span class="sb-label">{item.label}</span>
+                  {#if item.badge !== undefined && item.badge !== null && item.badge !== 0}
+                    <Badge size="sm" variant={item.badgeVariant || 'default'}>{item.badge}</Badge>
+                  {/if}
+                  {#if item.keyHint}
+                    <KeyBind key={item.keyHint} active={active === item.id} />
+                  {/if}
+                </div>
+              {/each}
+            {/each}
+          {/if}
         </div>
-      {/if}
-    </aside>
+
+        {#if showDaemonStatus}
+          <div class="sb-footer">
+            <div class="sb-footer-row">
+              <LED size={7} />
+              <span class="k">daemon</span>
+              <span class="v">running</span>
+            </div>
+            <div class="sb-footer-row">
+              <span class="k">user</span>
+              <span class="v">{userName}</span>
+            </div>
+          </div>
+        {/if}
+      </aside>
+    {/if}
 
     <!-- Main -->
     <div class="main">
@@ -347,13 +393,22 @@
 
   /* ═══════════════════════════════════════════════════════════
      APP BODY · sidebar + main
+     ───────────────────────────────────────────────────────────
+     v3.1: --sidebar-width viene del style attr del .app-shell
+     (sobrescribible vía prop sidebarWidth). Default fijado en
+     220px en el script. Si app.css declara --sidebar-width
+     a otro valor, gana el style attr local.
      ═══════════════════════════════════════════════════════════ */
   .app-body {
     flex: 1;
     display: grid;
-    grid-template-columns: var(--sidebar-width, 240px) 1fr;
+    grid-template-columns: var(--sidebar-width) 1fr;
     overflow: hidden;
     min-height: 0;
+  }
+  /* v3.1: modo sin sidebar — TODO diseño pendiente */
+  .app-body.no-sidebar {
+    grid-template-columns: 1fr;
   }
 
   /* ─── Sidebar ─── */
