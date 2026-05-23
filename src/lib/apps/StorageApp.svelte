@@ -497,6 +497,7 @@
         on:refresh-observed={refreshObserved}
         on:scrub={(e) => startScrub(e.detail.poolName)}
         on:export-pool={(e) => openExportPoolWizard(e.detail.poolName)}
+        on:destroy-pool={(e) => openDestroyPoolWizard(e.detail.pool)}
         on:import-orphan={(e) => openImportModal(e.detail.fs)}
         on:destroy-orphan={(e) => openDestroyOrphanModal(e.detail.fs)}
         on:load-snapshots={(e) => loadSnapshots(e.detail.poolName)}
