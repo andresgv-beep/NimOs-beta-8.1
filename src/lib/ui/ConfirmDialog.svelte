@@ -160,7 +160,7 @@
 
   .cd {
     width: 480px;
-    max-width: calc(100vw - 40px);
+    max-width: calc(100% - 40px);
     background: var(--border-bright);
     padding: 1px;
     font-family: var(--font-mono);

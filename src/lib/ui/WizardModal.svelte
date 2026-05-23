@@ -146,7 +146,7 @@
   @keyframes wm-fade { from { opacity: 0; } to { opacity: 1; } }
 
   .wm {
-    max-width: calc(100vw - 40px);
+    max-width: calc(100% - 40px);
     max-height: calc(100vh - 80px);
     background: var(--border-bright);
     padding: 1px;
