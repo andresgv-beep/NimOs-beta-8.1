@@ -1,40 +1,40 @@
 <script>
   /**
-   * Launcher · Cajón de apps NimOS Beta 8.1
-   * ─────────────────────────────────────────
+   * Launcher · Menú de inicio NimOS Beta 8.1 · Estilo W11
+   * ──────────────────────────────────────────────────────
    * Se abre desde el logo NimOS del taskbar.
    *
-   * Estética técnica retro:
-   *   - Chaflán inferior-derecho 18px · firma NimOS
-   *   - Sidebar izquierdo de categorías con barrita verde activa
-   *   - Buscador retro con prompt `❯` verde + cursor parpadeando
-   *   - Tiles con icono pixel art + nombre + descripción mono
-   *   - Apps instaladas tienen barrita sage a la izquierda
-   *   - Footer técnico con contadores
+   * Estética:
+   *   - Anclado al taskbar pero separado (bottom: 12px, left: 12px)
+   *   - Esquinas redondeadas 14px (no chaflán, no tan agresivo)
+   *   - Search arriba con prompt `$` verde
+   *   - Apps en grid 6 columnas verticales (icono grande + nombre)
+   *   - Agrupadas inline en secciones: "Sistema NimOS" y "Aplicaciones"
+   *   - Sin sidebar de categorías (ruido visual innecesario)
+   *   - Sin "Recomendado" ni "Anclados" (duplican escritorio y taskbar)
+   *   - Footer con usuario + botón power
    *
    * Lógica preservada (sin cambios):
    *   - APP_META + listAllApps de $lib/apps.js
    *   - fetch /api/my-apps · permisos de usuario
    *   - fetch /api/docker/installed-apps · apps Docker
    *   - openWindow + windowList de $lib/stores/windows.js
-   *   - Filter por categoría · Search por nombre/id
+   *   - Search por nombre/id
    *   - Keyboard: Esc cierra · Enter abre primera
    */
   import { APP_META, listAllApps } from '$lib/apps.js';
   import { openWindow, windowList } from '$lib/stores/windows.js';
-  import { getToken } from '$lib/stores/auth.js';
+  import { getToken, logout, user } from '$lib/stores/auth.js';
   import AppIcon from '$lib/ui/AppIcon.svelte';
 
   export let visible = false;
 
-  let filter = 'all'; // 'all' | 'system' | 'utilities' | 'docker'
   let searchTerm = '';
   let dockerApps = [];
   let allowedApps = null;
   let searchEl;
 
   $: if (visible) {
-    filter = 'all';
     searchTerm = '';
     loadDockerApps();
     loadMyApps();
@@ -82,38 +82,32 @@
     return true;
   }
 
-  $: systemApps = listAllApps().map(a => ({ ...a, isSystem: true }));
+  $: systemApps = listAllApps()
+    .map(a => ({ ...a, isSystem: true }))
+    .filter(a => !a.hidden && canAccess(a.id));
 
-  $: allApps = (() => {
-    const seen = new Set();
-    return [...systemApps, ...dockerApps].filter(app => {
-      if (seen.has(app.id)) return false;
-      if (app.hidden) return false;
-      if (!canAccess(app.id)) return false;
-      seen.add(app.id);
-      return true;
-    });
-  })();
+  // Apps del sistema y utilidades en una sola sección "Sistema NimOS"
+  $: sysApps = systemApps.filter(a =>
+    a.category === 'system' || a.category === 'utilities'
+  );
 
-  $: filteredApps = (() => {
-    let list = allApps;
-    if (filter !== 'all') {
-      list = list.filter(a => a.category === filter);
-    }
-    if (searchTerm) {
-      const q = searchTerm.toLowerCase();
-      list = list.filter(a =>
-        a.name.toLowerCase().includes(q) ||
-        a.id.toLowerCase().includes(q)
-      );
-    }
-    return list;
-  })();
+  // Apps Docker en otra sección
+  $: dkApps = dockerApps.filter(a => canAccess(a.id));
 
-  $: systemCount    = allApps.filter(a => a.category === 'system').length;
-  $: utilitiesCount = allApps.filter(a => a.category === 'utilities').length;
-  $: dockerCount    = allApps.filter(a => a.category === 'docker').length;
-  $: openAppIds     = new Set($windowList.map(w => w.appId));
+  // Filtro de búsqueda · aplica a ambas secciones
+  $: filteredSys = filterApps(sysApps, searchTerm);
+  $: filteredDk  = filterApps(dkApps, searchTerm);
+
+  function filterApps(list, q) {
+    if (!q) return list;
+    const term = q.toLowerCase();
+    return list.filter(a =>
+      a.name.toLowerCase().includes(term) ||
+      a.id.toLowerCase().includes(term)
+    );
+  }
+
+  $: openAppIds = new Set($windowList.map(w => w.appId));
 
   function launch(app) {
     visible = false;
@@ -137,27 +131,19 @@
     if (!visible) return;
     if (e.key === 'Escape') {
       visible = false;
-    } else if (e.key === 'Enter' && filteredApps.length > 0) {
-      launch(filteredApps[0]);
+    } else if (e.key === 'Enter') {
+      const first = filteredSys[0] || filteredDk[0];
+      if (first) launch(first);
     }
   }
 
-  // Cats list para el sidebar
-  $: cats = [
-    { id: 'all',       label: 'TODAS',      count: allApps.length },
-    { id: 'system',    label: 'SISTEMA',    count: systemCount },
-    { id: 'utilities', label: 'UTILIDADES', count: utilitiesCount },
-    ...(dockerCount > 0 ? [{ id: 'docker', label: 'DOCKER', count: dockerCount }] : []),
-  ];
-
-  // Helper para mostrar descripción
-  function getDesc(app) {
-    if (app.description) return app.description;
-    if (app.category === 'system') return '· sistema';
-    if (app.category === 'utilities') return '· utilidad';
-    if (app.category === 'docker') return '· docker';
-    return '· app';
+  function handlePower() {
+    visible = false;
+    logout();
   }
+
+  $: userName = $user?.username || 'usuario';
+  $: userInitial = userName.charAt(0).toUpperCase();
 </script>
 
 <svelte:window on:keydown={handleKeydown} />
@@ -165,97 +151,115 @@
 {#if visible}
   <div class="overlay" on:click={() => visible = false} role="presentation"></div>
 
-  <div class="drawer" on:click|stopPropagation role="presentation">
+  <div class="start-menu" on:click|stopPropagation role="presentation">
 
-    <!-- ─── Header · buscador ─── -->
-    <div class="drawer-header">
-      <div class="drawer-search" class:focused={searchTerm}>
-        <span class="prompt">❯</span>
+    <!-- ─── Top · Search ─── -->
+    <div class="sm-search-wrap">
+      <div class="sm-search">
+        <span class="prompt">$</span>
         <input
           bind:this={searchEl}
           bind:value={searchTerm}
-          placeholder="buscar aplicaciones..."
+          placeholder="Buscar app, archivo o comando..."
           autocomplete="off"
         />
-        <span class="cursor"></span>
+        <span class="key">↵</span>
       </div>
     </div>
 
-    <!-- ─── Body · sidebar de cats + grid de apps ─── -->
-    <div class="drawer-body">
+    <!-- ─── Middle · Scrollable content ─── -->
+    <div class="sm-content">
 
-      <!-- Sidebar de categorías -->
-      <div class="drawer-cats">
-        {#each cats as cat}
-          <div
-            class="drawer-cat"
-            class:active={filter === cat.id}
-            on:click={() => filter = cat.id}
-            role="button"
-            tabindex="0"
-            on:keydown={(e) => e.key === 'Enter' && (filter = cat.id)}
-          >
-            <span class="cat-label">{cat.label}</span>
-            <span class="cat-count">{cat.count}</span>
-          </div>
-        {/each}
-      </div>
+      {#if filteredSys.length > 0}
+        <div class="sm-section-head">
+          <span>Sistema NimOS</span>
+          <span class="count">{filteredSys.length}</span>
+        </div>
 
-      <!-- Grid de apps -->
-      <div class="drawer-apps">
-        {#if filteredApps.length === 0}
-          <div class="empty">
-            <div class="empty-ic">◌</div>
-            <div class="empty-msg">
-              {searchTerm
-                ? `Sin resultados para "${searchTerm}"`
-                : 'Sin apps en esta categoría'}
-            </div>
-          </div>
-        {:else}
-          {#each filteredApps as app}
-            <div
+        <div class="sm-grid">
+          {#each filteredSys as app}
+            <button
               class="app-tile"
-              class:installed={app.isSystem || true}
-              class:running={openAppIds.has(app.id)}
               on:click={() => launch(app)}
-              on:keydown={(e) => e.key === 'Enter' && launch(app)}
-              role="button"
-              tabindex="0"
               title={app.name}
             >
-              <div class="app-tile-icon">
+              <div class="app-tile-ico sys">
                 <AppIcon src={app.icon} alt={app.name} fallback={app.fallback || '📦'} size="md" />
               </div>
-              <div class="app-tile-text">
-                <div class="app-tile-name">{app.name}</div>
-                <div class="app-tile-desc">▸ {getDesc(app)}</div>
-              </div>
+              <span class="app-tile-name">{app.name}</span>
               {#if openAppIds.has(app.id)}
-                <div class="app-running-led"></div>
+                <span class="app-tile-running"></span>
               {/if}
-            </div>
+            </button>
           {/each}
-        {/if}
-      </div>
+        </div>
+      {/if}
+
+      {#if filteredSys.length > 0 && filteredDk.length > 0}
+        <div class="sm-divider"></div>
+      {/if}
+
+      {#if filteredDk.length > 0}
+        <div class="sm-section-head">
+          <span>Aplicaciones</span>
+          <span class="count">{filteredDk.length}</span>
+        </div>
+
+        <div class="sm-grid">
+          {#each filteredDk as app}
+            <button
+              class="app-tile"
+              on:click={() => launch(app)}
+              title={app.name}
+            >
+              <div class="app-tile-ico dk">
+                <AppIcon src={app.icon} alt={app.name} fallback={app.fallback || '📦'} size="md" />
+              </div>
+              <span class="app-tile-name">{app.name}</span>
+              {#if openAppIds.has(app.id) || app.running}
+                <span class="app-tile-running"></span>
+              {/if}
+            </button>
+          {/each}
+        </div>
+      {/if}
+
+      {#if filteredSys.length === 0 && filteredDk.length === 0}
+        <div class="empty">
+          <div class="empty-ic">◌</div>
+          <div class="empty-msg">
+            {searchTerm
+              ? `Sin resultados para "${searchTerm}"`
+              : 'Sin apps disponibles'}
+          </div>
+        </div>
+      {/if}
+
     </div>
 
-    <!-- ─── Footer técnico ─── -->
-    <div class="drawer-footer">
-      <span class="stat">
-        <b>{allApps.length}</b> instaladas
-        {#if openAppIds.size > 0}
-          · <b class="active">{openAppIds.size}</b> abiertas
-        {/if}
-      </span>
-      <span class="brand">NIMOS · APP DRAWER</span>
+    <!-- ─── Bottom · User + Power ─── -->
+    <div class="sm-footer">
+      <div class="sm-user" role="button" tabindex="0">
+        <div class="sm-user-avatar">{userInitial}</div>
+        <div class="sm-user-info">
+          <span class="sm-user-name">{userName}</span>
+          <span class="sm-user-status">online</span>
+        </div>
+      </div>
+      <button
+        class="sm-power"
+        on:click={handlePower}
+        title="Cerrar sesión"
+      >⏻</button>
     </div>
 
   </div>
 {/if}
 
 <style>
-  /* Overlay · captura click para cerrar */
+  /* ═══════════════════════════════════════════════════════════
+     OVERLAY · captura click para cerrar
+     ═══════════════════════════════════════════════════════════ */
   .overlay {
     position: fixed;
     inset: 0;
@@ -264,307 +268,302 @@
   }
 
   /* ═══════════════════════════════════════════════════════════
-     DRAWER · sale arriba del logo del taskbar
+     START MENU · estilo W11, anclado al taskbar con separación
      ═══════════════════════════════════════════════════════════ */
-  .drawer {
+  .start-menu {
     position: fixed;
-    left: 8px;
-    bottom: calc(var(--taskbar-height, 44px) + 6px);
+    bottom: calc(var(--taskbar-height, 44px) + 12px);
+    left: 12px;
     width: 520px;
-    height: 480px;
+    height: 580px;
     max-height: calc(100vh - var(--taskbar-height, 44px) - 24px);
-    background: linear-gradient(180deg, #161616 0%, #0f0f0f 100%);
-    border: 1px solid var(--border-bright, #2a2a2a);
+    background: var(--bg-window, #16161a);
+    border: 1px solid var(--bd, rgba(255, 255, 255, 0.05));
+    border-radius: 14px;
     z-index: 9200;
     display: flex;
     flex-direction: column;
-    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    overflow: hidden;
+    font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
     box-shadow:
-      0 -10px 40px rgba(0, 0, 0, 0.6),
-      0 0 60px rgba(220, 255, 235, 0.03);
-    /* Chaflán inferior-derecho · firma NimOS */
-    clip-path: polygon(0 0, 100% 0, 100% calc(100% - 18px), calc(100% - 18px) 100%, 0 100%);
-    animation: drawer-in 0.18s cubic-bezier(0.16, 1, 0.3, 1) both;
+      0 12px 40px rgba(0, 0, 0, 0.5),
+      0 0 0 1px rgba(0, 255, 159, 0.04);
+    animation: menu-in 0.2s cubic-bezier(0.2, 0, 0, 1.1);
   }
 
-  @keyframes drawer-in {
-    from { opacity: 0; transform: translateY(8px); }
+  @keyframes menu-in {
+    from { opacity: 0; transform: translateY(20px); }
     to   { opacity: 1; transform: translateY(0); }
   }
 
-  /* ─── Header · buscador con prompt ─── */
-  .drawer-header {
-    padding: 12px 14px 10px;
-    border-bottom: 1px solid var(--border, #1f1f1f);
-    flex-shrink: 0;
+  /* ─── Top · Search ─── */
+  .sm-search-wrap {
+    padding: 16px 18px 14px;
   }
-  .drawer-search {
+  .sm-search {
     display: flex;
     align-items: center;
     gap: 10px;
-    background: var(--bg-0, #0a0a0a);
-    border: 1px solid var(--border-bright, #2a2a2a);
-    padding: 8px 12px;
-    font-family: var(--font-mono, monospace);
-    font-size: 11px;
-    color: var(--fg, #e8e8e8);
-    letter-spacing: 0.5px;
-    transition: border-color 0.12s;
+    padding: 10px 14px;
+    background: var(--bg-input, #1a1a20);
+    border: 1px solid var(--bd-2, #20202a);
+    border-radius: 7px;
+    transition: border-color 0.15s;
   }
-  .drawer-search:focus-within {
-    border-color: var(--accent-color, #00ff9f);
+  .sm-search:focus-within {
+    border-color: var(--nim-green, #00ff9f);
+    box-shadow: 0 0 0 2px rgba(0, 255, 159, 0.08);
   }
-  .prompt {
-    color: var(--accent-color, #00ff9f);
-    font-weight: 700;
-    text-shadow: 0 0 5px rgba(0, 255, 159, 0.4);
+  .sm-search .prompt {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    color: var(--nim-green, #00ff9f);
     font-size: 13px;
-    line-height: 1;
+    font-weight: 600;
   }
-  .drawer-search input {
+  .sm-search input {
     flex: 1;
     background: transparent;
     border: none;
     outline: none;
-    color: var(--fg, #e8e8e8);
-    font-family: inherit;
-    font-size: 12px;
-    letter-spacing: 0.5px;
+    color: var(--fg, #f0f0f0);
+    font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
+    font-size: 13px;
   }
-  .drawer-search input::placeholder {
-    color: var(--fg-mute, #5a5a62);
+  .sm-search input::placeholder {
+    color: var(--fg-4, #7a7a82);
   }
-  .cursor {
-    width: 6px;
-    height: 13px;
-    background: var(--accent-color, #00ff9f);
-    box-shadow: 0 0 4px rgba(0, 255, 159, 0.4);
-    animation: blink 0.9s steps(1) infinite;
-    flex-shrink: 0;
-  }
-  @keyframes blink {
-    0%, 50% { opacity: 1 }
-    51%, 100% { opacity: 0 }
+  .sm-search .key {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 9px;
+    color: var(--fg-4, #7a7a82);
+    padding: 2px 6px;
+    border: 1px solid var(--bd-3, #2a2a32);
+    border-radius: 3px;
+    letter-spacing: 0.3px;
   }
 
-  /* ─── Body · sidebar + grid ─── */
-  .drawer-body {
+  /* ─── Middle · Scrollable content ─── */
+  .sm-content {
     flex: 1;
-    display: grid;
-    grid-template-columns: 120px 1fr;
-    overflow: hidden;
-    min-height: 0;
+    overflow-y: auto;
+    padding: 0 18px 14px;
+  }
+  .sm-content::-webkit-scrollbar { width: 5px; }
+  .sm-content::-webkit-scrollbar-track { background: transparent; }
+  .sm-content::-webkit-scrollbar-thumb {
+    background: var(--bd-2, #20202a);
+    border-radius: 3px;
   }
 
-  /* Sidebar de categorías */
-  .drawer-cats {
-    background: var(--bg-2, #181818);
-    border-right: 1px solid var(--border, #1f1f1f);
-    padding: 8px 0;
-    display: flex;
-    flex-direction: column;
-    overflow-y: auto;
-  }
-  .drawer-cat {
-    padding: 8px 14px;
-    font-family: var(--font-mono, monospace);
+  .sm-section-head {
     font-size: 10px;
-    color: var(--fg-dim, #9a9aa3);
+    color: var(--fg-4, #7a7a82);
     letter-spacing: 1.5px;
-    text-transform: uppercase;
     font-weight: 600;
-    cursor: pointer;
-    border-left: 2px solid transparent;
-    transition: background 0.12s, color 0.12s;
+    text-transform: uppercase;
+    padding: 10px 4px 12px;
     display: flex;
     align-items: center;
     justify-content: space-between;
   }
-  .drawer-cat:hover {
-    background: rgba(255, 255, 255, 0.025);
-    color: var(--fg, #e8e8e8);
-  }
-  .drawer-cat.active {
-    background: rgba(0, 255, 159, 0.07);
-    color: var(--accent, #ffffff);
-    border-left-color: var(--accent-color, #00ff9f);
-    text-shadow: 0 0 5px rgba(220, 255, 235, 0.6);
-  }
-  .cat-count {
-    font-size: 9px;
-    color: var(--fg-trace, #333339);
-    font-weight: 400;
-    font-feature-settings: "tnum";
-  }
-  .drawer-cat.active .cat-count {
-    color: var(--accent-color, #00ff9f);
+  .sm-section-head .count {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 10px;
+    color: var(--fg-5, #5a5a62);
+    font-weight: 500;
+    letter-spacing: 0.3px;
+    text-transform: none;
   }
 
-  /* Grid de apps */
-  .drawer-apps {
-    padding: 10px 12px;
-    overflow-y: auto;
+  /* App grid · 6 columns */
+  .sm-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 3px;
-    align-content: start;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 4px;
+    margin-bottom: 8px;
   }
 
-  /* ─── App tile · icono + nombre + descripción ─── */
   .app-tile {
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 10px;
-    padding: 8px 10px;
+    gap: 7px;
+    padding: 14px 4px 12px;
+    border-radius: 7px;
     cursor: pointer;
-    transition: background 0.12s;
+    transition: all 0.12s;
     position: relative;
+    background: transparent;
+    border: none;
+    color: inherit;
+    font-family: inherit;
   }
   .app-tile:hover {
     background: rgba(255, 255, 255, 0.04);
   }
+  .app-tile:hover .app-tile-ico {
+    transform: scale(1.05);
+  }
   .app-tile:focus-visible {
-    outline: 1px solid var(--accent-color, #00ff9f);
-    outline-offset: -1px;
+    outline: none;
+    background: var(--ui-select-bg, rgba(122, 158, 177, 0.12));
   }
 
-  /* Barrita izquierda · marca app instalada (system apps siempre, docker variable) */
-  .app-tile.installed::before {
-    content: '';
-    position: absolute;
-    left: 0;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 2px;
-    height: 60%;
-    background: var(--sage, #7dd3a8);
-    opacity: 0.5;
-  }
-  .app-tile:hover.installed::before {
-    opacity: 1;
-    box-shadow: 0 0 4px rgba(125, 211, 168, 0.4);
-  }
-
-  .app-tile-icon {
-    width: 48px;
-    height: 48px;
-    flex-shrink: 0;
+  .app-tile-ico {
+    width: 38px;
+    height: 38px;
+    border-radius: 8px;
     display: flex;
     align-items: center;
     justify-content: center;
+    color: #fff;
+    transition: transform 0.15s;
+    flex-shrink: 0;
+    overflow: hidden;
   }
-  .app-emoji {
-    font-size: 28px;
-    line-height: 1;
+  /* System apps · sobrio */
+  .app-tile-ico.sys {
+    background: rgba(0, 255, 159, 0.08);
+    border: 1px solid rgba(0, 255, 159, 0.15);
+  }
+  /* Docker apps · neutro · respeta el icono real de la app */
+  .app-tile-ico.dk {
+    background: var(--bg-card, #1a1a20);
+    border: 1px solid var(--bd-2, #20202a);
   }
 
-  .app-tile-text {
-    flex: 1;
-    min-width: 0;
-  }
   .app-tile-name {
-    font-family: var(--font-mono, monospace);
-    font-size: 11px;
-    color: var(--fg, #e8e8e8);
-    letter-spacing: 0.5px;
-    font-weight: 600;
-    white-space: nowrap;
+    font-size: 10.5px;
+    color: var(--fg-2, #d0d0d4);
+    text-align: center;
+    font-weight: 400;
+    line-height: 1.2;
+    letter-spacing: 0.1px;
+    max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-  .app-tile-desc {
-    font-family: var(--font-mono, monospace);
-    font-size: 8.5px;
-    color: var(--fg-trace, #333339);
-    letter-spacing: 0.8px;
-    margin-top: 2px;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    width: 100%;
   }
 
-  /* LED running · punto verde en la esquina superior-derecha del tile */
-  .app-running-led {
+  /* Running indicator dot */
+  .app-tile-running {
     position: absolute;
-    top: 6px;
-    right: 6px;
-    width: 5px;
-    height: 5px;
-    background: var(--accent-color, #00ff9f);
-    box-shadow: 0 0 4px rgba(0, 255, 159, 0.5);
+    top: 8px;
+    right: 14px;
+    width: 6px;
+    height: 6px;
+    background: var(--st-ok, #00ff9f);
+    border-radius: 50%;
+    box-shadow: 0 0 4px var(--st-ok, #00ff9f);
   }
 
-  /* ─── Empty state ─── */
+  /* Divider between sections */
+  .sm-divider {
+    height: 1px;
+    background: var(--bd, rgba(255, 255, 255, 0.05));
+    margin: 8px 4px;
+  }
+
+  /* Empty state */
   .empty {
-    grid-column: 1 / -1;
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 12px;
+    justify-content: center;
     padding: 40px 20px;
-    color: var(--fg-mute, #5a5a62);
+    gap: 12px;
+    color: var(--fg-4, #7a7a82);
   }
   .empty-ic {
-    width: 38px; height: 38px;
-    border: 1px solid var(--border-bright, #2a2a2a);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 18px;
-    color: var(--fg-trace, #333339);
+    font-size: 32px;
+    opacity: 0.5;
   }
   .empty-msg {
-    font-family: var(--font-mono, monospace);
-    font-size: 10px;
-    letter-spacing: 1px;
+    font-size: 12px;
     text-align: center;
   }
 
-  /* ─── Footer técnico ─── */
-  .drawer-footer {
-    height: 28px;
-    background: var(--bg-2, #181818);
-    border-top: 1px solid var(--border, #1f1f1f);
+  /* ─── Bottom · User + Power ─── */
+  .sm-footer {
+    border-top: 1px solid var(--bd, rgba(255, 255, 255, 0.05));
+    padding: 10px 14px;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 0 14px;
-    font-family: var(--font-mono, monospace);
-    font-size: 8.5px;
-    color: var(--fg-trace, #333339);
-    letter-spacing: 1.5px;
+    gap: 10px;
+    background: rgba(0, 0, 0, 0.2);
+  }
+  .sm-user {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+    padding: 6px 8px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .sm-user:hover {
+    background: rgba(255, 255, 255, 0.03);
+  }
+  .sm-user-avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--nim-green, #00ff9f);
+    color: var(--bg-window, #0c0c0f);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 12px;
     flex-shrink: 0;
   }
-  .stat {
-    color: var(--fg-mute, #5a5a62);
+  .sm-user-info {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
   }
-  .stat b {
-    color: var(--fg, #e8e8e8);
-    font-weight: 400;
+  .sm-user-name {
+    font-size: 12.5px;
+    color: var(--fg, #f0f0f0);
+    font-weight: 500;
   }
-  .stat b.active {
-    color: var(--accent-color, #00ff9f);
-    text-shadow: 0 0 3px rgba(0, 255, 159, 0.4);
+  .sm-user-status {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 9px;
+    color: var(--st-ok, #00ff9f);
+    letter-spacing: 0.3px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
   }
-  .brand {
-    font-weight: 600;
+  .sm-user-status::before {
+    content: '';
+    width: 4px;
+    height: 4px;
+    background: var(--st-ok, #00ff9f);
+    border-radius: 50%;
+    box-shadow: 0 0 3px var(--st-ok, #00ff9f);
   }
 
-  /* Scrollbar técnico minimal */
-  .drawer-cats::-webkit-scrollbar,
-  .drawer-apps::-webkit-scrollbar {
-    width: 6px;
+  .sm-power {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 5px;
+    cursor: pointer;
+    color: var(--fg-3, #9c9ca4);
+    font-size: 14px;
+    transition: all 0.12s;
+    border: 1px solid transparent;
+    background: transparent;
   }
-  .drawer-cats::-webkit-scrollbar-track,
-  .drawer-apps::-webkit-scrollbar-track {
-    background: var(--bg-0, #0a0a0a);
-  }
-  .drawer-cats::-webkit-scrollbar-thumb,
-  .drawer-apps::-webkit-scrollbar-thumb {
-    background: var(--border-bright, #2a2a2a);
-  }
-  .drawer-cats::-webkit-scrollbar-thumb:hover,
-  .drawer-apps::-webkit-scrollbar-thumb:hover {
-    background: var(--fg-mute, #5a5a62);
+  .sm-power:hover {
+    color: var(--st-crit, #ff5a5a);
+    background: rgba(255, 90, 90, 0.06);
+    border-color: rgba(255, 90, 90, 0.2);
   }
 </style>
