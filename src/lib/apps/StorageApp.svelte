@@ -475,6 +475,10 @@
     </div>
   {:else}
 
+  {#if active === 'overview'}
+    <StorageKPIs pools={pools} disks={disks} alerts={alerts} />
+  {/if}
+
   <div class="st-scroll">
     {#if active === 'overview'}
       <StorageOverview
