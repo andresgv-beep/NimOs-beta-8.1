@@ -13,7 +13,9 @@
    *   · TreeNode v3.1 en slot `sidebar-content` con grupos
    *     Local / Remoto separados por sb-section labels.
    *   · View toggle + Nueva carpeta + Subir + clipboard badge
-   *     viven en `titlebar-actions`.
+   *     viven en `toolbar` (fila propia debajo del page-header),
+   *     no en `titlebar-actions` — así la titlebar queda limpia
+   *     con solo cubo + path + LEDs, igual que Storage/NimHealth.
    *   · Breadcrumb del path en `page-header`. Back button al inicio.
    *   · Footer del AppShell muestra path mono + selected count.
    *   · ctx-menu pasa a position:fixed (no necesita root wrapper).
@@ -421,50 +423,58 @@
     {/if}
   </svelte:fragment>
 
-  <!-- ═══ TITLEBAR ACTIONS · clipboard + view toggle + new folder + upload ═══ -->
-  <svelte:fragment slot="titlebar-actions">
-    {#if clipboard}
-      <div class="clipboard-badge" class:cut={clipboard.op === 'cut'}>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:10px;height:10px">
-          <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-        </svg>
-        {clipboard.op === 'cut' ? 'Cortado' : 'Copiado'}: {clipboard.file.name}
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <span class="cb-clear" on:click={() => clipboard = null}>✕</span>
+  <!-- ═══ TOOLBAR · fila propia debajo del page-header ═══
+       Clipboard badge a la izquierda (info contextual)
+       View toggle + Nueva carpeta + Subir a la derecha (acciones)
+       Solo se renderiza si hay algo que mostrar (currentShare o clipboard).
+  -->
+  <svelte:fragment slot="toolbar">
+    {#if currentShare || clipboard}
+      <div class="fm-toolbar">
+        {#if clipboard}
+          <div class="clipboard-badge" class:cut={clipboard.op === 'cut'}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:10px;height:10px">
+              <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
+            {clipboard.op === 'cut' ? 'Cortado' : 'Copiado'}: {clipboard.file.name}
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <span class="cb-clear" on:click={() => clipboard = null}>✕</span>
+          </div>
+        {/if}
+        {#if currentShare}
+          <div class="tb-view-group">
+            <button class="tb-plain-btn" class:active={viewMode === 'grid'} title="Vista cuadrícula" on:click={() => viewMode = 'grid'}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:14px;height:14px">
+                <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+                <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
+              </svg>
+            </button>
+            <button class="tb-plain-btn" class:active={viewMode === 'list'} title="Vista lista" on:click={() => viewMode = 'list'}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:14px;height:14px">
+                <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/>
+                <line x1="8" y1="18" x2="21" y2="18"/>
+                <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/>
+                <line x1="3" y1="18" x2="3.01" y2="18"/>
+              </svg>
+            </button>
+            <div class="tb-sep"></div>
+            <button class="tb-plain-btn" title="Nueva carpeta" on:click={() => newFolderModal = { name: '' }}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                <line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/>
+              </svg>
+            </button>
+          </div>
+          <button class="btn-import" on:click={uploadFiles}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:11px;height:11px">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            Subir
+          </button>
+        {/if}
       </div>
-    {/if}
-    {#if currentShare}
-      <div class="tb-view-group">
-        <button class="tb-plain-btn" class:active={viewMode === 'grid'} title="Vista cuadrícula" on:click={() => viewMode = 'grid'}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:14px;height:14px">
-            <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
-            <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
-          </svg>
-        </button>
-        <button class="tb-plain-btn" class:active={viewMode === 'list'} title="Vista lista" on:click={() => viewMode = 'list'}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:14px;height:14px">
-            <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/>
-            <line x1="8" y1="18" x2="21" y2="18"/>
-            <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/>
-            <line x1="3" y1="18" x2="3.01" y2="18"/>
-          </svg>
-        </button>
-        <div class="tb-sep"></div>
-        <button class="tb-plain-btn" title="Nueva carpeta" on:click={() => newFolderModal = { name: '' }}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-            <line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/>
-          </svg>
-        </button>
-      </div>
-      <button class="btn-import" on:click={uploadFiles}>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:11px;height:11px">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-          <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
-        </svg>
-        Subir
-      </button>
     {/if}
   </svelte:fragment>
 
@@ -849,6 +859,26 @@
   .fm-crumb-part.cur {
     color: var(--ink, #f2f2f5);
     background: rgba(255,255,255,0.05);
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     TOOLBAR · fila propia entre page-header y content
+     ───────────────────────────────────────────────────────────
+     Reemplaza al patrón viejo de "botones apretados al lado
+     de los LEDs". Aquí los actions tienen su propio espacio.
+     ═══════════════════════════════════════════════════════════ */
+  .fm-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+    flex-shrink: 0;
+    background: transparent;
+  }
+  /* Clipboard a la izquierda, todo lo demás empujado a la derecha */
+  .fm-toolbar .clipboard-badge {
+    margin-right: auto;
   }
 
   /* ═══════════════════════════════════════════════════════════
