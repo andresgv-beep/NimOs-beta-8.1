@@ -1,21 +1,26 @@
 <script>
   /**
-   * TreeNode · Nodo de árbol de carpetas para Files · v3.1
+   * TreeNode · Nodo de árbol de carpetas para Files · v3.2
    * ───────────────────────────────────────────────────────
    * Renderiza recursivamente la jerarquía de directorios de
    * una share. Se monta en el sidebar de FileManager dentro
    * del slot `sidebar-content` del AppShell v3.1.
    *
-   * CAMBIOS v3.1:
-   *   · Estética alineada al patrón `.sb-item` del AppShell:
-   *     padding 7×10, gap 10, font-size 13, tokens compartidos
-   *     `--side-hover` / `--side-active-bg` / `--side-active-fg`.
-   *   · Folder icon en color neutro (`--ink-mute`), no más
-   *     ámbar/azul hardcodeados de Beta 6/7.
-   *   · Indicador de origen separado: solo en depth=0 aparece
-   *     un dot 8×8 a la izquierda — verde NimOS para local,
-   *     púrpura (`--nim-remote`) para remote. Subcarpetas no
-   *     lo llevan (contexto heredado del padre).
+   * CAMBIOS v3.2:
+   *   · Eliminado el SVG folder genérico (Beta 6/7).
+   *   · Sustituido por un cubo 10×10 — firma NimOS · pareja
+   *     micro del `.ink-cube` blanco del titlebar.
+   *   · Color del cubo: naranja `--nim-folder` para shares
+   *     locales, azul `--nim-remote` para remotas. El cubo
+   *     marca origen por sí mismo en cualquier depth.
+   *   · Microinteracción: cuando el activeShare/activePath
+   *     cae dentro de este subárbol (`isActive || shouldBeOpen`),
+   *     el cubo rota 45° con glow del color de origen.
+   *     Cuadrado quieto = no estás aquí. Rombo = estás dentro.
+   *
+   * CAMBIOS v3.1 (preservados):
+   *   · Estética alineada al patrón `.sb-item` del AppShell.
+   *   · Indicador de origen separado (dot 8×8 en depth=0).
    *   · Indent uniforme: padding-left = 10 + depth × 14.
    *
    * MECÁNICA (sin cambios):
@@ -78,6 +83,9 @@
   function handleClick() { onNavigate(share, path); }
 
   $: isActive = activeShare === share && activePath === path;
+  /* v3.2: cubo rota cuando este nodo está siendo navegado
+     (es el activo o uno ancestro del activo). */
+  $: inTrail = isActive || shouldBeOpen;
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -85,6 +93,7 @@
 <div
   class="tree-item"
   class:active={isActive}
+  class:in-trail={inTrail}
   class:root={depth === 0}
   class:remote
   style="padding-left:{10 + depth * 14}px"
@@ -110,17 +119,8 @@
     <span class="tn-origin" aria-hidden="true"></span>
   {/if}
 
-  <svg
-    class="tn-folder"
-    viewBox="0 0 16 16"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="1.5"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-  >
-    <path d="M2 4.5a1 1 0 0 1 1-1h3.5l1.5 1.5h5a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/>
-  </svg>
+  <!-- Cubo · firma NimOS · rota a 45° cuando inTrail -->
+  <span class="tn-cube" aria-hidden="true"></span>
 
   <span class="tn-name">{name}</span>
 </div>
@@ -196,8 +196,10 @@
   }
 
   /* ─── Origen (solo en root, depth=0) ───
-     Verde nim para local, púrpura nim-remote para remote.
+     Verde nim para local, azul nim-remote para remote.
      Reemplaza el sistema de "folder coloreado" de Beta 6/7.
+     v3.2: el cubo .tn-cube también refleja origen, así que
+     el dot es indicador adicional de "esto es root" (depth=0).
   */
   .tn-origin {
     width: 8px;
@@ -208,20 +210,36 @@
     box-shadow: 0 0 4px var(--signal-glow, rgba(0, 255, 159, 0.4));
   }
   .tree-item.remote .tn-origin {
-    background: var(--nim-remote, #b48fff);
-    box-shadow: 0 0 4px rgba(180, 143, 255, 0.4);
+    background: var(--nim-remote, #4db8ff);
+    box-shadow: 0 0 4px rgba(77, 184, 255, 0.4);
   }
 
-  /* ─── Folder icon · color neutro siempre ─── */
-  .tn-folder {
-    width: 14px;
-    height: 14px;
+  /* ─── Cubo · firma NimOS para "carpeta navegable" ───
+     Cuadrado 10×10 quieto = carpeta cerrada / no estás aquí.
+     Rotado 45° con glow = estás navegando este subárbol.
+     Color del cubo refleja origen:
+       · Local  → --nim-folder (naranja)
+       · Remote → --nim-remote (azul)
+  */
+  .tn-cube {
+    width: 10px;
+    height: 10px;
     flex-shrink: 0;
-    color: var(--ink-mute, #9a9aa3);
+    background: var(--nim-folder, #ff9c5a);
+    transition:
+      transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+      box-shadow 0.2s ease,
+      opacity 0.15s;
   }
-  .tree-item:hover .tn-folder,
-  .tree-item.active .tn-folder {
-    color: currentColor;
+  .tree-item.remote .tn-cube {
+    background: var(--nim-remote, #4db8ff);
+  }
+  .tree-item.in-trail .tn-cube {
+    transform: rotate(45deg);
+    box-shadow: 0 0 5px rgba(255, 156, 90, 0.45);
+  }
+  .tree-item.remote.in-trail .tn-cube {
+    box-shadow: 0 0 5px rgba(77, 184, 255, 0.45);
   }
 
   /* ─── Nombre ─── */
@@ -235,13 +253,23 @@
 
   /* ─── Estado inactivo de la ventana ───
      Cuando la ventana no tiene foco, atenuar el dot de origen
-     para que case con el resto del chrome inactivo (cubo, LEDs).
+     y el cubo para que casen con el resto del chrome inactivo
+     (ink-cube, LEDs).
   */
   :global(.window.inactive) .tn-origin {
     opacity: 0.45;
     box-shadow: 0 0 2px var(--signal-glow, rgba(0, 255, 159, 0.2));
   }
   :global(.window.inactive) .tree-item.remote .tn-origin {
-    box-shadow: 0 0 2px rgba(180, 143, 255, 0.2);
+    box-shadow: 0 0 2px rgba(77, 184, 255, 0.2);
+  }
+  :global(.window.inactive) .tn-cube {
+    opacity: 0.55;
+  }
+  :global(.window.inactive) .tree-item.in-trail .tn-cube {
+    box-shadow: 0 0 2px rgba(255, 156, 90, 0.2);
+  }
+  :global(.window.inactive) .tree-item.remote.in-trail .tn-cube {
+    box-shadow: 0 0 2px rgba(77, 184, 255, 0.2);
   }
 </style>
