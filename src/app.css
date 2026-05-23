@@ -152,12 +152,14 @@ html, body {
    ═══════════════════════════════════════════════════════════════ */
 :root,
 [data-theme="dark"] {
-  /* ── Fondos (escalera de elevación) ──────────────────────── */
-  --canvas:         #0a0a0a;
-  --canvas-soft:    #111111;
-  --panel:          #161616;
-  --panel-elev:     #1c1c1c;
-  --panel-deep:     #242429;
+  /* ── Fondos (escalera de elevación) ──
+     Valores con tinte azul-violeta sutil (B > R=G) del mockup
+     nimos-storage validado. Da identidad NimOS sin ser saturado. */
+  --canvas:         #101015;
+  --canvas-soft:    #131316;
+  --panel:          #16161a;
+  --panel-elev:     #1a1a1f;
+  --panel-deep:     #15151a;
 
   /* ── Texto (4 niveles de jerarquía) ──────────────────────── */
   --ink:            #f2f2f5;
@@ -171,26 +173,26 @@ html, body {
   --line-bright:    rgba(255, 255, 255, 0.14);
   --line-strong:    rgba(255, 255, 255, 0.22);
 
-  /* ── Ventanas (estética técnica NimOS) ───────────────────── */
-  --window-bg:      #161616;
+  /* ── Ventanas ─ usando el azulado del mockup ─────────────── */
+  --window-bg:      #16161a;
   --window-border:  rgba(255, 255, 255, 0.14);
   --window-shadow:
     5px 5px 0 rgba(0, 0, 0, 0.7),
     0 0 60px rgba(255, 250, 240, 0.04);
 
-  /* ── Sidebar interno de apps ─────────────────────────────── */
-  --side-bg:        var(--panel-elev);
+  /* ── Sidebar interno de apps · más oscuro que ventana ────── */
+  --side-bg:        #131316;
   --side-border:    var(--line);
   --side-hover:     rgba(255, 255, 255, 0.04);
   --side-active-bg: rgba(122, 158, 177, 0.10);
   --side-active-fg: #7a9eb1;
 
-  /* ── Taskbar · color sólido plano · sin gradient cromado ── */
-  --taskbar-bg:           #161616;
+  /* ── Taskbar · color sólido plano azulado ────────────────── */
+  --taskbar-bg:           #131316;
   --taskbar-border-top:   rgba(255, 255, 255, 0.06);
 
-  /* ── Main content área ───────────────────────────────────── */
-  --main-bg:        var(--panel);
+  /* ── Main content área ─ ligeramente más claro que ventana ─ */
+  --main-bg:        #1a1a1f;
   --main-fg:        var(--ink);
   --main-fg-mute:   var(--ink-mute);
   --main-fg-faint:  var(--ink-faint);
