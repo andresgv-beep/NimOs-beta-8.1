@@ -41,7 +41,7 @@
    *   POST /api/storage/v2/pool/destroy
    */
   import { onMount, onDestroy } from 'svelte';
-  import { token, hdrs, jsonHdrs } from '$lib/stores/auth.js';
+  import { token } from '$lib/stores/auth.js';
   import AppShell from '$lib/components/AppShell.svelte';
   import {
     KPICard, SectionHead, BevelButton, IconButton,
@@ -51,6 +51,12 @@
   import DestroyPoolWizard from './storage/DestroyPoolWizard.svelte';
   import CreatePoolWizard from './storage/CreatePoolWizard.svelte';
   import { ConfirmDialog } from '$lib/ui';
+  import {
+    fmtBytes, fmtDate, inferDiskRole,
+    healthLabel, healthVariant,
+    usageVariant, ledVariantForHealth, smartVariant,
+  } from './storage/formatters.js';
+  import * as api from './storage/api.js';
 
   // ─── State ───
   let active = 'overview'; // 'overview' | 'disks' | 'snapshots' | 'scrub' | 'smart'
@@ -142,83 +148,23 @@
   $: overallUsagePct = totalCapacity > 0 ? Math.round((totalUsed / totalCapacity) * 100) : 0;
 
   // ─── API ───
-  //
-  // Beta 8.1 Fase 7:
-  //   Endpoints legacy /api/storage/* (NO v2). El backend ha sido limpiado
-  //   en Bloques A+B: ZFS eliminado, SQLite es fuente de verdad, los handlers
-  //   legacy enriquecen pools con datos vivos (capacidad RAID-aware, SMART,
-  //   health, etc.) leyendo de SQLite via el adapter.
-  //
-  //   v2 endpoints existen pero no se usan desde la UI (devuelven datos crudos
-  //   sin enrichment). Cuando v2 enriquezca igual que legacy, migraremos.
-
-  /**
-   * unwrapResponse normaliza la respuesta del backend.
-   *
-   * Soporta dos formatos:
-   *   · Legacy: response body es el payload directo (ej: array de pools)
-   *   · v2:     response body es {data: payload} o {error: {code, message}}
-   *
-   * Si la respuesta es OK pero tiene {data}, devuelve data.
-   * Si la respuesta es OK sin {data}, devuelve el body tal cual (legacy).
-   * Si la respuesta es error: lanza Error con .code y .message.
-   */
-  async function unwrapV2(res, label = 'api call') {
-    let body;
-    try {
-      body = await res.json();
-    } catch {
-      throw new Error(`${label}: invalid JSON response (status ${res.status})`);
-    }
-    if (!res.ok) {
-      // Error: puede venir como {error: {...}} (v2) o {error: "string"} (legacy)
-      let code = `http_${res.status}`;
-      let msg = res.statusText || 'request failed';
-      let details;
-      if (body?.error) {
-        if (typeof body.error === 'string') {
-          msg = body.error;
-          code = body.error;
-        } else if (typeof body.error === 'object') {
-          code = body.error.code || code;
-          msg = body.error.message || msg;
-          details = body.error.details;
-        }
-      }
-      const e = new Error(`${label}: ${msg}`);
-      e.code = code;
-      e.details = details;
-      throw e;
-    }
-    // OK: si el cuerpo tiene {data}, es respuesta v2 → devolver data.
-    // Si no, es legacy (array u objeto directo) → devolver tal cual.
-    if (body && typeof body === 'object' && 'data' in body && !Array.isArray(body)) {
-      return body.data;
-    }
-    return body;
-  }
+  // Todas las llamadas HTTP viven en ./storage/api.js (importado como `api`).
+  // El componente solo orquesta: pide datos, gestiona estado, renderiza.
 
   async function loadAll() {
     try {
       // Fase 7 Bloque C3.2: añadido /observed para detectar filesystems
       // huérfanos (BTRFS no gestionados por NimOS) y mostrar divergencias.
-      const [poolsRes, statusRes, disksRes, alertsRes, capsRes, observedRes] = await Promise.all([
-        fetch('/api/storage/v2/pools',        { headers: hdrs() }),
-        fetch('/api/storage/v2/status',       { headers: hdrs() }),
-        fetch('/api/storage/v2/disks',        { headers: hdrs() }),
-        fetch('/api/storage/v2/alerts',       { headers: hdrs() }),
-        fetch('/api/storage/v2/capabilities', { headers: hdrs() }),
-        fetch('/api/storage/v2/observed',     { headers: hdrs() }),
-      ]);
-
-      // Cada unwrap aislado: si uno falla, los demás siguen sirviendo
+      // Cada llamada aislada: si una falla, las demás siguen sirviendo
       // datos al usuario (degradación graceful).
-      const poolsData      = await unwrapV2(poolsRes,      'pools').catch(() => []);
-      const statusData     = await unwrapV2(statusRes,     'status').catch(() => ({}));
-      const disksData      = await unwrapV2(disksRes,      'disks').catch(() => ({}));
-      const alertsData     = await unwrapV2(alertsRes,     'alerts').catch(() => ({ alerts: [] }));
-      const capsData       = await unwrapV2(capsRes,       'capabilities').catch(() => ({}));
-      const observedData   = await unwrapV2(observedRes,   'observed').catch(() => ({ filesystems: [], divergences: [] }));
+      const [poolsData, statusData, disksData, alertsData, capsData, observedData] = await Promise.all([
+        api.getPools().catch(() => []),
+        api.getStatus().catch(() => ({})),
+        api.getDisks().catch(() => ({})),
+        api.getAlerts().catch(() => ({ alerts: [] })),
+        api.getCapabilities().catch(() => ({})),
+        api.getObserved().catch(() => ({ filesystems: [], divergences: [] })),
+      ]);
 
       pools = Array.isArray(poolsData) ? poolsData : [];
       status = statusData || {};
@@ -247,7 +193,7 @@
     refreshing = true;
     try {
       // Llamada con ?refresh=true fuerza re-scan en el backend
-      await fetch('/api/storage/v2/observed?refresh=true', { headers: hdrs() });
+      await api.getObserved({ refresh: true });
       // Recargar todos los datos para reflejar el nuevo estado
       await loadAll();
     } catch (e) {
@@ -309,20 +255,12 @@
     importProcessing = true;
     importError = '';
     try {
-      const res = await fetch('/api/storage/v2/pools/import', {
-        method: 'POST',
-        headers: jsonHdrs(),
-        body: JSON.stringify({
-          uuid: importingFS.uuid,
-          name: importName,
-        }),
-      });
-      await unwrapV2(res, 'import pool');
+      await api.importPool({ uuid: importingFS.uuid, name: importName });
       closeImportModal();
       // Forzar re-scan del observer para que el FS importado deje de
       // aparecer como huérfano. ?refresh=true bloquea 200ms en backend
       // mientras el observer hace el scan completo.
-      await fetch('/api/storage/v2/observed?refresh=true', { headers: hdrs() });
+      await api.getObserved({ refresh: true });
       await loadAll();
     } catch (e) {
       importError = e.message || 'Error desconocido al importar';
@@ -360,42 +298,15 @@
       // El observer detectará en el próximo scan que ya no hay BTRFS.
       const devicePaths = (destroyingOrphan.devices || []).map(d => d.path).filter(Boolean);
       for (const path of devicePaths) {
-        const res = await fetch('/api/storage/v2/wipe', {
-          method: 'POST',
-          headers: jsonHdrs(),
-          body: JSON.stringify({ disk: path, force: true }),
-        });
-        await unwrapV2(res, 'wipe disk');
+        await api.wipeDisk(path, { force: true });
       }
       closeDestroyOrphanModal();
       // Forzar re-scan del observer (los discos vuelven a estar libres).
-      await fetch('/api/storage/v2/observed?refresh=true', { headers: hdrs() });
+      await api.getObserved({ refresh: true });
       await loadAll();
     } catch (e) {
       destroyOrphanError = e.message || 'Error desconocido al destruir';
       destroyOrphanProcessing = false;
-    }
-  }
-
-  // ─── Helper: formato legible del estado del observer ───────────────────
-
-  function healthLabel(h) {
-    switch (h) {
-      case 'healthy':     return 'sano';
-      case 'incomplete':  return 'incompleto';
-      case 'degraded':    return 'degradado';
-      case 'partial':     return 'parcial';
-      case 'unknown':     return 'desconocido';
-      default:            return h || '—';
-    }
-  }
-  function healthVariant(h) {
-    switch (h) {
-      case 'healthy':     return 'success';
-      case 'incomplete':  return 'warn';
-      case 'degraded':    return 'warn';
-      case 'partial':     return 'critical';
-      default:            return 'default';
     }
   }
 
@@ -461,10 +372,7 @@
   async function loadSnapshots(poolName) {
     if (!poolName) return;
     try {
-      const res = await fetch(`/api/storage/v2/snapshots?pool=${encodeURIComponent(poolName)}`, {
-        headers: hdrs(),
-      });
-      const data = await unwrapV2(res, 'snapshots');
+      const data = await api.getSnapshots(poolName);
       snapshots[poolName] = data?.snapshots || [];
       snapshots = snapshots;
     } catch (e) {
@@ -476,9 +384,8 @@
   async function rescanDisks() {
     scanning = true;
     try {
-      const res = await fetch('/api/storage/v2/scan', { method: 'POST', headers: hdrs() });
-      // unwrap solo para que lance error si v2 falla (no usamos el payload)
-      await unwrapV2(res, 'scan').catch(e => {
+      // Llamada que swallows error: no usamos el payload, solo log si falla.
+      await api.scanDisks().catch(e => {
         console.warn('[StorageApp] scan failed:', e.message);
       });
       await loadAll();
@@ -514,7 +421,7 @@
   async function handleExportPoolDone() {
     exportPoolName = null;        // cerrar wizard
     // Forzar re-scan del observer (tras export el FS aparece como huérfano).
-    await fetch('/api/storage/v2/observed?refresh=true', { headers: hdrs() });
+    await api.getObserved({ refresh: true });
     await loadAll();              // recargar lista de pools (el pool ya no debería estar)
   }
 
@@ -529,15 +436,7 @@
     wipeProcessing = true;
     wipeError = '';
     try {
-      const res = await fetch('/api/storage/v2/wipe', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${$token}`,
-        },
-        body: JSON.stringify({ disk: wipeDisk }),
-      });
-      await unwrapV2(res, 'wipe');
+      await api.wipeDisk(wipeDisk);
       // Éxito
       wipeProcessing = false;
       wipeDisk = null;
@@ -557,7 +456,7 @@
   async function handleDestroyPoolDone() {
     destroyPool = null;
     // Forzar re-scan del observer (tras destroy los discos quedan libres).
-    await fetch('/api/storage/v2/observed?refresh=true', { headers: hdrs() });
+    await api.getObserved({ refresh: true });
     await loadAll();
   }
 
@@ -569,7 +468,7 @@
   async function handleCreatePoolDone() {
     creatingPool = false;
     // Forzar re-scan del observer para reflejar el nuevo pool managed.
-    await fetch('/api/storage/v2/observed?refresh=true', { headers: hdrs() });
+    await api.getObserved({ refresh: true });
     await loadAll();
     active = 'overview'; // salta a resumen para ver el pool recién creado
   }
@@ -581,13 +480,8 @@
     scrubbing = scrubbing;
     scrubMsg = '';
     try {
-      const res = await fetch('/api/storage/v2/scrub', {
-        method: 'POST',
-        headers: { ...hdrs(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pool: poolName }),
-      });
       try {
-        await unwrapV2(res, 'scrub');
+        await api.startScrub(poolName);
         scrubMsg = `Scrub iniciado en "${poolName}"`;
       } catch (e) {
         scrubMsg = e.message || 'Error al iniciar scrub';
@@ -599,61 +493,6 @@
     scrubbing[poolName] = false;
     scrubbing = scrubbing;
     kebabOpenFor = null;
-  }
-
-  // ─── Helpers ───
-  function fmtBytes(b) {
-    if (!b || b === 0) return '0 B';
-    if (b >= 1e12) return (b / 1e12).toFixed(1) + ' TB';
-    if (b >= 1e9)  return (b / 1e9).toFixed(1)  + ' GB';
-    if (b >= 1e6)  return (b / 1e6).toFixed(0)  + ' MB';
-    if (b >= 1e3)  return (b / 1e3).toFixed(0)  + ' KB';
-    return b + ' B';
-  }
-
-  function fmtDate(iso) {
-    if (!iso) return '—';
-    try {
-      const d = new Date(iso);
-      return d.toLocaleDateString('es-ES') + ' ' + d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
-    } catch { return iso; }
-  }
-
-  // Inferir rol del disco en un pool según vdevType
-  // (visual solo · en ZFS parity está distribuida, pero para UI es más claro)
-  function inferDiskRole(disks, idx, vdevType) {
-    const v = (vdevType || '').toLowerCase();
-    const n = disks.length;
-    if (v === 'raidz' || v === 'raidz1') return idx === n - 1 ? 'parity' : 'data';
-    if (v === 'raidz2') return idx >= n - 2 ? 'parity' : 'data';
-    if (v === 'raidz3') return idx >= n - 3 ? 'parity' : 'data';
-    if (v === 'mirror') return 'mirror';
-    return 'data';
-  }
-
-  function usageVariant(pct) {
-    if (pct >= 90) return 'crit';
-    if (pct >= 75) return 'warn';
-    return 'ok';
-  }
-
-  function ledVariantForHealth(health) {
-    // health es PoolHealth.Status del backend v2:
-    // healthy | at_risk | unstable | degraded | critical
-    const h = (health || '').toLowerCase();
-    if (h === 'healthy')                              return 'ok';
-    if (h === 'at_risk' || h === 'unstable')          return 'warn';
-    if (h === 'degraded')                             return 'warn';
-    if (h === 'critical')                             return 'crit';
-    return 'off';
-  }
-
-  function smartVariant(smartStatus) {
-    if (smartStatus === 'ok')       return 'ok';
-    if (smartStatus === 'warning')  return 'warn';
-    if (smartStatus === 'critical') return 'crit';
-    if (smartStatus === 'missing')  return 'crit';
-    return 'off';
   }
 
   // ─── Click-outside listener para kebab ───
