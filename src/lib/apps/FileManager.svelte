@@ -1,5 +1,38 @@
 <script>
+  /**
+   * FileManager · v3.1 (Beta 8.1 refactor)
+   * ───────────────────────────────────────────────────────────────
+   * Migración del FileManager standalone a AppShell + TreeNode.
+   *
+   * CAMBIOS v3.1 respecto al anterior:
+   *   · Eliminado chrome custom (.files-root, .sidebar, .sb-header,
+   *     .sb-storage, .inner-wrap, .inner, .inner-titlebar, .statusbar).
+   *   · Envuelto en <AppShell> · ahora tiene titlebar v3 con cubo +
+   *     path dinámico nimos://host/files/{share}/{...pathParts} +
+   *     LEDs C2 min/max/close como el resto de apps.
+   *   · TreeNode v3.1 en slot `sidebar-content` con grupos
+   *     Local / Remoto separados por sb-section labels.
+   *   · View toggle + Nueva carpeta + Subir + clipboard badge
+   *     viven en `titlebar-actions`.
+   *   · Breadcrumb del path en `page-header`. Back button al inicio.
+   *   · Footer del AppShell muestra path mono + selected count.
+   *   · ctx-menu pasa a position:fixed (no necesita root wrapper).
+   *
+   * LÓGICA SIN CAMBIOS:
+   *   · fetchShares / fetchFiles / fetchStorage
+   *   · Upload chunked con addTask (CHUNK_SIZE 20MB)
+   *   · ctx-menu (open/copy/cut/paste/zip/unzip/rename/info/delete)
+   *   · Modales: rename / info / newFolder
+   *   · clipboard cut/copy/paste
+   *   · download-token endpoint (CRIT-008)
+   *   · Toda la API del daemon intacta
+   *
+   * ELIMINADO (no migrado):
+   *   · sb-storage (caja con pool/uso en el sidebar) · esa info
+   *     vive en Storage app, no es responsabilidad de Files.
+   */
   import { onMount, onDestroy } from 'svelte';
+  import AppShell from '$lib/components/AppShell.svelte';
   import TreeNode from '$lib/components/TreeNode.svelte';
   import { getToken, jsonHdrs as hdrs } from '$lib/stores/auth.js';
   import { notifySuccess, notifyError, notifyWarning } from '$lib/stores/notifications.js';
@@ -11,44 +44,47 @@
   let files = [];
   let loading = false;
   let selected = new Set();
-  let storageInfo = null;
 
   // ── Clipboard ──
   let clipboard = null; // { file, share, path, op: 'copy'|'cut' }
 
   // ── Context menu ──
-  let ctxMenu = null; // { x, y, file, idx } | null
-  let ctxTarget = null; // el archivo al que se hizo clic derecho
+  let ctxMenu = null;   // { x, y, file, idx } | null
+  let ctxTarget = null; // archivo target del click derecho
 
   // ── Modals ──
-  let renameModal = null; // { file, newName }
-  let infoModal = null;   // file
-  let viewMode = 'grid';  // 'grid' | 'list'
-  let newFolderModal = null; // { name: '' }
-
+  let renameModal = null;     // { file, newName }
+  let infoModal = null;       // file
+  let viewMode = 'grid';      // 'grid' | 'list'
+  let newFolderModal = null;  // { name: '' }
 
   function filePath(file) {
     return currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
   }
 
   async function fetchShares() {
-    try { const r = await fetch('/api/files', { headers: hdrs() }); const d = await r.json(); if (d.shares) shares = d.shares; } catch {}
+    try {
+      const r = await fetch('/api/files', { headers: hdrs() });
+      const d = await r.json();
+      if (d.shares) shares = d.shares;
+    } catch {}
   }
   async function fetchFiles() {
     if (!currentShare) { files = []; return; }
     loading = true;
-    try { const r = await fetch(`/api/files?share=${currentShare}&path=${encodeURIComponent(currentPath)}`, { headers: hdrs() }); const d = await r.json(); files = d.files || []; } catch { files = []; }
-    selected = new Set(); loading = false;
-  }
-  async function fetchStorage() {
-    try { const r = await fetch('/api/storage/status', { headers: hdrs() }); const d = await r.json(); if (d.pools?.length) storageInfo = d.pools[0]; } catch {}
+    try {
+      const r = await fetch(`/api/files?share=${currentShare}&path=${encodeURIComponent(currentPath)}`, { headers: hdrs() });
+      const d = await r.json();
+      files = d.files || [];
+    } catch { files = []; }
+    selected = new Set();
+    loading = false;
   }
 
   let gridEl;
 
   onMount(() => {
     fetchShares();
-    fetchStorage();
 
     const handleMouseDown = (e) => {
       if (e.button === 2) return;
@@ -57,6 +93,7 @@
     document.addEventListener('mousedown', handleMouseDown);
     return () => { document.removeEventListener('mousedown', handleMouseDown); };
   });
+
   $: if (currentShare !== undefined || currentPath) fetchFiles();
 
   function navigate(share, path) { currentShare = share; currentPath = path; closeCtx(); }
@@ -69,7 +106,7 @@
     closeCtx();
     if (file.isDirectory) { currentPath = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`; return; }
     const fp = filePath(file);
-    // CRIT-008: Use short-lived one-time download token instead of session token in URL
+    // CRIT-008: download token corto en lugar de session token en URL
     try {
       const res = await fetch('/api/files/download-token', { method: 'POST', headers: hdrs(), body: JSON.stringify({ share: currentShare, path: fp }) });
       const data = await res.json();
@@ -78,30 +115,29 @@
       } else {
         window.open(`/api/files/download?share=${currentShare}&path=${encodeURIComponent(fp)}&token=${getToken()}`, '_blank');
       }
-    } catch { window.open(`/api/files/download?share=${currentShare}&path=${encodeURIComponent(fp)}&token=${getToken()}`, '_blank'); }
+    } catch {
+      window.open(`/api/files/download?share=${currentShare}&path=${encodeURIComponent(fp)}&token=${getToken()}`, '_blank');
+    }
   }
   function toggleSelect(i, e) {
     if (e?.ctrlKey || e?.metaKey) { const n = new Set(selected); n.has(i) ? n.delete(i) : n.add(i); selected = n; }
     else selected = new Set([i]);
   }
-  const CHUNK_SIZE = 20 * 1024 * 1024; // 20MB per chunk
+
+  const CHUNK_SIZE = 20 * 1024 * 1024; // 20MB por chunk
 
   function uploadFiles() {
     const input = document.createElement('input'); input.type = 'file'; input.multiple = true;
     input.onchange = async (e) => {
       const files = Array.from(e.target.files);
-
       for (const f of files) {
         const totalChunks = Math.ceil(f.size / CHUNK_SIZE) || 1;
         addTask(f.name, f.size, f, currentShare, currentPath, totalChunks, CHUNK_SIZE);
       }
-
-      // Refresh file list after a short delay to catch fast uploads
       setTimeout(() => fetchFiles(), 2000);
     };
     input.click();
   }
-
 
   async function createFolder() {
     if (!newFolderModal?.name?.trim() || !currentShare) return;
@@ -120,36 +156,30 @@
     }
     newFolderModal = null;
   }
+
   // ── Context menu ──
   function onContextMenu(e, file, idx) {
     e.preventDefault();
     e.stopPropagation();
     ctxTarget = file;
-    // Seleccionar el archivo si no está seleccionado
     if (!selected.has(idx)) selected = new Set([idx]);
-    const p = calcMenuPos(e); ctxMenu = { x: p.x, y: p.y, file, idx };
-  }
-
-  function onGridContextMenu(e) {
-    // Click derecho en fondo vacío — solo mostrar pegar si hay clipboard
-    if (e.target.closest('.f-item')) return;
-    e.preventDefault();
-    if (!clipboard || !currentShare) return;
-    ctxTarget = null;
-    const p = calcMenuPos(e); ctxMenu = { x: p.x, y: p.y, file: null, idx: -1 };
+    const p = calcMenuPos(e);
+    ctxMenu = { x: p.x, y: p.y, file, idx };
   }
 
   function getZoom() { return parseFloat(document.documentElement.style.zoom) || 1; }
 
+  /**
+   * v3.1: ctx-menu pasa a position:fixed. Las coords son del viewport
+   * divididas por zoom (que afecta a clientX/Y al renderizarse dentro
+   * de la página zoomada). Ya no depende de un wrapper .files-root.
+   */
   function calcMenuPos(e, menuW = 200, menuH = 290) {
     const z = getZoom();
-    const root = document.querySelector('.files-root');
-    const rect = root ? root.getBoundingClientRect() : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
-    // Coordinates relative to the container (since ctx-menu is position:absolute inside files-root)
-    const x = (e.clientX - rect.left) / z;
-    const y = (e.clientY - rect.top) / z;
-    const maxX = rect.width / z - menuW - 8;
-    const maxY = rect.height / z - menuH - 8;
+    const x = e.clientX / z;
+    const y = e.clientY / z;
+    const maxX = window.innerWidth  / z - menuW - 8;
+    const maxY = window.innerHeight / z - menuH - 8;
     return {
       x: Math.max(0, Math.min(x, maxX)),
       y: Math.max(0, Math.min(y, maxY)),
@@ -157,12 +187,6 @@
   }
 
   function closeCtx() { ctxMenu = null; ctxTarget = null; }
-
-  function onWindowClick(e) {
-    if (e.button === 2) return; // ignorar click derecho
-    if (ctxMenu && !e.target.closest('.ctx-menu')) closeCtx();
-    if (renameModal && !e.target.closest('.modal')) return;
-  }
 
   // ── Acciones ──
   async function deleteFile(file) {
@@ -226,7 +250,6 @@
   function startRename(file) {
     closeCtx();
     renameModal = { file, newName: file.name };
-    // Focus el input en el siguiente tick
     setTimeout(() => document.getElementById('rename-input')?.select(), 50);
   }
 
@@ -313,10 +336,19 @@
   $: shareInfo = shares.find(s => s.name === currentShare);
   $: pathParts = currentPath === '/' ? [] : currentPath.split('/').filter(Boolean);
 
+  // Path dinámico para titlebar v3: nimos://host/files/{share}/{...pathParts}
+  $: titlebarPath = currentShare
+    ? ['files', currentShare, ...pathParts]
+    : ['files'];
+
+  $: localShares = shares.filter(s => !s.remote);
+  $: remoteShares = shares.filter(s => s.remote);
+
   const SVG_FOLDER_LOCAL  = `<svg width="36" height="36" viewBox="0 0 24 24" fill="#f59e0b" stroke="#d97706" stroke-width="0.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
   const SVG_FOLDER_REMOTE = `<svg width="36" height="36" viewBox="0 0 24 24" fill="#3b82f6" stroke="#2563eb" stroke-width="0.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
   const SVG_FOLDER_SM_LOCAL  = `<svg width="15" height="15" viewBox="0 0 24 24" fill="#f59e0b" stroke="#d97706" stroke-width="0.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
   const SVG_FOLDER_SM_REMOTE = `<svg width="15" height="15" viewBox="0 0 24 24" fill="#3b82f6" stroke="#2563eb" stroke-width="0.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
+
   function fIconHtml(file, small = false) {
     if (file.isDirectory) return small ? SVG_FOLDER_SM_LOCAL : SVG_FOLDER_LOCAL;
     return fIcon(file);
@@ -338,35 +370,43 @@
 </script>
 
 <svelte:window on:keydown={(e) => {
-  if (e.key === 'Escape') { closeCtx(); renameModal = null; infoModal = null; }
+  if (e.key === 'Escape') { closeCtx(); renameModal = null; infoModal = null; newFolderModal = null; }
   if (e.key === 'Enter' && renameModal) confirmRename();
 }} />
 
-<div class="files-root">
-  <!-- SIDEBAR -->
-  <div class="sidebar">
-    <div class="sb-header">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-      <span class="title">Files</span>
-    </div>
+<AppShell
+  appId="files"
+  title="Files"
+  headerIcon="F"
+  pathSegments={titlebarPath}
+>
+  <!-- ═══ SIDEBAR · grupos Local/Remoto + TreeNode ═══ -->
+  <svelte:fragment slot="sidebar-content">
+    {#if localShares.length > 0}
+      <div class="fm-sb-group">
+        <span>Local</span>
+        <span class="count">{localShares.length}</span>
+      </div>
+      {#each localShares as share}
+        <TreeNode
+          share={share.name}
+          path="/"
+          name={share.displayName || share.name}
+          depth={0}
+          activePath={currentPath}
+          activeShare={currentShare}
+          onNavigate={navigate}
+          remote={false}
+        />
+      {/each}
+    {/if}
 
-    <div class="sb-section">Carpetas</div>
-    {#each shares.filter(s => !s.remote) as share}
-      <TreeNode
-        share={share.name}
-        path="/"
-        name={share.displayName || share.name}
-        depth={0}
-        activePath={currentPath}
-        activeShare={currentShare}
-        onNavigate={navigate}
-        remote={false}
-      />
-    {/each}
-
-    {#if shares.some(s => s.remote)}
-      <div class="sb-section" style="margin-top:6px">Remotas</div>
-      {#each shares.filter(s => s.remote) as share}
+    {#if remoteShares.length > 0}
+      <div class="fm-sb-group">
+        <span>Remoto</span>
+        <span class="count">{remoteShares.length}</span>
+      </div>
+      {#each remoteShares as share}
         <TreeNode
           share={share.name}
           path="/"
@@ -379,170 +419,185 @@
         />
       {/each}
     {/if}
+  </svelte:fragment>
 
-    {#if storageInfo}
-      <div class="sb-storage">
-        <div class="ss-labels"><span>{storageInfo.name}</span><strong>{storageInfo.totalFormatted}</strong></div>
-        <div class="ss-bar"><div class="ss-fill" style="width:{storageInfo.usagePercent}%"></div></div>
-      </div>
-    {/if}
-  </div>
-
-  <!-- INNER WRAP -->
-  <div class="inner-wrap">
-    <div class="inner">
-      <!-- TITLEBAR -->
-      <div class="inner-titlebar">
+  <!-- ═══ TITLEBAR ACTIONS · clipboard + view toggle + new folder + upload ═══ -->
+  <svelte:fragment slot="titlebar-actions">
+    {#if clipboard}
+      <div class="clipboard-badge" class:cut={clipboard.op === 'cut'}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:10px;height:10px">
+          <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+        </svg>
+        {clipboard.op === 'cut' ? 'Cortado' : 'Copiado'}: {clipboard.file.name}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <button class="nav-btn" on:click={goBack}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
-        </button>
-        <span class="inner-title">
-          {#if !currentShare}Shared Folders{:else}{shareInfo?.displayName || currentShare} <small>{sorted.length} items</small>{/if}
-        </span>
-        <div class="tb-right">
-          {#if clipboard}
-            <div class="clipboard-badge" class:cut={clipboard.op === 'cut'}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:10px;height:10px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-              {clipboard.op === 'cut' ? 'Cortado' : 'Copiado'}: {clipboard.file.name}
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <span class="cb-clear" on:click={() => clipboard = null}>✕</span>
-            </div>
-          {/if}
-          {#if currentShare}
-            <div class="tb-view-group">
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <button class="tb-plain-btn" class:active={viewMode === 'grid'} title="Vista cuadrícula" on:click={() => viewMode = 'grid'}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:14px;height:14px"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-              </button>
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <button class="tb-plain-btn" class:active={viewMode === 'list'} title="Vista lista" on:click={() => viewMode = 'list'}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:14px;height:14px"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
-              </button>
-              <div class="tb-sep"></div>
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <button class="tb-plain-btn" title="Nueva carpeta" on:click={() => newFolderModal = { name: '' }}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
-              </button>
-            </div>
-            <button class="btn-import" on:click={uploadFiles}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:11px;height:11px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-              Subir
-            </button>
-          {/if}
-        </div>
+        <span class="cb-clear" on:click={() => clipboard = null}>✕</span>
       </div>
+    {/if}
+    {#if currentShare}
+      <div class="tb-view-group">
+        <button class="tb-plain-btn" class:active={viewMode === 'grid'} title="Vista cuadrícula" on:click={() => viewMode = 'grid'}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:14px;height:14px">
+            <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+            <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
+          </svg>
+        </button>
+        <button class="tb-plain-btn" class:active={viewMode === 'list'} title="Vista lista" on:click={() => viewMode = 'list'}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:14px;height:14px">
+            <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/>
+            <line x1="8" y1="18" x2="21" y2="18"/>
+            <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/>
+            <line x1="3" y1="18" x2="3.01" y2="18"/>
+          </svg>
+        </button>
+        <div class="tb-sep"></div>
+        <button class="tb-plain-btn" title="Nueva carpeta" on:click={() => newFolderModal = { name: '' }}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            <line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/>
+          </svg>
+        </button>
+      </div>
+      <button class="btn-import" on:click={uploadFiles}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:11px;height:11px">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        Subir
+      </button>
+    {/if}
+  </svelte:fragment>
 
-
-
-      <!-- FILE GRID / LIST -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      {#if viewMode === 'grid'}
-        <div class="file-grid" bind:this={gridEl}
-          on:contextmenu={(e) => { if (!e.target.closest('.f-item') && clipboard && currentShare) { e.preventDefault(); const p = calcMenuPos(e); ctxMenu = { x: p.x, y: p.y, file: null, idx: -1 }; } }}>
-          {#if !currentShare}
-            {#each shares.filter(s => !s.remote) as share}
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div class="f-item" on:dblclick={() => navigate(share.name, '/')}>
-                <div class="f-icon">{@html SVG_FOLDER_LOCAL}</div>
-                <div class="f-name">{share.displayName || share.name}</div>
-              </div>
-            {/each}
-            {#each shares.filter(s => s.remote) as share}
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div class="f-item" on:dblclick={() => navigate(share.name, '/')}>
-                <div class="f-icon">{@html SVG_FOLDER_REMOTE}</div>
-                <div class="f-name">{share.displayName || share.name}</div>
-              </div>
-            {/each}
-          {:else if loading}
-            <div class="f-loading"><div class="spinner"></div></div>
-          {:else}
-            {#each sorted as file, i}
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div class="f-item" class:sel={selected.has(i)} class:cut={clipboard?.op === 'cut' && clipboard?.path === filePath(file)}
-                data-idx={i} on:click={(e) => toggleSelect(i, e)} on:dblclick={() => openItem(file)}
-                on:contextmenu={(e) => onContextMenu(e, file, i)}>
-                <div class="f-icon">{@html fIconHtml(file)}</div>
-                <div class="f-name">{file.name}</div>
-                <div class="f-date">{fDate(file.modified)}</div>
-              </div>
-            {/each}
-            {#if sorted.length === 0}<div class="f-empty">Carpeta vacía</div>{/if}
-          {/if}
-        </div>
-      {:else}
-        <div class="file-list" bind:this={gridEl}
-          on:contextmenu={(e) => { if (!e.target.closest('.fl-row') && clipboard && currentShare) { e.preventDefault(); const p = calcMenuPos(e); ctxMenu = { x: p.x, y: p.y, file: null, idx: -1 }; } }}>
-          {#if !currentShare}
-            {#each [...shares.filter(s => !s.remote), ...shares.filter(s => s.remote)] as share}
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div class="fl-row" on:dblclick={() => navigate(share.name, '/')}>
-                <span class="fl-icon">{@html share.remote ? SVG_FOLDER_SM_REMOTE : SVG_FOLDER_SM_LOCAL}</span>
-                <span class="fl-name">{share.displayName || share.name}</span>
-              </div>
-            {/each}
-          {:else if loading}
-            <div class="f-loading"><div class="spinner"></div></div>
-          {:else}
-            {#each sorted as file, i}
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div class="fl-row" class:sel={selected.has(i)} class:cut={clipboard?.op === 'cut' && clipboard?.path === filePath(file)}
-                data-idx={i} on:click={(e) => toggleSelect(i, e)} on:dblclick={() => openItem(file)}
-                on:contextmenu={(e) => onContextMenu(e, file, i)}>
-                <span class="fl-icon">{@html fIconHtml(file, true)}</span>
-                <span class="fl-name">{file.name}</span>
-                <span class="fl-size">{file.isDirectory ? '—' : fmtSize(file.size)}</span>
-                <span class="fl-date">{fDate(file.modified)}</span>
-              </div>
-            {/each}
-            {#if sorted.length === 0}<div class="f-empty">Carpeta vacía</div>{/if}
-          {/if}
-        </div>
-      {/if}
-
-
-      <!-- STATUSBAR -->
-      <div class="statusbar">
-        <div class="path">
-          {#if currentShare}
+  <!-- ═══ PAGE HEADER · back + título + breadcrumb ═══ -->
+  <svelte:fragment slot="page-header">
+    <button class="fm-back" on:click={goBack} title="Atrás">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+        <polyline points="15 18 9 12 15 6"/>
+      </svg>
+    </button>
+    {#if currentShare}
+      <b>{shareInfo?.displayName || currentShare}</b>
+      <span class="ph-desc">· {sorted.length} item{sorted.length !== 1 ? 's' : ''}</span>
+      {#if pathParts.length > 0}
+        <span class="fm-crumb">
+          <span class="fm-crumb-sep">/</span>
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <span class="fm-crumb-part" on:click={() => navigate(currentShare, '/')}>{shareInfo?.displayName || currentShare}</span>
+          {#each pathParts as part, i}
+            <span class="fm-crumb-sep">/</span>
             <!-- svelte-ignore a11y_click_events_have_key_events -->
             <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <span class="path-part" on:click={() => navigate(currentShare, '/')}>{shareInfo?.displayName || currentShare}</span>
-            {#each pathParts as part, i}
-              <span class="psep">/</span>
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <span class="path-part" on:click={() => { currentPath = '/' + pathParts.slice(0,i+1).join('/'); fetchFiles(); }}>
-                {part}
-              </span>
-            {/each}
-          {:else}
-            <span>NimOS Storage</span>
-          {/if}
-        </div>
-        {#if selected.size > 0}
-          <div class="sel-count"><span>{selected.size} seleccionado{selected.size !== 1 ? 's' : ''}</span></div>
-        {/if}
-      </div>
-    </div>
-  </div>
+            <span
+              class="fm-crumb-part"
+              class:cur={i === pathParts.length - 1}
+              on:click={() => { currentPath = '/' + pathParts.slice(0, i+1).join('/'); fetchFiles(); }}
+            >{part}</span>
+          {/each}
+        </span>
+      {/if}
+    {:else}
+      <b>Shared Folders</b>
+      <span class="ph-desc">· {shares.length} share{shares.length !== 1 ? 's' : ''}</span>
+    {/if}
+  </svelte:fragment>
 
-  <!-- ══ CONTEXT MENU ══ -->
-  {#if ctxMenu}
+  <!-- ═══ CONTENT · grid / list ═══ -->
+  {#if viewMode === 'grid'}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="ctx-menu" style="left:{ctxMenu.x}px;top:{ctxMenu.y}px"
-      on:contextmenu|preventDefault>
+    <div class="file-grid" bind:this={gridEl}
+      on:contextmenu={(e) => { if (!e.target.closest('.f-item') && clipboard && currentShare) { e.preventDefault(); const p = calcMenuPos(e); ctxMenu = { x: p.x, y: p.y, file: null, idx: -1 }; } }}>
+      {#if !currentShare}
+        {#each localShares as share}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="f-item" on:dblclick={() => navigate(share.name, '/')}>
+            <div class="f-icon">{@html SVG_FOLDER_LOCAL}</div>
+            <div class="f-name">{share.displayName || share.name}</div>
+          </div>
+        {/each}
+        {#each remoteShares as share}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="f-item" on:dblclick={() => navigate(share.name, '/')}>
+            <div class="f-icon">{@html SVG_FOLDER_REMOTE}</div>
+            <div class="f-name">{share.displayName || share.name}</div>
+          </div>
+        {/each}
+      {:else if loading}
+        <div class="f-loading"><div class="spinner"></div></div>
+      {:else}
+        {#each sorted as file, i}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="f-item" class:sel={selected.has(i)} class:cut={clipboard?.op === 'cut' && clipboard?.path === filePath(file)}
+            data-idx={i} on:click={(e) => toggleSelect(i, e)} on:dblclick={() => openItem(file)}
+            on:contextmenu={(e) => onContextMenu(e, file, i)}>
+            <div class="f-icon">{@html fIconHtml(file)}</div>
+            <div class="f-name">{file.name}</div>
+            <div class="f-date">{fDate(file.modified)}</div>
+          </div>
+        {/each}
+        {#if sorted.length === 0}<div class="f-empty">Carpeta vacía</div>{/if}
+      {/if}
+    </div>
+  {:else}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="file-list" bind:this={gridEl}
+      on:contextmenu={(e) => { if (!e.target.closest('.fl-row') && clipboard && currentShare) { e.preventDefault(); const p = calcMenuPos(e); ctxMenu = { x: p.x, y: p.y, file: null, idx: -1 }; } }}>
+      {#if !currentShare}
+        {#each [...localShares, ...remoteShares] as share}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="fl-row" on:dblclick={() => navigate(share.name, '/')}>
+            <span class="fl-icon">{@html share.remote ? SVG_FOLDER_SM_REMOTE : SVG_FOLDER_SM_LOCAL}</span>
+            <span class="fl-name">{share.displayName || share.name}</span>
+          </div>
+        {/each}
+      {:else if loading}
+        <div class="f-loading"><div class="spinner"></div></div>
+      {:else}
+        {#each sorted as file, i}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="fl-row" class:sel={selected.has(i)} class:cut={clipboard?.op === 'cut' && clipboard?.path === filePath(file)}
+            data-idx={i} on:click={(e) => toggleSelect(i, e)} on:dblclick={() => openItem(file)}
+            on:contextmenu={(e) => onContextMenu(e, file, i)}>
+            <span class="fl-icon">{@html fIconHtml(file, true)}</span>
+            <span class="fl-name">{file.name}</span>
+            <span class="fl-size">{file.isDirectory ? '—' : fmtSize(file.size)}</span>
+            <span class="fl-date">{fDate(file.modified)}</span>
+          </div>
+        {/each}
+        {#if sorted.length === 0}<div class="f-empty">Carpeta vacía</div>{/if}
+      {/if}
+    </div>
+  {/if}
+
+  <!-- ═══ FOOTER · path mono + selected ═══ -->
+  <svelte:fragment slot="footer">
+    {#if currentShare}
+      <span class="fm-foot-path">
+        {shareInfo?.displayName || currentShare}{currentPath !== '/' ? currentPath : ''}
+      </span>
+    {:else}
+      <span>NimOS Storage</span>
+    {/if}
+  </svelte:fragment>
+  <svelte:fragment slot="footer-right">
+    {#if selected.size > 0}
+      <span class="fm-sel">{selected.size} sel.</span>
+    {/if}
+  </svelte:fragment>
+</AppShell>
+
+<!-- ════════════════════════════════════════════════════════════
+     CTX MENU · position:fixed, fuera del AppShell
+     ════════════════════════════════════════════════════════════ -->
+{#if ctxMenu}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="ctx-menu" style="left:{ctxMenu.x}px;top:{ctxMenu.y}px"
+    on:contextmenu|preventDefault>
 
     {#if ctxMenu.file}
       <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -614,9 +669,8 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
         Eliminar
       </div>
-
     {:else}
-      <!-- Solo pegar (click derecho en fondo) -->
+      <!-- Click derecho en fondo vacío: solo pegar -->
       {#if clipboard}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -629,7 +683,9 @@
   </div>
 {/if}
 
-<!-- ══ MODAL RENOMBRAR ══ -->
+<!-- ════════════════════════════════════════════════════════════
+     MODALES · rename / info / new folder (position:fixed)
+     ════════════════════════════════════════════════════════════ -->
 {#if renameModal}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -645,22 +701,17 @@
     </div>
     <div class="modal-body">
       <div class="form-field">
-        <label class="form-label">Nuevo nombre</label>
-        <input id="rename-input" class="form-input" type="text" bind:value={renameModal.newName} autofocus />
+        <label class="form-label" for="rename-input">Nuevo nombre</label>
+        <input id="rename-input" class="form-input" type="text" bind:value={renameModal.newName} />
       </div>
     </div>
     <div class="modal-footer">
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <button class="btn-secondary" on:click={() => renameModal = null}>Cancelar</button>
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <button class="btn-accent" on:click={confirmRename}>Renombrar</button>
     </div>
   </div>
 {/if}
 
-<!-- ══ MODAL INFO ══ -->
 {#if infoModal}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -687,14 +738,11 @@
       </div>
     </div>
     <div class="modal-footer">
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <button class="btn-accent" on:click={() => infoModal = null}>Cerrar</button>
     </div>
   </div>
 {/if}
 
-<!-- ══ MODAL NUEVA CARPETA ══ -->
 {#if newFolderModal}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -710,166 +758,542 @@
     </div>
     <div class="modal-body">
       <div class="form-field">
-        <label class="form-label">Nombre de la carpeta</label>
+        <label class="form-label" for="newfolder-input">Nombre de la carpeta</label>
         <!-- svelte-ignore a11y_autofocus -->
-        <input class="form-input" type="text" bind:value={newFolderModal.name} autofocus
+        <input id="newfolder-input" class="form-input" type="text" bind:value={newFolderModal.name} autofocus
           on:keydown={(e) => { if (e.key === 'Enter') createFolder(); if (e.key === 'Escape') newFolderModal = null; }} />
       </div>
     </div>
     <div class="modal-footer">
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <button class="btn-secondary" on:click={() => newFolderModal = null}>Cancelar</button>
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <button class="btn-accent" on:click={createFolder}>Crear</button>
     </div>
   </div>
 {/if}
-</div>
 
 <style>
-  .files-root { width:100%; height:100%; display:flex; overflow:hidden; position:relative; background:var(--bg-main); font-family:'Inter',-apple-system,sans-serif; color:var(--fg); }
+  /* ═══════════════════════════════════════════════════════════
+     SIDEBAR · grupos Local/Remoto (label + count)
+     ───────────────────────────────────────────────────────────
+     Reemplaza al .sb-section del AppShell render automático
+     para soportar el contador a la derecha del label.
+     ═══════════════════════════════════════════════════════════ */
+  .fm-sb-group {
+    padding: 14px 6px 6px;
+    font-size: 10px;
+    color: var(--ink-trace, #44444a);
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .fm-sb-group .count {
+    font-family: var(--font-mono, monospace);
+    color: var(--ink-mute, #9a9aa3);
+    letter-spacing: 0;
+    font-weight: 500;
+  }
 
-  /* Sidebar */
-  .sidebar { width:190px; flex-shrink:0; display:flex; flex-direction:column; gap:2px; padding:12px 8px; overflow-y:auto; background:var(--bg-side); }
-  .sidebar::-webkit-scrollbar { width:3px; }
-  .sidebar::-webkit-scrollbar-thumb { background:rgba(128,128,128,0.2); border-radius:2px; }
-  .sb-header { display:flex; align-items:center; gap:8px; padding:32px 8px 12px; color:var(--fg); }
-  .title { font-size:15px; font-weight:600; }
-  .sb-section { font-size:9px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:var(--fg-4); padding:10px 8px 3px; }
-  .sb-item { display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:8px; cursor:pointer; font-size:12px; color:var(--fg-2); border:1px solid transparent; transition:all .15s; }
-  .sb-item svg { flex-shrink:0; opacity:.6; }
-  .sb-item:hover { background:rgba(128,128,128,0.10); color:var(--fg); }
-  .sb-item.active { background:var(--ui-select-bg); color:var(--fg); border-color:var(--bd-3); }
-  .sb-item.active svg { opacity:1; }
-  .sb-storage { margin-top:auto; padding:9px 10px; background:var(--bg-card); border:1px solid var(--bd); border-radius:9px; }
-  .ss-labels { display:flex; justify-content:space-between; font-size:10px; color:var(--fg-2); margin-bottom:6px; }
-  .ss-labels strong { color:var(--fg); font-weight:500; }
-  .ss-bar { height:3px; background:rgba(128,128,128,0.15); border-radius:2px; overflow:hidden; }
-  .ss-fill { height:100%; background:linear-gradient(90deg,var(--nim-green),var(--st-info)); }
+  /* ═══════════════════════════════════════════════════════════
+     PAGE HEADER · back + título + breadcrumb
+     ═══════════════════════════════════════════════════════════ */
+  .fm-back {
+    width: 22px;
+    height: 22px;
+    border: none;
+    background: transparent;
+    color: var(--ink-mute, #9a9aa3);
+    cursor: pointer;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.12s, color 0.12s;
+    padding: 0;
+    flex-shrink: 0;
+  }
+  .fm-back svg { width: 14px; height: 14px; }
+  .fm-back:hover {
+    background: var(--side-hover, rgba(255,255,255,0.04));
+    color: var(--ink, #f2f2f5);
+  }
 
-  /* Inner */
-  .inner-wrap { flex:1; padding:8px; display:flex; }
-  .inner { flex:1; border-radius:10px; border:1px solid var(--bd); background:var(--bg-inner); display:flex; flex-direction:column; overflow:hidden; }
+  .fm-crumb {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+    color: var(--ink-mute, #9a9aa3);
+    margin-left: 4px;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .fm-crumb-sep {
+    color: var(--ink-trace, #44444a);
+    margin: 0 2px;
+  }
+  .fm-crumb-part {
+    padding: 1px 5px;
+    border-radius: 3px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.1s, color 0.1s;
+  }
+  .fm-crumb-part:hover {
+    color: var(--ink, #f2f2f5);
+    background: rgba(255,255,255,0.04);
+  }
+  .fm-crumb-part.cur {
+    color: var(--ink, #f2f2f5);
+    background: rgba(255,255,255,0.05);
+  }
 
-  /* Titlebar */
-  .inner-titlebar { display:flex; align-items:center; gap:8px; padding:10px 14px 9px; background:var(--bg-inner); flex-shrink:0; border-bottom:1px solid var(--bd); position:relative; z-index:2; }
-  .nav-btn { background:none; border:none; cursor:pointer; color:var(--fg-2); padding:4px; border-radius:6px; line-height:1; transition:all .15s; display:flex; align-items:center; }
-  .nav-btn svg { width:16px; height:16px; }
-  .nav-btn:hover { background:rgba(128,128,128,0.10); color:var(--fg); }
-  .inner-title { font-size:12px; font-weight:600; color:var(--fg); }
-  .inner-title small { color:var(--fg-4); font-weight:400; font-size:11px; margin-left:4px; }
-  .tb-right { margin-left:auto; display:flex; align-items:center; gap:8px; }
-  .clipboard-badge { display:flex; align-items:center; gap:5px; padding:3px 8px 3px 6px; border-radius:5px; font-size:10px; color:var(--fg-2); background:var(--bg-card); border:1px solid var(--bd); max-width:180px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-  .clipboard-badge.cut { color:var(--st-warn); border-color:rgba(251,191,36,0.25); background:rgba(251,191,36,0.06); }
-  .cb-clear { cursor:pointer; color:var(--fg-4); font-size:10px; margin-left:2px; flex-shrink:0; }
-  .cb-clear:hover { color:var(--fg); }
-  .btn-import { display:flex; align-items:center; gap:5px; padding:5px 12px; background:linear-gradient(135deg,var(--nim-green),var(--st-info)); border:none; border-radius:6px; color:#fff; font-family:inherit; font-size:11px; font-weight:600; cursor:pointer; transition:opacity .15s; }
-  .btn-import:hover { opacity:.88; }
+  /* ═══════════════════════════════════════════════════════════
+     TITLEBAR ACTIONS · clipboard badge + view toggle + upload
+     ═══════════════════════════════════════════════════════════ */
+  .clipboard-badge {
+    display: flex; align-items: center; gap: 5px;
+    padding: 3px 8px 3px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    color: var(--ink-dim, #c8c8cf);
+    background: var(--bg-card, #15151a);
+    border: 1px solid var(--line, rgba(255,255,255,0.08));
+    max-width: 180px;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    font-family: var(--font-sans);
+  }
+  .clipboard-badge.cut {
+    color: var(--warn, #fbbf24);
+    border-color: rgba(251, 191, 36, 0.25);
+    background: rgba(251, 191, 36, 0.06);
+  }
+  .cb-clear {
+    cursor: pointer;
+    color: var(--ink-mute, #9a9aa3);
+    font-size: 10px;
+    margin-left: 2px;
+    flex-shrink: 0;
+  }
+  .cb-clear:hover { color: var(--ink, #f2f2f5); }
 
-  /* File grid */
-  .file-grid { flex:1; overflow-y:auto; padding:14px 12px; display:grid; grid-template-columns:repeat(auto-fill,minmax(90px,1fr)); gap:3px; align-content:start; }
-  .file-grid::-webkit-scrollbar { width:3px; }
-  .file-grid::-webkit-scrollbar-thumb { background:rgba(128,128,128,0.15); border-radius:2px; }
-  .f-item { display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 6px 8px; border-radius:9px; cursor:pointer; border:1px solid transparent; transition:all .15s; animation:fadeUp .35s ease both; }
-  .f-item:hover { background:rgba(128,128,128,0.08); border-color:var(--bd); }
-  .f-item.sel { background:var(--ui-select-bg); border-color:var(--bd-3); }
-  .f-item.cut { opacity:.45; }
-  @keyframes fadeUp { from{opacity:0;transform:translateY(7px)} to{opacity:1;transform:translateY(0)} }
-  .f-icon { font-size:36px; line-height:1; transition:transform .15s; display:flex; align-items:center; justify-content:center; width:36px; height:36px; }
-  .f-item:hover .f-icon { transform:scale(1.07) translateY(-2px); }
-  .f-name { font-size:10px; color:var(--fg); text-align:center; line-height:1.3; max-width:80px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .f-date { font-size:9px; color:var(--fg-4); font-family:'DM Mono',monospace; }
-  .f-empty { grid-column:1/-1; text-align:center; padding:40px; color:var(--fg-4); font-size:13px; }
-  .f-loading { grid-column:1/-1; display:flex; justify-content:center; padding:40px; }
-  .spinner { width:20px; height:20px; border-radius:50%; border:2px solid rgba(255,255,255,0.08); border-top-color:var(--nim-green); animation:spin .7s linear infinite; }
-  @keyframes spin { to{transform:rotate(360deg)} }
+  .tb-view-group {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+  }
+  .tb-plain-btn {
+    width: 26px; height: 26px;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: var(--ink-mute, #9a9aa3);
+    transition: background 0.12s, color 0.12s;
+    flex-shrink: 0;
+    padding: 0;
+  }
+  .tb-plain-btn:hover {
+    background: rgba(255,255,255,0.06);
+    color: var(--ink, #f2f2f5);
+  }
+  .tb-plain-btn.active {
+    background: rgba(255,255,255,0.08);
+    color: var(--ink, #f2f2f5);
+  }
+  .tb-plain-btn svg { pointer-events: none; }
+  .tb-sep {
+    width: 1px; height: 14px;
+    background: var(--line, rgba(255,255,255,0.08));
+    margin: 0 3px;
+    flex-shrink: 0;
+  }
+  .btn-import {
+    display: flex; align-items: center; gap: 5px;
+    padding: 4px 10px;
+    background: var(--signal, #00ff9f);
+    border: none;
+    border-radius: 4px;
+    color: var(--bg-window, #16161a);
+    font-family: var(--font-mono, monospace);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: filter 0.12s;
+  }
+  .btn-import:hover { filter: brightness(1.1); }
 
-  /* Statusbar */
-  .statusbar { display:flex; align-items:center; gap:8px; padding:9px 14px; border-top:1px solid var(--bd); background:var(--bg-inner); flex-shrink:0; font-size:10px; color:var(--fg-4); border-radius:0 0 10px 10px; }
-  .path { display:flex; align-items:center; gap:4px; font-family:'DM Mono',monospace; }
-  .path-part { color:var(--fg-2); cursor:pointer; transition:color .1s; }
-  .path-part:hover { color:var(--fg); }
-  .psep { color:var(--fg-4); margin:0 1px; }
-  .sel-count { margin-left:auto; color:var(--nim-green); font-weight:500; }
+  /* ═══════════════════════════════════════════════════════════
+     FILE GRID
+     ═══════════════════════════════════════════════════════════ */
+  .file-grid {
+    width: 100%;
+    height: 100%;
+    overflow-y: auto;
+    padding: 14px 12px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+    gap: 3px;
+    align-content: start;
+  }
+  .f-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 11px 6px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: background 0.12s, border-color 0.12s;
+    animation: fadeUp 0.35s ease both;
+  }
+  .f-item:hover {
+    background: rgba(255,255,255,0.04);
+  }
+  .f-item.sel {
+    background: var(--side-active-bg, rgba(122,158,177,0.10));
+    border-color: var(--ui-select-border, rgba(122,158,177,0.35));
+  }
+  .f-item.cut { opacity: 0.45; }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(7px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .f-icon {
+    font-size: 36px;
+    line-height: 1;
+    transition: transform 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+  }
+  .f-item:hover .f-icon { transform: scale(1.07) translateY(-2px); }
+  .f-name {
+    font-size: 10px;
+    color: var(--ink, #f2f2f5);
+    text-align: center;
+    line-height: 1.3;
+    max-width: 80px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .f-date {
+    font-size: 9px;
+    color: var(--ink-mute, #9a9aa3);
+    font-family: var(--font-mono, monospace);
+  }
+  .f-empty {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 40px;
+    color: var(--ink-mute, #9a9aa3);
+    font-size: 12px;
+  }
+  .f-loading {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: center;
+    padding: 40px;
+  }
+  .spinner {
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.08);
+    border-top-color: var(--signal, #00ff9f);
+    animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* ── Context menu ── */
+  /* ═══════════════════════════════════════════════════════════
+     FILE LIST
+     ═══════════════════════════════════════════════════════════ */
+  .file-list {
+    width: 100%;
+    height: 100%;
+    overflow-y: auto;
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .fl-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: 5px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: background 0.12s, border-color 0.12s;
+    font-size: 12px;
+    color: var(--ink, #f2f2f5);
+  }
+  .fl-row:hover { background: rgba(255,255,255,0.04); }
+  .fl-row.sel {
+    background: var(--side-active-bg, rgba(122,158,177,0.10));
+    border-color: var(--ui-select-border, rgba(122,158,177,0.35));
+  }
+  .fl-row.cut { opacity: 0.45; }
+  .fl-icon {
+    font-size: 15px;
+    flex-shrink: 0;
+    width: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .fl-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .fl-size {
+    font-size: 10px;
+    color: var(--ink-mute, #9a9aa3);
+    font-family: var(--font-mono, monospace);
+    width: 60px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+  .fl-date {
+    font-size: 10px;
+    color: var(--ink-mute, #9a9aa3);
+    font-family: var(--font-mono, monospace);
+    width: 110px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     FOOTER · path mono + selected count
+     ═══════════════════════════════════════════════════════════ */
+  .fm-foot-path {
+    font-family: var(--font-mono, monospace);
+    color: var(--ink-dim, #c8c8cf);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .fm-sel {
+    color: var(--signal, #00ff9f);
+    font-weight: 500;
+    font-family: var(--font-mono, monospace);
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     CTX MENU · position:fixed
+     ═══════════════════════════════════════════════════════════ */
   .ctx-menu {
-    position:absolute; z-index:500;
-    background:var(--bg-inner);
-    border:1px solid var(--bd);
-    border-radius:9px;
-    padding:4px;
-    min-width:180px;
-    box-shadow:0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04);
-    animation:ctxIn .12s ease both;
+    position: fixed;
+    z-index: 500;
+    background: var(--bg-inner, #101015);
+    border: 1px solid var(--line, rgba(255,255,255,0.08));
+    border-radius: 8px;
+    padding: 4px;
+    min-width: 180px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04);
+    animation: ctxIn 0.12s ease both;
   }
-  @keyframes ctxIn { from{opacity:0;transform:scale(0.96) translateY(-4px)} to{opacity:1;transform:scale(1) translateY(0)} }
+  @keyframes ctxIn {
+    from { opacity: 0; transform: scale(0.96) translateY(-4px); }
+    to   { opacity: 1; transform: scale(1) translateY(0); }
+  }
   .ctx-item {
-    display:flex; align-items:center; gap:9px;
-    padding:7px 10px; border-radius:6px;
-    font-size:12px; color:var(--fg-2);
-    cursor:pointer; transition:all .1s;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 10px;
+    border-radius: 5px;
+    font-size: 12px;
+    color: var(--ink-dim, #c8c8cf);
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s;
   }
-  .ctx-item svg { width:13px; height:13px; flex-shrink:0; opacity:.7; }
-  .ctx-item:hover { background:var(--ui-select-bg); color:var(--fg); }
-  .ctx-item:hover svg { opacity:1; }
-  .ctx-item.danger { color:var(--st-crit); }
-  .ctx-item.danger svg { color:var(--st-crit); opacity:.8; }
-  .ctx-item.danger:hover { background:rgba(248,113,113,0.10); color:var(--st-crit); }
-  .ctx-sep { height:1px; background:var(--bd); margin:3px 4px; }
+  .ctx-item svg { width: 13px; height: 13px; flex-shrink: 0; opacity: 0.7; }
+  .ctx-item:hover {
+    background: var(--side-active-bg, rgba(122,158,177,0.10));
+    color: var(--ink, #f2f2f5);
+  }
+  .ctx-item:hover svg { opacity: 1; }
+  .ctx-item.danger { color: var(--crit, #f87171); }
+  .ctx-item.danger svg { color: var(--crit, #f87171); opacity: 0.8; }
+  .ctx-item.danger:hover {
+    background: rgba(248,113,113,0.10);
+    color: var(--crit, #f87171);
+  }
+  .ctx-sep {
+    height: 1px;
+    background: var(--line, rgba(255,255,255,0.08));
+    margin: 3px 4px;
+  }
 
-  /* ── Modals ── */
-  .modal-overlay { position:fixed; inset:0; z-index:200; background:rgba(0,0,0,0.60); backdrop-filter:blur(3px); }
-  .modal { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); z-index:201; width:420px; max-width:92%; background:var(--bg-inner); border-radius:12px; border:1px solid var(--bd); box-shadow:0 24px 60px rgba(0,0,0,0.5); display:flex; flex-direction:column; overflow:hidden; animation:modalIn .2s cubic-bezier(0.16,1,0.3,1) both; }
-  @keyframes modalIn { from{opacity:0;transform:translate(-50%,-48%) scale(0.97)} to{opacity:1;transform:translate(-50%,-50%) scale(1)} }
-  .modal-header { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid var(--bd); background:var(--bg-inner); flex-shrink:0; }
-  .modal-title { font-size:13px; font-weight:600; color:var(--fg); }
-  .modal-close { width:24px; height:24px; border-radius:6px; cursor:pointer; display:flex; align-items:center; justify-content:center; color:var(--fg-4); background:var(--bg-card); transition:all .15s; }
-  .modal-close svg { width:12px; height:12px; }
-  .modal-close:hover { color:var(--fg); }
-  .modal-body { padding:18px 20px; display:flex; flex-direction:column; gap:14px; }
-  .modal-footer { display:flex; align-items:center; justify-content:flex-end; gap:8px; padding:12px 18px; border-top:1px solid var(--bd); background:var(--bg-inner); flex-shrink:0; }
+  /* ═══════════════════════════════════════════════════════════
+     MODALS · rename / info / new folder
+     ═══════════════════════════════════════════════════════════ */
+  .modal-overlay {
+    position: fixed; inset: 0;
+    z-index: 200;
+    background: rgba(0,0,0,0.60);
+    backdrop-filter: blur(3px);
+  }
+  .modal {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 201;
+    width: 420px;
+    max-width: 92%;
+    background: var(--bg-inner, #101015);
+    border-radius: 10px;
+    border: 1px solid var(--line, rgba(255,255,255,0.08));
+    box-shadow: 0 24px 60px rgba(0,0,0,0.5);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: modalIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+    color: var(--ink, #f2f2f5);
+    font-family: var(--font-sans);
+  }
+  @keyframes modalIn {
+    from { opacity: 0; transform: translate(-50%, -48%) scale(0.97); }
+    to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  }
+  .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--line, rgba(255,255,255,0.08));
+    flex-shrink: 0;
+  }
+  .modal-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink, #f2f2f5);
+  }
+  .modal-close {
+    width: 24px; height: 24px;
+    border-radius: 5px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--ink-mute, #9a9aa3);
+    background: var(--bg-card, #15151a);
+    transition: color 0.12s;
+  }
+  .modal-close svg { width: 12px; height: 12px; }
+  .modal-close:hover { color: var(--ink, #f2f2f5); }
+  .modal-body {
+    padding: 18px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .modal-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 12px 18px;
+    border-top: 1px solid var(--line, rgba(255,255,255,0.08));
+    flex-shrink: 0;
+  }
 
-  /* Info modal */
-  .info-icon { font-size:48px; text-align:center; line-height:1; margin-bottom:4px; }
-  .info-rows { display:flex; flex-direction:column; }
-  .info-row { display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--bd); font-size:11px; gap:12px; }
-  .info-row:last-child { border-bottom:none; }
-  .info-row span:first-child { color:var(--fg-4); flex-shrink:0; }
-  .info-row span:last-child { color:var(--fg); font-family:'DM Mono',monospace; font-size:10px; text-align:right; word-break:break-all; }
+  .info-icon {
+    font-size: 48px;
+    text-align: center;
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+  .info-rows { display: flex; flex-direction: column; }
+  .info-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--line, rgba(255,255,255,0.08));
+    font-size: 11px;
+    gap: 12px;
+  }
+  .info-row:last-child { border-bottom: none; }
+  .info-row span:first-child {
+    color: var(--ink-mute, #9a9aa3);
+    flex-shrink: 0;
+  }
+  .info-row span:last-child {
+    color: var(--ink, #f2f2f5);
+    font-family: var(--font-mono, monospace);
+    font-size: 10px;
+    text-align: right;
+    word-break: break-all;
+  }
 
-  /* Form */
-  .form-field { display:flex; flex-direction:column; gap:4px; }
-  .form-label { font-size:10px; font-weight:600; color:var(--fg-4); text-transform:uppercase; letter-spacing:.06em; }
-  .form-input { padding:9px 12px; border-radius:8px; background:rgba(255,255,255,0.04); border:1px solid var(--bd); color:var(--fg); font-size:12px; font-family:'Inter',sans-serif; outline:none; transition:border-color .2s; }
-  .form-input:focus { border-color:var(--nim-green); }
+  .form-field { display: flex; flex-direction: column; gap: 4px; }
+  .form-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--ink-mute, #9a9aa3);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .form-input {
+    padding: 9px 12px;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--line, rgba(255,255,255,0.08));
+    color: var(--ink, #f2f2f5);
+    font-size: 12px;
+    font-family: var(--font-sans);
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .form-input:focus { border-color: var(--signal, #00ff9f); }
 
-  /* Buttons */
-  .btn-accent { display:inline-flex; align-items:center; gap:6px; padding:7px 14px; border-radius:8px; border:none; background:linear-gradient(135deg,var(--nim-green),var(--st-info)); color:#fff; font-size:11px; font-weight:600; cursor:pointer; font-family:inherit; transition:opacity .15s; }
-  .btn-accent:hover { opacity:.88; }
-  .btn-secondary { padding:7px 14px; border-radius:8px; border:1px solid var(--bd); background:var(--bg-card); color:var(--fg-2); font-size:11px; font-weight:500; cursor:pointer; font-family:inherit; transition:all .15s; }
-  .btn-secondary:hover { color:var(--fg); border-color:var(--bd-3); }
-
-  /* ── view toggle buttons ── */
-  .tb-view-group { display:flex; align-items:center; gap:1px; }
-  .tb-plain-btn { width:28px; height:28px; background:transparent; border:none; border-radius:6px; display:flex; align-items:center; justify-content:center; cursor:pointer; color:var(--fg-4); transition:all .15s; flex-shrink:0; padding:0; }
-  .tb-plain-btn:hover { background:rgba(128,128,128,0.1); color:var(--fg); }
-  .tb-plain-btn.active { background:rgba(128,128,128,0.15); color:var(--fg); }
-  .tb-plain-btn svg { pointer-events:none; }
-  .tb-sep { width:1px; height:14px; background:var(--bd); margin:0 3px; flex-shrink:0; }
-
-  /* ── list view ── */
-  .file-list { flex:1; overflow-y:auto; padding:6px 8px; display:flex; flex-direction:column; gap:1px; }
-  .file-list::-webkit-scrollbar { width:3px; }
-  .file-list::-webkit-scrollbar-thumb { background:rgba(128,128,128,0.15); border-radius:2px; }
-  .fl-row { display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:6px; cursor:pointer; border:1px solid transparent; transition:all .12s; font-size:12px; color:var(--fg); }
-  .fl-row:hover { background:rgba(128,128,128,0.07); }
-  .fl-row.sel { background:var(--ui-select-bg); border-color:var(--bd-3); }
-  .fl-row.cut { opacity:.45; }
-  .fl-icon { font-size:15px; flex-shrink:0; width:20px; display:flex; align-items:center; justify-content:center; }
-  .fl-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .fl-size { font-size:10px; color:var(--fg-4); font-family:'DM Mono',monospace; width:60px; text-align:right; flex-shrink:0; }
-  .fl-date { font-size:10px; color:var(--fg-4); font-family:'DM Mono',monospace; width:110px; text-align:right; flex-shrink:0; }
+  .btn-accent {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 14px;
+    border-radius: 6px;
+    border: none;
+    background: var(--signal, #00ff9f);
+    color: var(--bg-window, #16161a);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: var(--font-sans);
+    transition: filter 0.12s;
+  }
+  .btn-accent:hover { filter: brightness(1.1); }
+  .btn-secondary {
+    padding: 7px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--line, rgba(255,255,255,0.08));
+    background: var(--bg-card, #15151a);
+    color: var(--ink-dim, #c8c8cf);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: var(--font-sans);
+    transition: background 0.12s, color 0.12s;
+  }
+  .btn-secondary:hover {
+    color: var(--ink, #f2f2f5);
+    background: rgba(255,255,255,0.04);
+  }
 </style>
