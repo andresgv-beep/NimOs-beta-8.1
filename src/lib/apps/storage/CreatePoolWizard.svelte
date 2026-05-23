@@ -81,7 +81,6 @@
   let selectedDisks = new Set();
   let poolName = '';
   let nameError = '';
-  let confirmInput = '';
   let processing = false;
   let errorMsg = '';
 
@@ -99,9 +98,11 @@
     if (poolName.length > 0) {
       if (poolName.length > 32) {
         nameError = 'Máximo 32 caracteres.';
-      } else if (!/^[a-zA-Z0-9-]+$/.test(poolName)) {
-        nameError = 'Solo letras, números y guiones.';
-      } else if (reservedNames.includes(poolName.toLowerCase())) {
+      } else if (poolName.length < 2) {
+        nameError = 'Mínimo 2 caracteres.';
+      } else if (!/^[a-z][a-z0-9_-]*$/.test(poolName)) {
+        nameError = 'Debe empezar por letra · minúsculas, dígitos, - y _';
+      } else if (reservedNames.includes(poolName)) {
         nameError = `"${poolName}" es un nombre reservado.`;
       }
     }
@@ -110,7 +111,7 @@
   $: canAdvance = processing ? false
                 : step === 2 ? diskCount >= 1
                 : step === 3 ? poolName.length > 0 && nameError === ''
-                : step === 4 ? confirmInput === 'CREAR'
+                : step === 4 ? true
                 : false;
 
   $: nextLabel = step === 4 ? (processing ? 'Creando...' : 'Crear pool') : 'Continuar →';
@@ -405,6 +406,7 @@
       class:ok={poolName.length > 0 && nameError === ''}
       type="text"
       bind:value={poolName}
+      on:input={(e) => { poolName = e.target.value.toLowerCase(); }}
       placeholder="ej: datos, media, backup"
       autocomplete="off"
       autocorrect="off"
@@ -417,7 +419,7 @@
       {#if nameError}
         {nameError}
       {:else if poolName.length === 0}
-        Máximo 32 caracteres · letras, números y guiones · sin espacios
+        2-32 caracteres · empezar por letra · minúsculas, dígitos, - y _
       {:else}
         ✓ Nombre válido
       {/if}
@@ -488,22 +490,6 @@
     <div class="alert-warn">
       Los datos existentes en estos discos se <b>borrarán</b> al crear el pool.
       Esta acción no se puede deshacer.
-    </div>
-
-    <div class="confirm-block">
-      <div class="confirm-label">Escribe <b>CREAR</b> para confirmar:</div>
-      <input
-        class="confirm-input"
-        class:ok={confirmInput === 'CREAR'}
-        type="text"
-        bind:value={confirmInput}
-        placeholder="CREAR"
-        autocomplete="off"
-        autocorrect="off"
-        autocapitalize="off"
-        spellcheck="false"
-        disabled={processing}
-      />
     </div>
 
     {#if errorMsg}
