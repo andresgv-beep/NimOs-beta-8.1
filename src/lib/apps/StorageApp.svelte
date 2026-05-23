@@ -50,6 +50,8 @@
   import ExportPoolWizard from './storage/ExportPoolWizard.svelte';
   import DestroyPoolWizard from './storage/DestroyPoolWizard.svelte';
   import CreatePoolWizard from './storage/CreatePoolWizard.svelte';
+  import ImportOrphanModal from './storage/ImportOrphanModal.svelte';
+  import DestroyOrphanModal from './storage/DestroyOrphanModal.svelte';
   import { ConfirmDialog } from '$lib/ui';
   import {
     fmtBytes, fmtDate, inferDiskRole,
@@ -91,17 +93,10 @@
   let orphanFilesystems = [];
   let divergences = [];
 
-  // Estado del modal de import
-  let importingFS = null;        // ObservedBtrfs siendo importado
-  let importName = '';           // nombre del nuevo pool managed
-  let importProcessing = false;
-  let importError = '';
-
-  // Estado del modal de destruir orphan
-  let destroyingOrphan = null;   // ObservedBtrfs siendo destruido
-  let destroyOrphanConfirm = ''; // texto típed (debe ser "DESTRUIR")
-  let destroyOrphanProcessing = false;
-  let destroyOrphanError = '';
+  // Modales (cada componente gestiona su propio estado interno).
+  // El padre solo guarda QUÉ modal está abierto y CON QUÉ datos.
+  let importingFS = null;       // ObservedBtrfs a importar (null = cerrado)
+  let destroyingOrphan = null;  // ObservedBtrfs a destruir (null = cerrado)
 
   // Expanded pools en vista overview
   let expandedPools = new Set();
@@ -204,13 +199,13 @@
 
   // ─── Importar filesystem huérfano como pool managed ────────────────────
 
+  let suggestedImportName = '';
+
   function openImportModal(fs) {
     importingFS = fs;
     // Sugerir un nombre razonable: usar el label si existe, lowercased
-    importName = (fs.label || '').toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 32);
-    if (!importName) importName = 'imported-pool';
-    importError = '';
-    importProcessing = false;
+    suggestedImportName = (fs.label || '').toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 32);
+    if (!suggestedImportName) suggestedImportName = 'imported-pool';
   }
 
   // ─── Bloque C3.4: Bridge wizard create → modal import ──────────────────
@@ -245,69 +240,30 @@
 
   function closeImportModal() {
     importingFS = null;
-    importName = '';
-    importError = '';
-    importProcessing = false;
   }
 
-  async function submitImport() {
-    if (!importingFS || !importName) return;
-    importProcessing = true;
-    importError = '';
-    try {
-      await api.importPool({ uuid: importingFS.uuid, name: importName });
-      closeImportModal();
-      // Forzar re-scan del observer para que el FS importado deje de
-      // aparecer como huérfano. ?refresh=true bloquea 200ms en backend
-      // mientras el observer hace el scan completo.
-      await api.getObserved({ refresh: true });
-      await loadAll();
-    } catch (e) {
-      importError = e.message || 'Error desconocido al importar';
-      importProcessing = false;
-    }
+  // Tras importar con éxito: cerrar modal + refrescar observer + reload UI
+  async function handleImportDone() {
+    closeImportModal();
+    await api.getObserved({ refresh: true });
+    await loadAll();
   }
 
   // ─── Destruir filesystem huérfano (wipe disks) ─────────────────────────
 
   function openDestroyOrphanModal(fs) {
     destroyingOrphan = fs;
-    destroyOrphanConfirm = '';
-    destroyOrphanError = '';
-    destroyOrphanProcessing = false;
   }
 
   function closeDestroyOrphanModal() {
     destroyingOrphan = null;
-    destroyOrphanConfirm = '';
-    destroyOrphanError = '';
-    destroyOrphanProcessing = false;
   }
 
-  async function submitDestroyOrphan() {
-    if (!destroyingOrphan) return;
-    if (destroyOrphanConfirm !== 'DESTRUIR') {
-      destroyOrphanError = 'Escribe "DESTRUIR" para confirmar';
-      return;
-    }
-    destroyOrphanProcessing = true;
-    destroyOrphanError = '';
-    try {
-      // Para destruir un orphan filesystem, hacemos wipefs sobre cada disco
-      // con force=true (saltea preflight de FS huérfano — NUNCA toca managed pools).
-      // El observer detectará en el próximo scan que ya no hay BTRFS.
-      const devicePaths = (destroyingOrphan.devices || []).map(d => d.path).filter(Boolean);
-      for (const path of devicePaths) {
-        await api.wipeDisk(path, { force: true });
-      }
-      closeDestroyOrphanModal();
-      // Forzar re-scan del observer (los discos vuelven a estar libres).
-      await api.getObserved({ refresh: true });
-      await loadAll();
-    } catch (e) {
-      destroyOrphanError = e.message || 'Error desconocido al destruir';
-      destroyOrphanProcessing = false;
-    }
+  // Tras destruir con éxito: cerrar modal + refrescar observer + reload UI
+  async function handleDestroyOrphanDone() {
+    closeDestroyOrphanModal();
+    await api.getObserved({ refresh: true });
+    await loadAll();
   }
 
   // ─── Helper: estado real de un disco (Bloque C3.3) ─────────────────────
@@ -1359,153 +1315,23 @@
   />
 {/if}
 
-<!--
-  Modal: Importar filesystem huérfano como pool managed
-  Fase 7 Bloque C3.2 — el filesystem BTRFS ya existe en disco, solo lo
-  registramos en SQLite. Datos preservados.
--->
+<!-- Modal: Importar filesystem huérfano como pool managed -->
 {#if importingFS}
-  <div class="modal-backdrop" on:click={closeImportModal}>
-    <div class="modal-card" on:click|stopPropagation>
-      <div class="modal-head">
-        <h3>Importar pool BTRFS</h3>
-        <button class="modal-close" on:click={closeImportModal}>×</button>
-      </div>
-
-      <div class="modal-body">
-        <div class="modal-info">
-          <div class="info-row">
-            <span class="tc-mute">UUID:</span>
-            <span class="mono sm">{importingFS.uuid}</span>
-          </div>
-          <div class="info-row">
-            <span class="tc-mute">Label original:</span>
-            <span class="mono">{importingFS.label || '(sin label)'}</span>
-          </div>
-          <div class="info-row">
-            <span class="tc-mute">Profile:</span>
-            <span class="mono">{importingFS.profile || 'single'}</span>
-          </div>
-          <div class="info-row">
-            <span class="tc-mute">Discos:</span>
-            <span class="mono">{importingFS.devices_online} dispositivos</span>
-          </div>
-        </div>
-
-        <p class="modal-text">
-          Este filesystem se registrará en NimOS como un pool gestionado.
-          Los datos existentes se preservan completamente.
-        </p>
-
-        <label class="modal-field">
-          <span class="modal-field-label">Nombre del pool en NimOS:</span>
-          <input
-            type="text"
-            bind:value={importName}
-            placeholder="my-pool"
-            maxlength="32"
-            disabled={importProcessing}
-            on:keydown={(e) => e.key === 'Enter' && submitImport()}
-          />
-          <span class="modal-field-hint tc-mute">
-            Alfanumérico y guiones, máximo 32 caracteres
-          </span>
-        </label>
-
-        {#if importError}
-          <div class="modal-error">{importError}</div>
-        {/if}
-      </div>
-
-      <div class="modal-actions">
-        <BevelButton size="sm" onClick={closeImportModal} disabled={importProcessing}>
-          Cancelar
-        </BevelButton>
-        <BevelButton
-          variant="primary"
-          size="sm"
-          onClick={submitImport}
-          disabled={importProcessing || !importName}
-        >
-          {importProcessing ? '▸ Importando...' : 'Importar pool'}
-        </BevelButton>
-      </div>
-    </div>
-  </div>
+  <ImportOrphanModal
+    fs={importingFS}
+    suggestedName={suggestedImportName}
+    on:done={handleImportDone}
+    on:cancel={closeImportModal}
+  />
 {/if}
 
-<!--
-  Modal: Destruir filesystem huérfano
-  Doble confirmación: typed "DESTRUIR" requerido.
--->
+<!-- Modal: Destruir filesystem huérfano (wipe disks) -->
 {#if destroyingOrphan}
-  <div class="modal-backdrop" on:click={closeDestroyOrphanModal}>
-    <div class="modal-card destructive" on:click|stopPropagation>
-      <div class="modal-head">
-        <h3>⚠ Destruir filesystem</h3>
-        <button class="modal-close" on:click={closeDestroyOrphanModal}>×</button>
-      </div>
-
-      <div class="modal-body">
-        <p class="modal-text destructive-text">
-          Esta acción es <strong>irreversible</strong>. Se borrarán todos los datos
-          del filesystem BTRFS y sus discos quedarán vacíos.
-        </p>
-
-        <div class="modal-info">
-          <div class="info-row">
-            <span class="tc-mute">Filesystem:</span>
-            <span class="mono">{destroyingOrphan.label || '(sin label)'}</span>
-          </div>
-          <div class="info-row">
-            <span class="tc-mute">UUID:</span>
-            <span class="mono sm">{destroyingOrphan.uuid}</span>
-          </div>
-          {#if destroyingOrphan.used_bytes > 0}
-            <div class="info-row">
-              <span class="tc-mute">Datos a borrar:</span>
-              <span class="mono tc-crit">{fmtBytes(destroyingOrphan.used_bytes)}</span>
-            </div>
-          {/if}
-          <div class="info-row">
-            <span class="tc-mute">Discos afectados:</span>
-            <span class="mono">
-              {(destroyingOrphan.devices || []).map(d => d.path).join(', ')}
-            </span>
-          </div>
-        </div>
-
-        <label class="modal-field">
-          <span class="modal-field-label">
-            Escribe <strong>DESTRUIR</strong> para confirmar:
-          </span>
-          <input
-            type="text"
-            bind:value={destroyOrphanConfirm}
-            placeholder="DESTRUIR"
-            disabled={destroyOrphanProcessing}
-          />
-        </label>
-
-        {#if destroyOrphanError}
-          <div class="modal-error">{destroyOrphanError}</div>
-        {/if}
-      </div>
-
-      <div class="modal-actions">
-        <BevelButton size="sm" onClick={closeDestroyOrphanModal} disabled={destroyOrphanProcessing}>
-          Cancelar
-        </BevelButton>
-        <BevelButton
-          size="sm"
-          onClick={submitDestroyOrphan}
-          disabled={destroyOrphanProcessing || destroyOrphanConfirm !== 'DESTRUIR'}
-        >
-          {destroyOrphanProcessing ? '▸ Destruyendo...' : 'DESTRUIR'}
-        </BevelButton>
-      </div>
-    </div>
-  </div>
+  <DestroyOrphanModal
+    fs={destroyingOrphan}
+    on:done={handleDestroyOrphanDone}
+    on:cancel={closeDestroyOrphanModal}
+  />
 {/if}
 
 <style>
@@ -2180,146 +2006,6 @@
 
   .div-row.crit {
     border-left-color: var(--crit);
-  }
-
-  /* ─── Modal genérico (import / destroy orphan) ─── */
-
-  .modal-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.6);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    padding: 20px;
-  }
-
-  .modal-card {
-    background: var(--bg-0);
-    border: 1px solid var(--border);
-    max-width: 520px;
-    width: 100%;
-    max-height: 90vh;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .modal-card.destructive {
-    border-color: var(--crit);
-  }
-
-  .modal-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 16px 20px;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .modal-head h3 {
-    margin: 0;
-    font-size: 16px;
-    font-weight: 600;
-  }
-
-  .modal-close {
-    background: none;
-    border: none;
-    color: var(--fg-mute);
-    font-size: 22px;
-    cursor: pointer;
-    line-height: 1;
-    padding: 0;
-    width: 24px;
-    height: 24px;
-  }
-
-  .modal-close:hover {
-    color: var(--fg);
-  }
-
-  .modal-body {
-    padding: 20px;
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-  }
-
-  .modal-info {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    background: var(--bg-1);
-    padding: 10px 12px;
-    border: 1px solid var(--border);
-  }
-
-  .info-row {
-    display: flex;
-    gap: 8px;
-    font-size: 13px;
-  }
-
-  .info-row .tc-mute {
-    min-width: 110px;
-  }
-
-  .modal-text {
-    margin: 0;
-    font-size: 13px;
-    line-height: 1.5;
-    color: var(--fg-dim);
-  }
-
-  .modal-text.destructive-text {
-    color: var(--crit);
-  }
-
-  .modal-field {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .modal-field-label {
-    font-size: 12px;
-    color: var(--fg-mute);
-  }
-
-  .modal-field input {
-    background: var(--bg-1);
-    border: 1px solid var(--border);
-    color: var(--fg);
-    padding: 8px 10px;
-    font-family: var(--font-mono);
-    font-size: 13px;
-  }
-
-  .modal-field input:focus {
-    border-color: var(--accent);
-    outline: none;
-  }
-
-  .modal-field-hint {
-    font-size: 11px;
-  }
-
-  .modal-error {
-    color: var(--crit);
-    font-size: 13px;
-    padding: 8px 10px;
-    background: var(--bg-1);
-    border-left: 2px solid var(--crit);
-  }
-
-  .modal-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-    padding: 14px 20px;
-    border-top: 1px solid var(--border);
   }
 
   /* ─── Bloque C3.3: indicadores en lista de discos ─── */
