@@ -1,39 +1,40 @@
 <script>
   /**
-   * ExportPoolWizard · Wizard to export a ZFS/BTRFS pool
-   * ─────────────────────────────────────────────────────
-   * Called "Desmontar" in the UI but technically this does a pool export
-   * (matches backend endpoint POST /api/storage/pool/export).
+   * ExportPoolWizard · Wizard para desmontar (export) un pool BTRFS
+   * ─────────────────────────────────────────────────────────────────
+   * "Desmontar" en la UI; backend lo llama export (POST /v2/pool/export).
+   * En Beta 8.1, export = umount + remove_from_db. El pool pasa a estado
+   * "orphan filesystem" en la sección Observados — los datos siguen en
+   * los discos físicos pero el pool deja de ser managed.
    *
    * Flow:
-   *   1. Detect dependent services (GET /api/services/dependencies?pool=X)
-   *   2. If services → list with "→ NimHealth" button + poll every 3s
-   *      If no services → skip directly to step 3
-   *   3. Final confirmation with literal input "DESMONTAR"
+   *   1. Detección — fetch dependencias (transitorio, no visible normalmente)
+   *   2. Servicios — lista con LED + botón → NimHealth; polling 3s
+   *   3. Confirmación — bullets + typed-confirm "DESMONTAR"
    *
-   * On confirm: POST /api/storage/pool/export { name }
+   * On confirm: POST /api/storage/v2/pool/export { name }
    * Emits 'done' on success · 'cancel' if user closes.
    *
-   * Usage:
-   *   <ExportPoolWizard poolName="data3" on:done on:cancel />
+   * NOTA Beta 8.1: este wizard usa el frame visual nuevo (WizardFrame) del
+   * Design System Beta 8.1. La LÓGICA es idéntica a la versión anterior —
+   * solo cambia presentación.
    */
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
   import { token } from '$lib/stores/auth.js';
   import { openWindow } from '$lib/stores/windows.js';
-  import WizardModal from '$lib/ui/WizardModal.svelte';
-  import LED from '$lib/ui/LED.svelte';
+  import WizardFrame from '$lib/ui/WizardFrame.svelte';
 
   export let poolName = '';
 
   const dispatch = createEventDispatcher();
 
-  let step = 1;                    // 1 = detectando · 2 = servicios · 3 = confirmar
-  let loading = true;              // carga inicial
-  let deps = [];                   // servicios activos
-  let pollInterval = null;         // timer de re-verificación
-  let confirmInput = '';           // input de confirmación
-  let processing = false;          // estado del POST final
-  let errorMsg = '';               // error al desmontar
+  let step = 1;
+  let loading = true;
+  let deps = [];
+  let pollInterval = null;
+  let confirmInput = '';
+  let processing = false;
+  let errorMsg = '';
 
   // ─── Derived ───
   $: allStopped = deps.length === 0 || deps.every(d => d.status === 'stopped' || d.status === 'exited');
@@ -73,10 +74,7 @@
   }
 
   function handleBack() {
-    if (step === 2) {
-      // No debería pasar (step 1 → 2 es automático) pero por seguridad
-      return;
-    }
+    if (step === 2) return;
     if (step === 3) {
       step = deps.length > 0 ? 2 : 1;
       if (step === 2) startPolling();
@@ -92,7 +90,7 @@
     openWindow('nimhealth');
   }
 
-  // ─── Polling de re-verificación (solo paso 2) ───
+  // ─── Polling (solo paso 2) ───
   function startPolling() {
     stopPolling();
     pollInterval = setInterval(fetchDeps, 3000);
@@ -104,10 +102,6 @@
     }
   }
 
-  /**
-   * unwrapV2 tolera respuesta legacy (cuerpo directo) o v2 ({data: ...}).
-   * En caso de error lanza Error con .code y .message del backend.
-   */
   async function unwrapV2(res, label = 'api call') {
     let body;
     try {
@@ -158,13 +152,9 @@
         processing = false;
         dispatch('done');
       } catch (e) {
-        // Error semántico: services_active devuelve la lista de servicios
-        // afectados en e.details. El backend v2 envía esa lista en
-        // {error:{code:'services_active', details:{services:[...]}}}
         if (e.code === 'services_active') {
           const services = e.details?.services || [];
           errorMsg = `Algún servicio se ha levantado: ${services.join(', ')}. Reintenta.`;
-          // Retrocedemos al paso 2 para que el usuario vea el estado
           await fetchDeps();
           step = 2;
           startPolling();
@@ -184,7 +174,6 @@
   onMount(async () => {
     await fetchDeps();
     loading = false;
-    // Si no hay dependencias, salta directo al paso 3
     if (deps.length === 0) {
       step = 3;
     } else {
@@ -206,238 +195,321 @@
     if (s === 'stopping') return 'stopping';
     return s || 'unknown';
   }
-  function statusLedVariant(s) {
-    if (s === 'running')  return 'ok';
-    if (s === 'starting' || s === 'stopping') return 'warn';
-    return 'off';
+
+  function statusKind(s) {
+    if (s === 'running')  return 'running';
+    if (s === 'starting' || s === 'stopping') return 'transition';
+    return 'stopped';
   }
+
+  // Contadores derivados para el step 2
+  $: activeCount = deps.filter(d => d.status !== 'stopped' && d.status !== 'exited').length;
 </script>
 
-<WizardModal
+<WizardFrame
   open={true}
   title="Desmontar pool"
   tag={poolName}
-  tagColor="accent"
+  tagColor="warn"
   currentStep={step === 1 ? 1 : step === 2 ? 2 : 3}
   totalSteps={3}
-  canAdvance={canAdvance}
+  {canAdvance}
   canGoBack={step === 3 && deps.length > 0 && !processing}
   nextLabel={step === 3 ? 'Desmontar pool' : 'Continuar →'}
-  nextVariant={step === 3 ? 'danger' : 'primary'}
+  nextVariant={step === 3 ? 'warn' : 'warn'}
+  cancelLabel={processing ? 'Procesando...' : 'Cancelar'}
   on:next={handleNext}
   on:back={handleBack}
   on:cancel={handleCancel}
 >
 
-  <!-- PASO 1 · Detección inicial -->
+  <!-- PASO 1 · Detección (transitorio) -->
   {#if step === 1}
-    <div class="pretitle">DETECCIÓN</div>
-    <div class="h">Verificando servicios dependientes...</div>
-    <div class="desc">
-      Antes de desmontar el pool, NimOS comprueba qué servicios están usándolo activamente.
-    </div>
-    <div class="recheck">
-      <span class="spin">⟳</span>
+    <div class="step-label">Detección</div>
+    <p class="step-desc">
+      Verificando qué servicios están usando el pool. Esto suele tardar
+      menos de un segundo.
+    </p>
+
+    <div class="loading-box">
+      <div class="spinner"></div>
       <span>Consultando daemon...</span>
     </div>
+
     {#if errorMsg}
-      <div class="err">{errorMsg}</div>
+      <div class="alert-crit">{errorMsg}</div>
     {/if}
   {/if}
 
-  <!-- PASO 2 · Lista de servicios -->
+  <!-- PASO 2 · Servicios en uso -->
   {#if step === 2}
-    <div class="pretitle">
+    <div class="step-label">Servicios en uso</div>
+    <p class="step-desc">
       {#if allStopped}
-        SERVICIOS DETENIDOS · {deps.length}
+        Ningún servicio está usando el pool en este momento. Puedes continuar
+        con el desmontaje.
       {:else}
-        SERVICIOS ACTIVOS · {deps.filter(d => d.status !== 'stopped' && d.status !== 'exited').length}
+        Detén los servicios que están usando este pool antes de desmontarlo.
+        Si hay procesos activos, el desmontaje fallará.
       {/if}
-    </div>
-    <div class="h">
-      {#if allStopped}
-        Todo listo para desmontar
-      {:else}
-        Detén los servicios antes de continuar
-      {/if}
-    </div>
-    <div class="desc">
-      {#if allStopped}
-        Ningún servicio está usando el pool en este momento. Puedes continuar con el desmontaje.
-      {:else}
-        Los siguientes servicios están usando el pool. Ve a <b>NimHealth</b> para detenerlos.
-        El wizard detectará automáticamente cuando estén todos parados.
-      {/if}
-    </div>
+    </p>
 
     <div class="svc-list">
       {#each deps as dep}
+        {@const kind = statusKind(dep.status)}
         <div class="svc-row">
-          <LED size={8} variant={statusLedVariant(dep.status)} />
-          <div class="svc-name">
+          <span class="svc-led svc-led-{kind}"></span>
+          <span class="svc-name">
             {dep.app || dep.id}
             {#if dep.appId && dep.appId !== dep.app}
-              <span class="svc-tag">@{poolName}</span>
+              <span class="svc-pool">@{poolName}</span>
             {/if}
-          </div>
-          <div class="svc-state state-{dep.status === 'running' ? 'run' : 'stop'}">
+          </span>
+          <span class="svc-state svc-state-{kind}">
             {statusLabel(dep.status)}
-          </div>
+          </span>
           {#if dep.status === 'running' || dep.status === 'starting'}
-            <button class="svc-action" on:click={openNimHealth}>→ NimHealth</button>
+            <button class="svc-action" on:click={openNimHealth} type="button">
+              → NimHealth
+            </button>
           {:else}
-            <div class="svc-action muted">—</div>
+            <span class="svc-action-empty">—</span>
           {/if}
         </div>
       {/each}
     </div>
 
     {#if allStopped}
-      <div class="recheck ok">
-        <span>✓</span>
-        <span>Todos los servicios detenidos</span>
+      <div class="notice notice-ok">
+        <b>✓ Todos los servicios detenidos.</b> Continúa cuando estés listo.
       </div>
     {:else}
+      <div class="notice">
+        Quedan <b>{activeCount} servicio{activeCount === 1 ? '' : 's'} activo{activeCount === 1 ? '' : 's'}</b>.
+        Detenlos manualmente desde NimHealth — el wizard detectará automáticamente
+        cuando estén todos parados.
+      </div>
       <div class="recheck">
-        <span class="spin">⟳</span>
-        <span>Re-verificando cada 3s...</span>
+        <span class="recheck-spin"></span>
+        <span>Re-verificando cada 3 segundos...</span>
       </div>
     {/if}
+
     {#if errorMsg}
-      <div class="err">{errorMsg}</div>
+      <div class="alert-crit">{errorMsg}</div>
     {/if}
   {/if}
 
-  <!-- PASO 3 · Confirmación final -->
+  <!-- PASO 3 · Confirmación -->
   {#if step === 3}
-    <div class="pretitle">CONFIRMACIÓN</div>
-    <div class="h">Última comprobación antes de desmontar</div>
+    <div class="step-label">Confirmación</div>
+    <p class="step-desc">
+      Vas a desmontar <b>{poolName}</b>. Los datos <b>NO se borran</b>, solo
+      sale del sistema gestionado de NimOS.
+    </p>
 
     <ul class="bullets">
       <li>Los datos <b>siguen intactos</b> en los discos físicos</li>
-      <li>El pool <b>desaparece del sistema</b> temporalmente</li>
-      <li>Puedes <b>reimportarlo después</b> desde la vista "Restaurar"</li>
-      <li>Esta acción <b>detendrá el acceso</b> a /mnt/{poolName} inmediatamente</li>
+      <li>El pool aparecerá como <b>filesystem huérfano</b> en Observados</li>
+      <li>Podrás <b>reimportarlo</b> después con un solo click</li>
+      <li>El acceso a <b>/nimos/pools/{poolName}</b> se cortará inmediatamente</li>
     </ul>
 
-    <div class="confirm-label">Escribe <b>DESMONTAR</b> para confirmar:</div>
-    <input
-      class="confirm-input"
-      class:ok={confirmInput.trim() === 'DESMONTAR'}
-      type="text"
-      bind:value={confirmInput}
-      placeholder="DESMONTAR"
-      autocomplete="off"
-      autocorrect="off"
-      autocapitalize="off"
-      spellcheck="false"
-      disabled={processing}
-    />
+    <div class="confirm-block">
+      <div class="confirm-label">Escribe <b>DESMONTAR</b> para confirmar:</div>
+      <input
+        class="confirm-input"
+        class:ok={confirmInput.trim() === 'DESMONTAR'}
+        type="text"
+        bind:value={confirmInput}
+        placeholder="DESMONTAR"
+        autocomplete="off"
+        autocorrect="off"
+        autocapitalize="off"
+        spellcheck="false"
+        disabled={processing}
+      />
+    </div>
 
     {#if errorMsg}
-      <div class="err">{errorMsg}</div>
+      <div class="alert-crit">{errorMsg}</div>
     {/if}
   {/if}
 
-</WizardModal>
+</WizardFrame>
 
 <style>
-  .pretitle {
-    font-size: 9px;
-    color: var(--fg-faint);
-    letter-spacing: 2px;
+  /* ═══════════════════════════════════════════════════════════════
+     ExportPoolWizard · estilos Design System Beta 8.1
+     Tokens semánticos (definidos en app.css)
+     ═══════════════════════════════════════════════════════════════ */
+
+  /* ─── Labels y descripciones ─── */
+  .step-label {
+    font-size: 10px;
+    color: var(--ink-trace);
     text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 600;
+    margin-bottom: 2px;
+    font-family: var(--font-sans);
+  }
+  .step-desc {
+    font-size: 12px;
+    color: var(--ink-dim);
+    line-height: 1.6;
+    font-family: var(--font-sans);
+  }
+  .step-desc :global(b) {
+    color: var(--ink);
+    font-weight: 600;
     font-family: var(--font-mono);
   }
-  .h {
-    font-size: 15px;
-    color: var(--fg);
-    letter-spacing: 0.4px;
-    font-family: var(--font-sans, inherit);
-    font-weight: 500;
-    line-height: 1.3;
-  }
-  .desc {
-    font-size: 12px;
-    color: var(--fg-dim);
-    line-height: 1.6;
-    font-family: var(--font-sans, inherit);
-  }
-  .desc :global(b) { color: var(--accent); font-weight: 600; }
 
+  /* ─── Step 1 · Loading box ─── */
+  .loading-box {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 18px;
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    font-size: 12px;
+    color: var(--ink-dim);
+    font-family: var(--font-mono);
+  }
+  .spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--line);
+    border-top-color: var(--warn);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  /* ─── Step 2 · Lista de servicios ─── */
+  .svc-list {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .svc-row {
+    display: grid;
+    grid-template-columns: 10px 1fr auto auto;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+    font-size: 12px;
+  }
+  .svc-row:last-child { border-bottom: none; }
+
+  .svc-led {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .svc-led-running {
+    background: var(--signal);
+    box-shadow: 0 0 6px rgba(0, 255, 159, 0.45);
+  }
+  .svc-led-transition {
+    background: var(--warn);
+    box-shadow: 0 0 6px rgba(251, 191, 36, 0.45);
+  }
+  .svc-led-stopped {
+    background: var(--ink-trace);
+  }
+
+  .svc-name {
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+  .svc-pool {
+    color: var(--ink-mute);
+    font-size: 10px;
+    margin-left: 4px;
+  }
+
+  .svc-state {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 500;
+  }
+  .svc-state-running    { color: var(--signal); }
+  .svc-state-transition { color: var(--warn); }
+  .svc-state-stopped    { color: var(--ink-mute); }
+
+  .svc-action {
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--line);
+    background: var(--bg-inner);
+    color: var(--ink-dim);
+    font-size: 10px;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .svc-action:hover {
+    background: var(--side-hover);
+    color: var(--ink);
+    border-color: var(--warn);
+  }
+  .svc-action-empty {
+    color: var(--ink-trace);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    padding: 4px 8px;
+  }
+
+  /* ─── Notice (amarillo info / verde ok) ─── */
+  .notice {
+    background: rgba(251, 191, 36, 0.06);
+    border-left: 3px solid var(--warn);
+    padding: 10px 12px;
+    border-radius: 4px;
+    font-size: 11px;
+    color: var(--ink-dim);
+    line-height: 1.5;
+    font-family: var(--font-sans);
+  }
+  .notice :global(b) { color: var(--warn); font-weight: 600; }
+  .notice-ok {
+    background: rgba(0, 255, 159, 0.06);
+    border-left-color: var(--signal);
+  }
+  .notice-ok :global(b) { color: var(--signal); }
+
+  /* Re-check indicator */
   .recheck {
     display: flex;
     align-items: center;
     gap: 8px;
     font-size: 10px;
-    color: var(--fg-mute);
-    letter-spacing: 0.5px;
+    color: var(--ink-mute);
     font-family: var(--font-mono);
-    margin-top: 4px;
+    padding: 2px 4px;
   }
-  .recheck.ok { color: var(--ok, #00d97e); }
-  .recheck .spin {
-    display: inline-block;
+  .recheck-spin {
+    width: 8px;
+    height: 8px;
+    border: 1.5px solid var(--line);
+    border-top-color: var(--warn);
+    border-radius: 50%;
     animation: spin 1s linear infinite;
   }
-  @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* Service list */
-  .svc-list {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-  }
-  .svc-row {
-    display: grid;
-    grid-template-columns: 14px 1fr auto auto;
-    align-items: center;
-    gap: 12px;
-    padding: 10px 14px;
-    border-bottom: 1px solid var(--border);
-    font-family: var(--font-mono);
-    font-size: 11px;
-  }
-  .svc-row:last-child { border-bottom: none; }
-  .svc-name { color: var(--fg); letter-spacing: 0.3px; }
-  .svc-tag { color: var(--fg-faint); margin-left: 4px; font-size: 10px; }
-  .svc-state {
-    font-size: 9px;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-  }
-  .svc-state.state-run  { color: var(--crit); }
-  .svc-state.state-stop { color: var(--fg-mute); }
-
-  .svc-action {
-    font-size: 9px;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    padding: 4px 10px;
-    background: transparent;
-    border: 1px solid var(--border-bright);
-    color: var(--fg-dim);
-    cursor: pointer;
-    font-family: inherit;
-    transition: all 0.12s;
-    clip-path: polygon(
-      0 0, calc(100% - 4px) 0, 100% 4px,
-      100% 100%, 4px 100%, 0 calc(100% - 4px)
-    );
-  }
-  .svc-action:hover:not(.muted) {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-  .svc-action.muted {
-    opacity: 0.35;
-    cursor: default;
-    padding: 4px 10px;
-    display: inline-block;
-  }
-
-  /* Bullets en paso 3 */
+  /* ─── Bullets (step 3) ─── */
   .bullets {
     list-style: none;
     padding: 0;
@@ -448,61 +520,75 @@
   }
   .bullets li {
     font-size: 12px;
-    color: var(--fg-dim);
+    color: var(--ink-dim);
     padding-left: 18px;
     position: relative;
     line-height: 1.5;
-    font-family: var(--font-sans, inherit);
+    font-family: var(--font-sans);
   }
   .bullets li::before {
-    content: '›';
+    content: '·';
     position: absolute;
-    left: 4px;
-    color: var(--accent);
+    left: 6px;
+    color: var(--warn);
     font-weight: 700;
+    font-size: 16px;
+    line-height: 1;
   }
-  .bullets li :global(b) {
-    color: var(--fg);
-    font-weight: 600;
-  }
+  .bullets li :global(b) { color: var(--ink); font-weight: 600; }
 
-  /* Confirm input */
+  /* ─── Confirm block (typed-confirm DESMONTAR) ─── */
+  .confirm-block {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
   .confirm-label {
-    font-size: 10px;
-    color: var(--fg-dim);
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    font-family: var(--font-mono);
-    margin-top: 4px;
+    font-size: 11px;
+    color: var(--ink-dim);
+    font-family: var(--font-sans);
   }
   .confirm-label :global(b) {
-    color: var(--crit);
+    color: var(--warn);
+    font-family: var(--font-mono);
     font-weight: 700;
-    font-size: 11px;
+    letter-spacing: 1px;
   }
   .confirm-input {
-    width: 100%;
-    padding: 10px 14px;
-    background: var(--bg);
-    border: 1px solid var(--border-bright);
-    color: var(--fg);
-    font-family: var(--font-mono);
+    padding: 9px 12px;
+    border-radius: 6px;
+    background: var(--bg-inner);
+    border: 1px solid var(--line);
+    color: var(--ink);
     font-size: 13px;
-    letter-spacing: 2px;
+    font-family: var(--font-mono);
+    font-weight: 600;
+    letter-spacing: 1.5px;
     outline: none;
-    transition: border-color 0.15s, color 0.15s;
+    transition: border-color 0.2s, background 0.2s, color 0.2s;
   }
-  .confirm-input:focus { border-color: var(--accent); }
-  .confirm-input.ok    { border-color: var(--ok, #00d97e); color: var(--ok, #00d97e); }
-  .confirm-input:disabled { opacity: 0.5; cursor: not-allowed; }
+  .confirm-input:focus {
+    border-color: var(--warn);
+    background: rgba(251, 191, 36, 0.03);
+  }
+  .confirm-input.ok {
+    border-color: var(--warn);
+    color: var(--warn);
+  }
+  .confirm-input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
 
-  .err {
-    padding: 10px 12px;
-    background: rgba(255, 90, 90, 0.08);
+  /* ─── Alert crítica (solo errores reales del backend) ─── */
+  .alert-crit {
+    background: rgba(248, 113, 113, 0.06);
     border-left: 3px solid var(--crit);
+    padding: 12px 14px;
+    border-radius: 4px;
     font-size: 11px;
     color: var(--crit);
-    font-family: var(--font-mono);
-    letter-spacing: 0.3px;
+    line-height: 1.6;
+    font-family: var(--font-sans);
   }
 </style>
