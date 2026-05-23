@@ -3,6 +3,42 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<script>
+			/* ─── NimOS · Auto-escalado de UI ───────────────────────────
+			 * Aplica zoom CSS al <html> antes del primer paint según el
+			 * viewport efectivo del navegador (que ya incorpora el zoom
+			 * del SO). Sin race, sin flash, sin heurísticas Win/Linux.
+			 *
+			 * Banding por viewport CSS:
+			 *   < 1366  → 0.85  (laptop pequeña)
+			 *   < 1680  → 0.95  (1080p @ 125-150% SO)
+			 *   < 2100  → 1.00  (1080p baseline)
+			 *   < 2600  → 1.15  (1440p)
+			 *   ≥ 2600  → 1.30  (4K)
+			 *
+			 * Re-aplica al redimensionar (mover entre monitores).
+			 * ─────────────────────────────────────────────────────────── */
+			(function () {
+				function computeScale() {
+					var w = window.innerWidth;
+					if (w < 1366) return 0.85;
+					if (w < 1680) return 0.95;
+					if (w < 2100) return 1.00;
+					if (w < 2600) return 1.15;
+					return 1.30;
+				}
+				function apply() {
+					var s = computeScale();
+					document.documentElement.style.zoom = s;
+					/* Variable CSS para compensaciones puntuales (ej.
+					 * ventana maximizada que usa 100vw, que no respeta
+					 * zoom). Ver WindowFrame.svelte .window.maximized. */
+					document.documentElement.style.setProperty('--ui-zoom', s);
+				}
+				apply();
+				window.addEventListener('resize', apply, { passive: true });
+			})();
+		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
