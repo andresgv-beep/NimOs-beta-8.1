@@ -6,17 +6,16 @@
    * El chrome de titlebar lo pone AppShell por dentro — WindowFrame
    * solo es el contenedor flotante con bordes técnicos NimOS.
    *
-   * Estética técnica retro NimOS:
-   *   - Sin glass · sin border-radius
-   *   - Bisel inferior-derecho 22px (firma macro)
-   *   - Borde duro técnico + sombra hard 5px abajo-derecha
-   *   - Halo lechoso del boot suave alrededor
-   *   - Estado activo · ventana al 100%, brillos fuertes
-   *   - Estado inactivo · atenuación sutil (opacity 0.92 + LEDs/cubo apagados)
+   * Estética según mockup validado nimos-window-shell:
+   *   - Border-radius 14px · esquinas redondeadas suaves
+   *   - Sin border, sin bisel · solo box-shadow 1px como borde
+   *   - Sombra ambiental 0 12px 40px (no técnica/dura)
+   *   - Estado activo · ventana al 100%
+   *   - Estado inactivo · atenuación sutil (opacity 0.92)
    *
    * Lógica preservada (sin cambios):
    *   - Drag desde drag-zone invisible en titlebar
-   *   - Resize desde handle en bisel inferior-derecho
+   *   - Resize desde handle en esquina inferior-derecha
    *   - Maximize con cálculo de viewport y ui-zoom
    *   - Focus management con z-index
    *   - Carga lazy de apps con dynamic import
@@ -225,20 +224,13 @@
     position: fixed;
     display: flex;
     flex-direction: column;
-    background: var(--window-bg, #161616);
-    border: 1px solid var(--window-border, rgba(255, 255, 255, 0.14));
-    box-shadow: var(--window-shadow,
-      5px 5px 0 rgba(0, 0, 0, 0.6),
-      0 0 60px rgba(220, 255, 235, 0.04)
-    );
-    /* Bisel firma NimOS · 22px inferior-derecho */
-    clip-path: polygon(
-      0 0,
-      100% 0,
-      100% calc(100% - var(--bev-window, 22px)),
-      calc(100% - var(--bev-window, 22px)) 100%,
-      0 100%
-    );
+    background: var(--bg-window, #16161a);
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow:
+      0 12px 40px rgba(0, 0, 0, 0.4),
+      0 0 0 1px var(--bd, rgba(255, 255, 255, 0.04));
+    color: var(--fg, #f0f0f0);
     transition: opacity 0.15s ease;
     animation: win-in 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
     will-change: transform;
@@ -246,17 +238,14 @@
 
   .window.dragging { user-select: none; }
 
-  /* Estado inactivo · ventana atenuada
-     Los LEDs y el cubo se apagan vía CSS en AppShell con :host-context o
-     :global. Aquí solo bajamos un punto la opacidad general. */
+  /* Estado inactivo · ventana atenuada */
   .window.inactive {
     opacity: 0.92;
   }
 
-  /* Ventana maximizada · sin bisel, sin borde, sin sombra */
+  /* Ventana maximizada · sin border-radius, ocupa todo */
   .window.maximized {
-    clip-path: none !important;
-    border: none !important;
+    border-radius: 0 !important;
     box-shadow: none !important;
     left: 0 !important;
     top: 0 !important;
@@ -314,43 +303,16 @@
   }
 
   /* ═══════════════════════════════════════════════════════════
-     RESIZE HANDLE · 3 diagonales sutiles en el bisel
+     RESIZE HANDLE · área clickable en esquina inferior-derecha
      ═══════════════════════════════════════════════════════════ */
   .resize-handle {
     position: absolute;
     bottom: 0;
     right: 0;
-    width: 22px;
-    height: 22px;
+    width: 16px;
+    height: 16px;
     cursor: nwse-resize;
     z-index: 10;
-  }
-  /* 3 líneas diagonales paralelas al bisel · escalera técnica */
-  .resize-handle::before {
-    content: '';
-    position: absolute;
-    right: 4px;
-    bottom: 4px;
-    width: 10px;
-    height: 1px;
-    background: var(--line-bright, rgba(255, 255, 255, 0.14));
-    transform: rotate(-45deg);
-    transform-origin: right center;
-  }
-  .resize-handle::after {
-    content: '';
-    position: absolute;
-    right: 7px;
-    bottom: 7px;
-    width: 6px;
-    height: 1px;
-    background: var(--line-bright, rgba(255, 255, 255, 0.14));
-    transform: rotate(-45deg);
-    transform-origin: right center;
-  }
-  .resize-handle:hover::before,
-  .resize-handle:hover::after {
-    background: var(--ink, #f2f2f5);
   }
 
   @keyframes win-in {
