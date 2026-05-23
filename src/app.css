@@ -379,6 +379,66 @@ html, body {
   --glass-bg:        var(--window-bg);
   --glass-bg-strong: var(--panel-elev);
   --glass-blur:      none;  /* en estética NimOS no usamos blur */
+
+  /* ═══════════════════════════════════════════════════════════════
+     ALIASES MOCKUP · lenguaje del mockup nimos-storage validado
+     ───────────────────────────────────────────────────────────────
+     Los nuevos componentes (WindowFrame v2, Taskbar v2, Launcher,
+     Storage v2, Files v2) usan estos nombres cortos. Mapeo directo
+     a los semánticos existentes. Aditivo, no rompe nada.
+     ═══════════════════════════════════════════════════════════════ */
+
+  /* Identidad de marca */
+  --nim-green:   var(--signal);
+
+  /* Fondos (estilo mockup) */
+  --bg-window:   var(--window-bg);
+  --bg-main:     var(--main-bg);
+  --bg-side:     var(--side-bg);
+  --bg-card:     var(--panel-elev);
+  --bg-inner:    var(--canvas-soft);
+
+  /* Texto (estilo mockup) */
+  --fg-2:        var(--ink-dim);
+  --fg-3:        var(--ink-mute);
+  --fg-4:        var(--ink-faint);
+  --fg-5:        var(--ink-trace);
+
+  /* Bordes (estilo mockup) */
+  --bd:          var(--line);
+  --bd-3:        var(--line-bright);
+
+  /* Estados (estilo mockup, prefijo st-) */
+  --st-ok:       var(--signal);
+  --st-warn:     var(--warn);
+  --st-crit:     var(--crit);
+  --st-info:     var(--info);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   TOKENS NUEVOS · que NO existían en el sistema previo
+   ───────────────────────────────────────────────────────────────
+   · --ui-select / --ui-select-bg / --ui-select-border:
+       color de selección UI (azul-gris sostenible). Aparece en
+       sidebar.r-nav-item.active del mockup. NO es accent NimOS,
+       NO es estado semántico → necesita identidad propia.
+   · --bd-2: borde de elementos a nivel medio (entre --line y
+       --line-bright), usado en mockup para card-borders internos.
+   ═══════════════════════════════════════════════════════════════ */
+:root,
+[data-theme="dark"] {
+  --ui-select:         #7a9eb1;
+  --ui-select-bg:      rgba(122, 158, 177, 0.10);
+  --ui-select-border:  rgba(122, 158, 177, 0.35);
+  --bd-2:              #20202a;
+}
+
+[data-theme="cream"] {
+  /* En tema crema el azul-gris se invierte a algo más oscuro */
+  --ui-select:         #4a6878;
+  --ui-select-bg:      rgba(74, 104, 120, 0.12);
+  --ui-select-border:  rgba(74, 104, 120, 0.32);
+  --bd-2:              rgba(0, 0, 0, 0.14);
 }
 
 /* ═══════════════════════════════════════════════════════════════
