@@ -8,8 +8,10 @@
    *
    * CAMBIOS v3.2:
    *   · Eliminado el SVG folder genérico (Beta 6/7).
-   *   · Sustituido por un cubo 10×10 — firma NimOS · pareja
-   *     micro del `.ink-cube` blanco del titlebar.
+   *   · Eliminado también el dot de origen (era redundante).
+   *   · Sustituido por un único cubo 10×10 con border-radius 2px
+   *     — firma NimOS · pareja micro del `.ink-cube` blanco del
+   *     titlebar.
    *   · Color del cubo: naranja `--nim-folder` para shares
    *     locales, azul `--nim-remote` para remotas. El cubo
    *     marca origen por sí mismo en cualquier depth.
@@ -20,7 +22,6 @@
    *
    * CAMBIOS v3.1 (preservados):
    *   · Estética alineada al patrón `.sb-item` del AppShell.
-   *   · Indicador de origen separado (dot 8×8 en depth=0).
    *   · Indent uniforme: padding-left = 10 + depth × 14.
    *
    * MECÁNICA (sin cambios):
@@ -115,11 +116,8 @@
     </svg>
   </div>
 
-  {#if depth === 0}
-    <span class="tn-origin" aria-hidden="true"></span>
-  {/if}
-
-  <!-- Cubo · firma NimOS · rota a 45° cuando inTrail -->
+  <!-- Cubo · firma NimOS · rota a 45° cuando inTrail
+       Color refleja origen: naranja local / azul remote -->
   <span class="tn-cube" aria-hidden="true"></span>
 
   <span class="tn-name">{name}</span>
@@ -195,36 +193,20 @@
     pointer-events: none;
   }
 
-  /* ─── Origen (solo en root, depth=0) ───
-     Verde nim para local, azul nim-remote para remote.
-     Reemplaza el sistema de "folder coloreado" de Beta 6/7.
-     v3.2: el cubo .tn-cube también refleja origen, así que
-     el dot es indicador adicional de "esto es root" (depth=0).
-  */
-  .tn-origin {
-    width: 8px;
-    height: 8px;
-    flex-shrink: 0;
-    border-radius: 2px;
-    background: var(--signal, #00ff9f);
-    box-shadow: 0 0 4px var(--signal-glow, rgba(0, 255, 159, 0.4));
-  }
-  .tree-item.remote .tn-origin {
-    background: var(--nim-remote, #4db8ff);
-    box-shadow: 0 0 4px rgba(77, 184, 255, 0.4);
-  }
-
   /* ─── Cubo · firma NimOS para "carpeta navegable" ───
-     Cuadrado 10×10 quieto = carpeta cerrada / no estás aquí.
-     Rotado 45° con glow = estás navegando este subárbol.
-     Color del cubo refleja origen:
+     Cuadrado 10×10 con esquinas redondeadas (border-radius 2px)
+     siguiendo el patrón de los .nav-item-ico / .r-vol-dot del
+     mockup NimOS. Color del cubo refleja origen por sí mismo:
        · Local  → --nim-folder (naranja)
        · Remote → --nim-remote (azul)
+     Cuadrado quieto = carpeta cerrada / no estás aquí.
+     Rotado 45° con glow = estás navegando este subárbol.
   */
   .tn-cube {
     width: 10px;
     height: 10px;
     flex-shrink: 0;
+    border-radius: 2px;
     background: var(--nim-folder, #ff9c5a);
     transition:
       transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
@@ -252,17 +234,9 @@
   }
 
   /* ─── Estado inactivo de la ventana ───
-     Cuando la ventana no tiene foco, atenuar el dot de origen
-     y el cubo para que casen con el resto del chrome inactivo
-     (ink-cube, LEDs).
+     Cuando la ventana no tiene foco, atenuar el cubo y su glow
+     para que case con el resto del chrome inactivo (ink-cube, LEDs).
   */
-  :global(.window.inactive) .tn-origin {
-    opacity: 0.45;
-    box-shadow: 0 0 2px var(--signal-glow, rgba(0, 255, 159, 0.2));
-  }
-  :global(.window.inactive) .tree-item.remote .tn-origin {
-    box-shadow: 0 0 2px rgba(77, 184, 255, 0.2);
-  }
   :global(.window.inactive) .tn-cube {
     opacity: 0.55;
   }
