@@ -423,14 +423,46 @@
     {/if}
   </svelte:fragment>
 
-  <!-- ═══ TOOLBAR · fila propia debajo del page-header ═══
-       Clipboard badge a la izquierda (info contextual)
-       View toggle + Nueva carpeta + Subir a la derecha (acciones)
-       Solo se renderiza si hay algo que mostrar (currentShare o clipboard).
+  <!-- ═══ PAGE HEADER · back + título + breadcrumb + acciones ═══
+       Acciones (clipboard + view toggle + nueva carpeta + subir)
+       a la derecha vía .ph-right. Breadcrumb con flex:1 que se
+       trunca con ellipsis si excede el ancho disponible.
   -->
-  <svelte:fragment slot="toolbar">
+  <svelte:fragment slot="page-header">
+    <button class="fm-back" on:click={goBack} title="Atrás">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+        <polyline points="15 18 9 12 15 6"/>
+      </svg>
+    </button>
+    {#if currentShare}
+      <b>{shareInfo?.displayName || currentShare}</b>
+      <span class="ph-desc">· {sorted.length} item{sorted.length !== 1 ? 's' : ''}</span>
+      {#if pathParts.length > 0}
+        <span class="fm-crumb">
+          <span class="fm-crumb-sep">/</span>
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <span class="fm-crumb-part" on:click={() => navigate(currentShare, '/')}>{shareInfo?.displayName || currentShare}</span>
+          {#each pathParts as part, i}
+            <span class="fm-crumb-sep">/</span>
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <span
+              class="fm-crumb-part"
+              class:cur={i === pathParts.length - 1}
+              on:click={() => { currentPath = '/' + pathParts.slice(0, i+1).join('/'); fetchFiles(); }}
+            >{part}</span>
+          {/each}
+        </span>
+      {/if}
+    {:else}
+      <b>Shared Folders</b>
+      <span class="ph-desc">· {shares.length} share{shares.length !== 1 ? 's' : ''}</span>
+    {/if}
+
+    <!-- Acciones a la derecha · clipboard + view toggle + nueva carpeta + subir -->
     {#if currentShare || clipboard}
-      <div class="fm-toolbar">
+      <div class="ph-right">
         {#if clipboard}
           <div class="clipboard-badge" class:cut={clipboard.op === 'cut'}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:10px;height:10px">
@@ -475,40 +507,6 @@
           </button>
         {/if}
       </div>
-    {/if}
-  </svelte:fragment>
-
-  <!-- ═══ PAGE HEADER · back + título + breadcrumb ═══ -->
-  <svelte:fragment slot="page-header">
-    <button class="fm-back" on:click={goBack} title="Atrás">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-        <polyline points="15 18 9 12 15 6"/>
-      </svg>
-    </button>
-    {#if currentShare}
-      <b>{shareInfo?.displayName || currentShare}</b>
-      <span class="ph-desc">· {sorted.length} item{sorted.length !== 1 ? 's' : ''}</span>
-      {#if pathParts.length > 0}
-        <span class="fm-crumb">
-          <span class="fm-crumb-sep">/</span>
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <span class="fm-crumb-part" on:click={() => navigate(currentShare, '/')}>{shareInfo?.displayName || currentShare}</span>
-          {#each pathParts as part, i}
-            <span class="fm-crumb-sep">/</span>
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <span
-              class="fm-crumb-part"
-              class:cur={i === pathParts.length - 1}
-              on:click={() => { currentPath = '/' + pathParts.slice(0, i+1).join('/'); fetchFiles(); }}
-            >{part}</span>
-          {/each}
-        </span>
-      {/if}
-    {:else}
-      <b>Shared Folders</b>
-      <span class="ph-desc">· {shares.length} share{shares.length !== 1 ? 's' : ''}</span>
     {/if}
   </svelte:fragment>
 
@@ -831,21 +829,23 @@
   }
 
   .fm-crumb {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
+    flex: 1;
+    min-width: 0;
     font-family: var(--font-mono, monospace);
     font-size: 11px;
     color: var(--ink-mute, #9a9aa3);
     margin-left: 4px;
-    min-width: 0;
     overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .fm-crumb-sep {
+    display: inline-block;
     color: var(--ink-trace, #44444a);
     margin: 0 2px;
   }
   .fm-crumb-part {
+    display: inline-block;
     padding: 1px 5px;
     border-radius: 3px;
     cursor: pointer;
@@ -862,27 +862,10 @@
   }
 
   /* ═══════════════════════════════════════════════════════════
-     TOOLBAR · fila propia entre page-header y content
+     PAGE-HEADER ACTIONS · clipboard badge + view toggle + upload
      ───────────────────────────────────────────────────────────
-     Reemplaza al patrón viejo de "botones apretados al lado
-     de los LEDs". Aquí los actions tienen su propio espacio.
-     ═══════════════════════════════════════════════════════════ */
-  .fm-toolbar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 16px;
-    border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.08));
-    flex-shrink: 0;
-    background: transparent;
-  }
-  /* Clipboard a la izquierda, todo lo demás empujado a la derecha */
-  .fm-toolbar .clipboard-badge {
-    margin-right: auto;
-  }
-
-  /* ═══════════════════════════════════════════════════════════
-     TITLEBAR ACTIONS · clipboard badge + view toggle + upload
+     Conviven con back+share+breadcrumb en una sola fila.
+     El .ph-right del AppShell los alinea a la derecha automáticamente.
      ═══════════════════════════════════════════════════════════ */
   .clipboard-badge {
     display: flex; align-items: center; gap: 5px;
