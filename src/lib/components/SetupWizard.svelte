@@ -117,7 +117,7 @@
 
 <style>
   .wizard-screen {
-    width: 100vw;
+    width: 100%;
     height: 100vh;
     background: var(--wallpaper);
     display: flex;
