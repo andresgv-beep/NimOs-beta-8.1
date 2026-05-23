@@ -182,8 +182,8 @@ html, body {
   --side-bg:        var(--panel-elev);
   --side-border:    var(--line);
   --side-hover:     rgba(255, 255, 255, 0.04);
-  --side-active-bg: var(--signal-soft);
-  --side-active-fg: var(--signal);
+  --side-active-bg: rgba(122, 158, 177, 0.10);
+  --side-active-fg: #7a9eb1;
 
   /* ── Taskbar · color sólido plano · sin gradient cromado ── */
   --taskbar-bg:           #161616;
@@ -268,8 +268,8 @@ html, body {
   --side-bg:        var(--panel-deep);
   --side-border:    var(--line);
   --side-hover:     rgba(0, 0, 0, 0.04);
-  --side-active-bg: var(--signal-soft);
-  --side-active-fg: var(--signal);
+  --side-active-bg: rgba(74, 104, 120, 0.12);
+  --side-active-fg: #4a6878;
 
   /* ── Taskbar · color sólido plano · versión crema ────────── */
   --taskbar-bg:           #e8e8e0;
