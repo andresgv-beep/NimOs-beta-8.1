@@ -25,7 +25,7 @@
  *   - Footer           · footer denso de ventana
  *   - AppIcon          · icono de app con marco HUD (xs/sm/md/lg)
  *   - ConfirmDialog    · modal de confirmación (simple o con input-to-confirm)
- *   - WizardModal      · modal multipaso con stepper
+ *   - WizardFrame      · frame de wizard multipaso (Design System Beta 8.1)
  */
 
 export { default as LED }               from './LED.svelte';
@@ -46,4 +46,4 @@ export { default as Tab }               from './Tab.svelte';
 export { default as Footer }            from './Footer.svelte';
 export { default as AppIcon }           from './AppIcon.svelte';
 export { default as ConfirmDialog }     from './ConfirmDialog.svelte';
-export { default as WizardModal }       from './WizardModal.svelte';
+export { default as WizardFrame }       from './WizardFrame.svelte';
