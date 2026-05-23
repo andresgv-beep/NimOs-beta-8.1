@@ -4,14 +4,14 @@
    * ──────────────────────────────────────────
    * - Zona izquierda: logo NimOS · botón MENÚ · apps ancladas · apps abiertas
    * - Zona centro:    vacío (deja respirar el escritorio)
-   * - Zona derecha:   sysled CPU/RAM/NET · transferencias · notificaciones · reloj · power
+   * - Zona derecha:   transferencias · notificaciones · reloj · power
    *
    * Estética técnica retro NimOS:
    *   - Sin glass · sin border-radius · gradient sutil + border-top duro
    *   - LED barrita 16×2px verde luminoso bajo apps abiertas
    *   - Botón MENÚ con chaflán inferior-derecho 8px (firma NimOS)
    *   - Tooltips con chaflán técnico
-   *   - Mini sysled CPU/RAM/NET segmentado estilo LED retro
+   *   - Línea de glow verde sutil en el borde superior (firma del boot)
    *
    * Mantenido de Beta 8:
    *   - Logo NimOS pixelado (3 cubos blancos)
@@ -179,11 +179,6 @@
 
   // ─── Transfers activity ───
   $: transferCount = $activeTasks.length;
-
-  // ─── Mini sysled · TODO: conectar al daemon ───
-  let cpuLoad = 28;
-  let ramLoad = 52;
-  let netLoad = 14;
 </script>
 
 <Launcher bind:visible={showLauncher} />
@@ -294,30 +289,6 @@
   <!-- ═══════════════ DERECHA · SYSTRAY ═══════════════ -->
   <div class="tb-right">
 
-    <!-- Mini sysled CPU/RAM/NET · estética LED segmentada retro -->
-    <div class="tb-sysled">
-      <div class="sysled-item" title="CPU · {cpuLoad}%">
-        <span class="sysled-lbl">CPU</span>
-        <div class="sysled-bar">
-          <div class="sysled-fill" class:warn={cpuLoad > 75} style="width:{cpuLoad}%"></div>
-        </div>
-      </div>
-      <div class="sysled-item" title="RAM · {ramLoad}%">
-        <span class="sysled-lbl">RAM</span>
-        <div class="sysled-bar">
-          <div class="sysled-fill" class:warn={ramLoad > 75} style="width:{ramLoad}%"></div>
-        </div>
-      </div>
-      <div class="sysled-item" title="NET · {netLoad}%">
-        <span class="sysled-lbl">NET</span>
-        <div class="sysled-bar">
-          <div class="sysled-fill" class:warn={netLoad > 75} style="width:{netLoad}%"></div>
-        </div>
-      </div>
-    </div>
-
-    <div class="tb-sep"></div>
-
     <!-- Transferencias -->
     <button
       class="tb-tray"
@@ -385,6 +356,23 @@
     align-items: stretch;
     z-index: 9000;
     font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  }
+
+  /* Línea de glow verde sutil en borde superior · firma del boot */
+  .taskbar::before {
+    content: '';
+    position: absolute;
+    top: -1px;
+    left: 15%;
+    right: 15%;
+    height: 1px;
+    background: linear-gradient(90deg,
+      transparent,
+      var(--signal-glow, rgba(0, 255, 159, 0.35)),
+      transparent
+    );
+    opacity: 0.5;
+    pointer-events: none;
   }
 
   .tb-left, .tb-right {
@@ -516,52 +504,6 @@
   }
   .tb-app:hover .tb-tooltip {
     opacity: 1;
-  }
-
-  /* ─── Mini sysled CPU/RAM/NET · estética LED segmentada retro ─── */
-  .tb-sysled {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 0 10px;
-    height: 100%;
-  }
-  .sysled-item {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 2px;
-  }
-  .sysled-lbl {
-    font-family: var(--font-mono, monospace);
-    font-size: 7.5px;
-    color: var(--ink-faint, #6a6a72);
-    letter-spacing: 1px;
-    font-weight: 700;
-  }
-  .sysled-bar {
-    width: 32px;
-    height: 5px;
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid var(--line-bright, rgba(255, 255, 255, 0.14));
-    position: relative;
-    overflow: hidden;
-    /* Pattern segmentado · líneas verticales sutiles cada 3px */
-    background-image:
-      repeating-linear-gradient(90deg,
-        transparent 0px, transparent 3px,
-        rgba(0, 0, 0, 0.3) 3px, rgba(0, 0, 0, 0.3) 4px);
-  }
-  .sysled-fill {
-    position: absolute;
-    top: 0; left: 0; bottom: 0;
-    background: var(--ink-dim, #c8c8cf);
-    box-shadow: 0 0 4px rgba(220, 255, 235, 0.4);
-    transition: width 0.5s ease-out;
-  }
-  .sysled-fill.warn {
-    background: var(--warn, #fbbf24);
-    box-shadow: 0 0 4px rgba(251, 191, 36, 0.5);
   }
 
   /* ─── Tray buttons ─── */
