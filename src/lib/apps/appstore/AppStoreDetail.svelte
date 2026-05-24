@@ -23,8 +23,10 @@
    */
 
   import { onMount, createEventDispatcher } from 'svelte';
+  import { openWindow } from '$lib/stores/windows.js';
+  import ConfirmDialog from '$lib/ui/ConfirmDialog.svelte';
   import { fetchCatalog } from './catalog.js';
-  import { getInstalledApps } from './api.js';
+  import { getInstalledApps, appAction, uninstallApp } from './api.js';
   import InstallFlow from './InstallFlow.svelte';
   import {
     composeAppViews,
@@ -56,6 +58,16 @@
 
   /** Modo de vista interno · 'detail' | 'installing' */
   let mode = 'detail';
+
+  // Acciones en curso · evitan double-click y muestran feedback
+  let actionBusy = false;
+  /** "start" | "stop" | null · qué acción se está ejecutando */
+  let busyKind = null;
+  let actionError = '';
+
+  // Confirm dialog · uninstall
+  let confirmUninstallOpen = false;
+  let uninstallProcessing = false;
 
   // ── Lifecycle ──────────────────────────────────────────────────────
   onMount(load);
@@ -131,18 +143,83 @@
   }
 
   function handleOpen() {
-    // Placeholder · Fase 6 abrirá la URL de la app instalada
-    console.log('[appstore/detail] open · pendiente Fase 6:', appId);
+    if (!view?.installed) return;
+    const port = view.runtime?.ports?.[0]?.host || view.catalog?.port;
+    if (!port) {
+      actionError = 'La app no tiene puerto expuesto · no se puede abrir.';
+      return;
+    }
+    const isExternal = view.catalog?.openMode === 'external';
+    if (isExternal) {
+      // External · pestaña nueva directa
+      const host = window.location.hostname;
+      const proto = window.location.protocol;
+      window.open(`${proto}//${host}:${port}`, '_blank');
+      return;
+    }
+    // Internal · ventana webapp dentro del desktop NimOS.
+    // WebApp.svelte ya provee botón ↗ "Abrir en pestaña nueva" en su titlebar,
+    // por lo que el user puede saltar a external si lo prefiere.
+    openWindow(
+      view.id,
+      { width: 1100, height: 700 },
+      {
+        isWebApp: true,
+        port,
+        appName: view.name,
+      }
+    );
   }
 
-  function handleStartStop() {
-    // Placeholder · Fase 6 implementará start/stop con appAction()
-    console.log('[appstore/detail] start/stop · pendiente Fase 6:', appId);
+  async function handleStartStop() {
+    if (!view?.installed || actionBusy) return;
+    const action = view.status === 'running' ? 'stop' : 'start';
+    actionBusy = true;
+    busyKind = action;
+    actionError = '';
+    try {
+      await appAction(view.id, action);
+      // Esperar a que el observer detecte el cambio · ~1-2s tras start/stop
+      await new Promise((r) => setTimeout(r, 1500));
+      await load();
+    } catch (err) {
+      actionError = err?.message || String(err);
+      console.error(`[appstore/detail] ${action} failed:`, err);
+    } finally {
+      actionBusy = false;
+      busyKind = null;
+    }
   }
 
-  function handleUninstall() {
-    // Placeholder · Fase 6 abrirá ConfirmDialog con typed confirmation
-    console.log('[appstore/detail] uninstall · pendiente Fase 6:', appId);
+  function handleUninstallClick() {
+    if (!view?.installed || actionBusy) return;
+    confirmUninstallOpen = true;
+  }
+
+  async function handleUninstallConfirm() {
+    if (!view?.installed) return;
+    uninstallProcessing = true;
+    actionError = '';
+    try {
+      // El catálogo NimOS usa stacks (campo compose) · type='stack'.
+      // Container individual queda para futuro · todas las apps del
+      // catálogo oficial vienen con compose YAML.
+      await uninstallApp(view.id, 'stack');
+      confirmUninstallOpen = false;
+      // Tras desinstalar volvemos al catálogo · la app ya no existe aquí.
+      dispatch('back');
+    } catch (err) {
+      actionError = err?.message || String(err);
+      console.error('[appstore/detail] uninstall failed:', err);
+      confirmUninstallOpen = false;
+    } finally {
+      uninstallProcessing = false;
+    }
+  }
+
+  function handleUninstallCancel() {
+    if (uninstallProcessing) return; // no cancelar si está en marcha
+    confirmUninstallOpen = false;
   }
 </script>
 
@@ -225,19 +302,35 @@
           <button class="btn btn-primary" on:click={handleOpen}>
             Abrir {view.name}
           </button>
-          <button class="btn btn-secondary" on:click={handleStartStop}>
-            Detener
+          <button
+            class="btn btn-secondary"
+            on:click={handleStartStop}
+            disabled={actionBusy}
+          >
+            {busyKind === 'stop' ? 'Deteniendo…' : 'Detener'}
           </button>
         {:else}
-          <button class="btn btn-secondary" on:click={handleStartStop}>
-            Iniciar
+          <button
+            class="btn btn-primary"
+            on:click={handleStartStop}
+            disabled={actionBusy}
+          >
+            {busyKind === 'start' ? 'Iniciando…' : 'Iniciar'}
           </button>
         {/if}
-        <button class="btn btn-danger-soft" on:click={handleUninstall}>
+        <button
+          class="btn btn-danger-soft"
+          on:click={handleUninstallClick}
+          disabled={actionBusy || uninstallProcessing}
+        >
           Desinstalar
         </button>
       {/if}
     </div>
+
+    {#if actionError}
+      <div class="action-error">{actionError}</div>
+    {/if}
 
     <!-- Credenciales por defecto -->
     {#if credentials && (credentials.username || credentials.password)}
@@ -317,6 +410,22 @@
       {/if}
     </section>
   </div>
+{/if}
+
+<!-- Confirm dialog · uninstall con typed confirmation -->
+{#if view}
+  <ConfirmDialog
+    bind:open={confirmUninstallOpen}
+    title="Desinstalar {view.name}"
+    message="Esta acción detendrá y eliminará el contenedor, los volúmenes asociados y la configuración guardada. Escribe el nombre de la app para confirmar."
+    confirmLabel="Desinstalar"
+    cancelLabel="Cancelar"
+    variant="danger"
+    inputConfirm={view.id}
+    processing={uninstallProcessing}
+    on:confirm={handleUninstallConfirm}
+    on:cancel={handleUninstallCancel}
+  />
 {/if}
 
 <style>
@@ -509,6 +618,18 @@
     display: flex;
     gap: var(--sp-2);
     flex-wrap: wrap;
+  }
+
+  /* Error inline tras acción (start/stop) */
+  .action-error {
+    padding: 8px 12px;
+    background: var(--crit-dim);
+    border: 1px solid var(--crit-border);
+    border-radius: var(--radius-sm);
+    color: var(--ink);
+    font-size: var(--fs-11);
+    font-family: var(--font-mono);
+    word-break: break-word;
   }
   .btn {
     padding: 9px 18px;
