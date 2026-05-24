@@ -31,6 +31,91 @@ type dockerContainer struct {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// Stack-matching heuristics · APP-017 · single source of truth
+//
+// Cuando una app es de tipo "stack" (docker-compose), su container principal
+// suele tener un sufijo derivado del nombre del servicio en compose:
+//
+//	immich      → immich_server, immich-server
+//	nextcloud   → nextcloud_app, nextcloud-app
+//	calibre-web → calibre-web (sin sufijo, exact match)
+//
+// stackContainerSuffixes lista los sufijos en orden de preferencia.
+// El sufijo vacío "" debe ir PRIMERO (exact match prevalece).
+//
+// stackSubKeywords lista substrings que identifican subcontainers internos
+// de stacks (redis, postgres, ml, db, etc) · NO se cuentan como orphans
+// cuando hay un container "principal" con prefijo compartido.
+// ═══════════════════════════════════════════════════════════════════════
+
+var (
+	stackContainerSuffixes = []string{"", "_server", "-server", "_app", "-app"}
+	stackSubKeywords       = []string{"_redis", "_postgres", "_ml", "_machine", "_db", "_cache"}
+)
+
+// matchContainerForAppID busca el container que corresponde a un app ID.
+//
+// Estrategia (orden):
+//
+//  1. Exact match + sufijos de stack (immich, immich_server, immich-server, ...).
+//  2. Fallback prefix-match (cualquier name que empiece por "{id}_" o "{id}-").
+//
+// Devuelve (containerName, *container) si encuentra, ("", nil) si no.
+// El caller marca matchedContainers para luego filtrar orphans correctamente.
+//
+// NOTA: el map containers se ITERA en el fallback, así que el primer match
+// gana. Es no-determinístico si hay múltiples candidatos con el mismo prefijo
+// (improbable en práctica: cada stack tiene container principal único).
+func matchContainerForAppID(appID string, containers map[string]dockerContainer) (string, *dockerContainer) {
+	// 1. Sufijos en orden de preferencia (exact match primero).
+	for _, suffix := range stackContainerSuffixes {
+		candidate := appID + suffix
+		if c, ok := containers[candidate]; ok {
+			cc := c // capturar por valor antes de devolver puntero
+			return candidate, &cc
+		}
+	}
+	// 2. Fallback: prefix-match (immich_server cuando appID="immich").
+	for name, c := range containers {
+		if strings.HasPrefix(name, appID+"_") || strings.HasPrefix(name, appID+"-") {
+			cc := c
+			return name, &cc
+		}
+	}
+	return "", nil
+}
+
+// isPossibleStackSubContainer · APP-017 · ¿el container `name` es un
+// subcomponente interno de algún stack que ya está representado?
+//
+// Devuelve true si:
+//   - El nombre contiene un keyword conocido de stack-sub (redis, postgres...)
+//   - O su prefijo coincide con algún ID que YA fue matcheado (matchedIDs).
+//
+// matchedIDs debe ser el conjunto de container names que ya fueron asociados
+// a una app registered (la salida de matchContainerForAppID). El prefijo se
+// extrae del primer segmento separado por "_".
+//
+// Uso: contar orphans excluyendo subcontainers de stacks legítimos.
+func isPossibleStackSubContainer(name string, matchedIDs map[string]bool) bool {
+	// 1. Keywords directos (redis, postgres, ml, machine, db, cache).
+	for _, sub := range stackSubKeywords {
+		if strings.Contains(name, sub) {
+			return true
+		}
+	}
+	// 2. Prefijo coincide con algún match previo (immich_microservices cuando
+	//    ya está matched immich_server).
+	for matched := range matchedIDs {
+		prefix := strings.SplitN(matched, "_", 2)[0]
+		if strings.HasPrefix(name, prefix+"_") || strings.HasPrefix(name, prefix+"-") {
+			return true
+		}
+	}
+	return false
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Aggregate health · Docker engine como agregado de sus children
 //
 // Vocabulario oficial HealthStatus (7 constantes en nimos_health.go).
@@ -85,11 +170,23 @@ func ComputeDockerAggregateHealth(children []DockerAppStatus) HealthStatus {
 func getDockerAppStatuses(dockerServiceID string) ([]DockerAppStatus, int) {
 	ctx := context.Background()
 
-	// 1. Apps registradas en la DB
-	registered, err := appsRepo.ListDockerApps(ctx)
+	// 1. Apps registradas en la DB · incluyendo las marcadas deleting=1.
+	//    Las activas se procesan normalmente; las deleting se usan SOLO para
+	//    filtrarlas del orphan count (su container puede seguir vivo durante
+	//    el cleanup async pero no es un orphan, es uninstall in progress).
+	allRegistered, err := appsRepo.ListDockerAppsIncludingDeleting(ctx)
 	if err != nil {
 		logMsg("apps: getDockerAppStatuses list failed: %v", err)
 		return []DockerAppStatus{}, 0
+	}
+	var registered []*DBDockerApp
+	deletingIDs := map[string]bool{}
+	for _, a := range allRegistered {
+		if a.Deleting {
+			deletingIDs[a.ID] = true
+		} else {
+			registered = append(registered, a)
+		}
 	}
 
 	// 2. docker ps -a (ALL containers, not just running)
@@ -115,28 +212,10 @@ func getDockerAppStatuses(dockerServiceID string) ([]DockerAppStatus, int) {
 	matchedContainers := map[string]bool{}
 
 	for _, reg := range registered {
-		var found *dockerContainer
-		var containerName string
-		// Prueba exact match y prefijos de stack
-		for _, suffix := range []string{"", "_server", "-server", "_app", "-app"} {
-			candidate := reg.ID + suffix
-			if c, ok := containers[candidate]; ok {
-				found = &c
-				containerName = candidate
-				matchedContainers[candidate] = true
-				break
-			}
-		}
-		// Fallback: prefix match (immich_server → immich)
-		if found == nil {
-			for name, c := range containers {
-				if strings.HasPrefix(name, reg.ID+"_") || strings.HasPrefix(name, reg.ID+"-") {
-					found = &c
-					containerName = name
-					matchedContainers[name] = true
-					break
-				}
-			}
+		// APP-017 · matching delegado a helper compartido con dockerInstalledApps.
+		containerName, found := matchContainerForAppID(reg.ID, containers)
+		if found != nil {
+			matchedContainers[containerName] = true
 		}
 
 		// Construir status base
@@ -167,43 +246,45 @@ func getDockerAppStatuses(dockerServiceID string) ([]DockerAppStatus, int) {
 			status.Uptime = extractUptime(found.Status)
 			status.Ports = parsePorts(found.Ports, reg)
 		} else {
-			// Registrada pero sin container
+			// Registrada pero sin container · usar PortsJSON canónico (APP-033).
+			// reg.parsedPorts() devuelve el array completo desde JSON, con
+			// fallback a reg.Port legacy si JSON está vacío.
 			status.Status = "stopped"
 			status.Health = string(HealthHealthy)
-			if reg.Port > 0 {
-				status.Ports = []PortBinding{{Declared: reg.Port, Host: reg.Port}}
-			}
+			status.Ports = reg.parsedPorts()
 		}
 
 		statuses = append(statuses, status)
 	}
 
-	// 4. Contar orphans (en docker ps pero no en docker_apps)
+	// 4. Contar orphans (en docker ps pero no en docker_apps activos)
+	//    APP-031 · filtrar containers cuyo appId está en deleting=1: NO son
+	//    orphans, son uninstall in progress.
+	//    APP-017 · subcontainers de stacks excluidos vía isPossibleStackSubContainer.
 	orphanCount := 0
-	stackSubs := []string{"_redis", "_postgres", "_ml", "_machine", "_db", "_cache"}
 	for name := range containers {
 		if matchedContainers[name] {
 			continue
 		}
-		isStackSub := false
-		for _, sub := range stackSubs {
-			if strings.Contains(name, sub) {
-				isStackSub = true
+		// APP-031 · si el container o su prefijo coincide con una app en deleting,
+		// no contarlo como orphan (su row se borrará en cuanto el cleanup termine).
+		if deletingIDs[name] {
+			continue
+		}
+		isUninstalling := false
+		for delID := range deletingIDs {
+			if strings.HasPrefix(name, delID+"_") || strings.HasPrefix(name, delID+"-") {
+				isUninstalling = true
 				break
 			}
 		}
-		if !isStackSub {
-			for matched := range matchedContainers {
-				prefix := strings.SplitN(matched, "_", 2)[0]
-				if strings.HasPrefix(name, prefix+"_") || strings.HasPrefix(name, prefix+"-") {
-					isStackSub = true
-					break
-				}
-			}
+		if isUninstalling {
+			continue
 		}
-		if !isStackSub {
-			orphanCount++
+		if isPossibleStackSubContainer(name, matchedContainers) {
+			continue
 		}
+		orphanCount++
 	}
 
 	if statuses == nil {

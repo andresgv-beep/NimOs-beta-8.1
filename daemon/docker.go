@@ -565,11 +565,31 @@ func dockerContainersList(w http.ResponseWriter, r *http.Request) {
 	jsonOk(w, map[string]interface{}{"installed": true, "containers": getRealContainersGo()})
 }
 
+// dockerInstalledApps · GET /api/docker/installed-apps
+//
+// APP-010 · DEPRECATED desde Beta 8.1.x.
+//
+// Este endpoint queda mantenido para compat con clientes pre-Beta-8 que
+// consumían el formato legacy {apps: [{id, name, port, status, isStack,
+// external, category}]}. El frontend nuevo debe leer /api/services y
+// filtrar por type="docker-app" o consumir /api/services?app=docker.
+//
+// Headers de deprecación según RFC 8594:
+//   Deprecation: true
+//   Sunset: ... (fecha estimada de retirada, una vez completado el port frontend)
+//   Link: </api/services>; rel="successor-version"
+//
+// APP-017 · refactorizado para usar matchContainerForAppID (single source
+// of truth con getDockerAppStatuses).
 func dockerInstalledApps(w http.ResponseWriter, r *http.Request) {
 	session := requireAuth(w, r)
 	if session == nil {
 		return
 	}
+	// APP-010 · marcar deprecación en cada respuesta.
+	w.Header().Set("Deprecation", "true")
+	w.Header().Set("Link", `</api/services>; rel="successor-version"`)
+
 	if !isDockerInstalledGo() {
 		jsonOk(w, map[string]interface{}{"apps": []interface{}{}})
 		return
@@ -581,97 +601,81 @@ func dockerInstalledApps(w http.ResponseWriter, r *http.Request) {
 		registeredApps = nil
 	}
 
-	// Get running containers
-	out, _ := runSafe("docker", "ps", "--format", "{{.Names}}|{{.Image}}|{{.Ports}}|{{.Status}}")
-	runningContainers := map[string]map[string]interface{}{}
+	// docker ps (running only · este endpoint legacy mantiene la semántica
+	// histórica de "solo containers running con ports expuestos").
+	out, _ := runSafe("docker", "ps", "--format", "{{.Names}}|{{.Image}}|{{.Status}}|{{.Ports}}")
+	containers := map[string]dockerContainer{}
 	if out != "" {
-		for _, line := range strings.Split(out, "\n") {
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 			parts := strings.SplitN(line, "|", 4)
 			if len(parts) < 4 {
 				continue
 			}
-			var port interface{}
-			if parts[2] != "" {
-				re := regexp.MustCompile(`0\.0\.0\.0:(\d+)`)
-				if m := re.FindStringSubmatch(parts[2]); m != nil {
-					port = parseIntDefault(m[1], 0)
-				}
+			containers[parts[0]] = dockerContainer{
+				Name:   parts[0],
+				Image:  parts[1],
+				Status: parts[2],
+				Ports:  parts[3],
 			}
-			status := "stopped"
-			if strings.Contains(parts[3], "Up") {
-				status = "running"
-			}
-			runningContainers[parts[0]] = map[string]interface{}{"image": parts[1], "port": port, "status": status}
 		}
 	}
 
+	// Helper local · extrae el primer port host del raw "0.0.0.0:8096->8096/tcp"
+	extractFirstHostPort := func(rawPorts string) interface{} {
+		if rawPorts == "" {
+			return nil
+		}
+		re := regexp.MustCompile(`0\.0\.0\.0:(\d+)`)
+		if m := re.FindStringSubmatch(rawPorts); m != nil {
+			return parseIntDefault(m[1], 0)
+		}
+		return nil
+	}
+
 	var apps []interface{}
-	addedIds := map[string]bool{}
+	matchedContainers := map[string]bool{}
 
 	for _, reg := range registeredApps {
-		isStack := reg.Type == "stack"
+		// APP-017 · matching delegado al helper compartido.
+		containerName, container := matchContainerForAppID(reg.ID, containers)
 
 		containerStatus := "unknown"
-		if isStack {
-			for _, suffix := range []string{"_server", "-server", "_app", "-app", ""} {
-				if c, ok := runningContainers[reg.ID+suffix]; ok {
-					containerStatus, _ = c["status"].(string)
-					break
-				}
-			}
-			if containerStatus == "unknown" {
-				for name, c := range runningContainers {
-					if strings.HasPrefix(name, reg.ID+"_") || strings.HasPrefix(name, reg.ID+"-") {
-						containerStatus, _ = c["status"].(string)
-						break
-					}
-				}
-			}
-		} else {
-			if c, ok := runningContainers[reg.ID]; ok {
-				containerStatus, _ = c["status"].(string)
+		if container != nil {
+			matchedContainers[containerName] = true
+			if strings.Contains(container.Status, "Up") {
+				containerStatus = "running"
+			} else {
+				containerStatus = "stopped"
 			}
 		}
 
 		apps = append(apps, map[string]interface{}{
 			"id": reg.ID, "name": reg.Name, "icon": reg.Icon,
 			"color": reg.Color, "port": reg.Port, "image": reg.Image,
-			"status": containerStatus, "category": "installed", "isStack": isStack,
+			"status": containerStatus, "category": "installed",
+			"isStack":  reg.Type == "stack",
 			"external": reg.OpenMode == "external",
 		})
-		addedIds[reg.ID] = true
 	}
 
-	// Add unregistered containers with ports
-	for name, c := range runningContainers {
-		if addedIds[name] || c["port"] == nil {
+	// Containers running no registrados + con port expuesto · "orphans con UI".
+	// APP-017 · usa isPossibleStackSubContainer para filtrar subcontainers.
+	for name, c := range containers {
+		if matchedContainers[name] {
 			continue
 		}
-		// Skip stack sub-containers
-		skip := false
-		for _, sub := range []string{"_redis", "_postgres", "_ml"} {
-			if strings.Contains(name, sub) {
-				skip = true
-				break
-			}
-		}
-		if skip {
+		port := extractFirstHostPort(c.Ports)
+		if port == nil {
 			continue
 		}
-		for id := range addedIds {
-			if strings.HasPrefix(name, id+"_") || strings.HasPrefix(name, id+"-") {
-				skip = true
-				break
-			}
-		}
-		if skip {
+		if isPossibleStackSubContainer(name, matchedContainers) {
 			continue
 		}
 
-		dispName, icon, color := getAppMeta(c["image"].(string), name)
+		dispName, icon, color := getAppMeta(c.Image, name)
 		apps = append(apps, map[string]interface{}{
 			"id": name, "name": dispName, "icon": icon, "color": color,
-			"port": c["port"], "image": c["image"], "status": c["status"], "category": "installed",
+			"port": port, "image": c.Image, "status": "running", "category": "installed",
 		})
 	}
 
@@ -893,12 +897,17 @@ func dockerInstall(w http.ResponseWriter, r *http.Request) {
 	// detector. Si los IDs divergían (findPoolFromPath vs targetPool.Name),
 	// quedaban dos rows.
 	//
-	// Ahora: docker.json ya tiene installed=true tras saveDockerConfigGo.
-	// runAutoRegister invoca detectDockerEngine que registra con Status=unknown.
-	// reconcileServices corrige el status real en el próximo tick (≤30s).
-	// Trade-off aceptado: gap UX <30s en lugar de doble fuente de registro.
-	// APP-034 cerrará el gap con cache invalidation explícita.
+	// Flujo actual:
+	//   1. saveDockerConfigGo deja installed=true en docker.json
+	//   2. runAutoRegister invoca detectDockerEngine que inserta la instance
+	//      con Status="unknown"
+	//   3. reconcileServices verifica systemctl is-active docker y corrige
+	//      el status real inmediatamente · sin esperar al tick (≤30s)
+	//   4. ForceDockerCacheRefresh prepara la cache para que /api/services
+	//      pueda servir Docker engine + children sin lag perceptible
 	runAutoRegister(r.Context())
+	reconcileServices()
+	ForceDockerCacheRefresh(r.Context())
 
 	jsonOk(w, map[string]interface{}{"ok": true, "path": dockerPath, "dockerAvailable": dockerAvailable})
 }
@@ -1048,13 +1057,36 @@ func dockerContainerCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Register app · CreateOrUpdate es UPSERT idempotente, no necesita pre-filtrar
+	//
+	// APP-033 · construir array completo de PortBinding desde body.ports.
+	// El primer port se duplica en Port (legacy) para clientes viejos que
+	// leen ese campo. El array completo va en PortsJSON · canonical multi-port.
+	var portBindings []PortBinding
 	appPort := 0
 	if ports, ok := body["ports"].(map[string]interface{}); ok {
-		for p := range ports {
-			appPort = parseIntDefault(p, 0)
-			break
+		for host, container := range ports {
+			hostInt := parseIntDefault(host, 0)
+			containerInt := parseIntDefault(fmt.Sprintf("%v", container), 0)
+			if hostInt == 0 || containerInt == 0 {
+				continue
+			}
+			portBindings = append(portBindings, PortBinding{
+				Host:     hostInt,
+				Declared: containerInt,
+				Protocol: "tcp", // body no trae proto · asumimos tcp (99% apps web)
+			})
+			if appPort == 0 {
+				appPort = hostInt
+			}
 		}
 	}
+	portsJSON := "[]"
+	if len(portBindings) > 0 {
+		if data, jerr := json.Marshal(portBindings); jerr == nil {
+			portsJSON = string(data)
+		}
+	}
+
 	app := &DBDockerApp{
 		ID:          id,
 		Name:        name,
@@ -1063,15 +1095,19 @@ func dockerContainerCreate(w http.ResponseWriter, r *http.Request) {
 		Color:       bodyStr(body, "color"),
 		Type:        "container",
 		Port:        appPort,
+		PortsJSON:   portsJSON,
 		InstalledBy: session.Username,
 	}
 	if err := appsRepo.CreateOrUpdateDockerApp(r.Context(), app); err != nil {
 		logMsg("docker: install register failed for %s: %v", id, err)
 	}
 
+	// APP-034 · invalidación inmediata de cache de NimHealth (sync, ~150ms en Pi).
+	ForceDockerCacheRefresh(r.Context())
+
 	jsonOk(w, map[string]interface{}{
 		"ok": true, "containerId": strings.TrimSpace(out),
-		"container":    map[string]interface{}{"id": id, "name": name, "image": image, "status": "running"},
+		"container":     map[string]interface{}{"id": id, "name": name, "image": image, "status": "running"},
 		"mountedShares": mountedShares,
 	})
 }
@@ -1169,6 +1205,10 @@ func dockerStackDeploy(w http.ResponseWriter, r *http.Request) {
 		logMsg("docker: stack install register failed for %s: %v", id, err)
 	}
 
+	// APP-034 · invalidación inmediata de cache de NimHealth (sync, ~150ms en Pi).
+	// Sin esto, la app no aparece en /api/services hasta el siguiente tick (≤30s).
+	ForceDockerCacheRefresh(r.Context())
+
 	jsonOk(w, map[string]interface{}{"ok": true, "stack": id, "path": stackPath})
 }
 
@@ -1190,6 +1230,11 @@ func dockerContainerAction(w http.ResponseWriter, r *http.Request, id, action st
 		jsonError(w, 500, fmt.Sprintf("Failed to %s container", action))
 		return
 	}
+	// APP-034 · refresh async para no añadir latencia a la respuesta del action.
+	// El user clicó start/stop/restart, la operación ya completó · la cache se
+	// pondrá al día antes de la próxima vista de NimHealth.
+	go ForceDockerCacheRefresh(context.Background())
+
 	jsonOk(w, map[string]interface{}{"ok": true, "action": action, "containerId": safeId})
 }
 
@@ -1207,18 +1252,36 @@ func dockerContainerDelete(w http.ResponseWriter, r *http.Request, id string) {
 		jsonError(w, 400, "Invalid container ID")
 		return
 	}
-	// Unregister immediately (idempotente · no es error si no existía)
-	if err := appsRepo.DeleteDockerApp(r.Context(), safeId); err != nil {
-		logMsg("docker: uninstall DB cleanup failed for %s: %v", safeId, err)
+
+	// APP-031 · race-free uninstall:
+	//   1. MarkDockerAppDeleting · síncrono. Observer ya no la lista activa,
+	//      container no se cuenta como orphan durante el cleanup.
+	//   2. Goroutine: docker stop/rm + DeleteDockerApp final.
+	//
+	// Sustituye al flujo legacy (DELETE row síncrono + container stop async)
+	// que generaba flicker en orphanCount durante la ventana stop/rm.
+	if err := appsRepo.MarkDockerAppDeleting(r.Context(), safeId); err != nil {
+		logMsg("docker: uninstall mark-deleting failed for %s: %v", safeId, err)
+		// Continuamos: el cleanup de Docker es lo importante. El observer puede
+		// generar un orphan transitorio pero no es peor que el flujo legacy.
 	}
 
-	// Remove in background
+	// Capturar id para la goroutine (Context del request muere al return).
+	idCapture := safeId
 	go func() {
-		runSafe("docker", "stop", safeId)
-		if _, ok := runSafe("docker", "rm", safeId); !ok {
-			runSafe("docker", "rm", "-f", safeId)
+		runSafe("docker", "stop", idCapture)
+		if _, ok := runSafe("docker", "rm", idCapture); !ok {
+			runSafe("docker", "rm", "-f", idCapture)
 		}
+		// DELETE final libera la row. Usamos Background ctx porque el request
+		// ya terminó y la operación debe completarse independientemente.
+		if err := appsRepo.DeleteDockerApp(context.Background(), idCapture); err != nil {
+			logMsg("docker: uninstall final DB delete failed for %s: %v", idCapture, err)
+		}
+		// APP-034 · refresh cache tras cleanup completo.
+		ForceDockerCacheRefresh(context.Background())
 	}()
+
 	jsonOk(w, map[string]interface{}{"ok": true, "containerId": safeId})
 }
 
@@ -1375,9 +1438,10 @@ func dockerStackDelete(w http.ResponseWriter, r *http.Request, id string) {
 		jsonError(w, 400, "Invalid stack ID")
 		return
 	}
-	// Unregister immediately (idempotente · no es error si no existía)
-	if err := appsRepo.DeleteDockerApp(r.Context(), safeId); err != nil {
-		logMsg("docker: stack uninstall DB cleanup failed for %s: %v", safeId, err)
+
+	// APP-031 · race-free uninstall (mismo flujo que dockerContainerDelete).
+	if err := appsRepo.MarkDockerAppDeleting(r.Context(), safeId); err != nil {
+		logMsg("docker: stack uninstall mark-deleting failed for %s: %v", safeId, err)
 	}
 
 	conf := getDockerConfigGo()
@@ -1386,6 +1450,10 @@ func dockerStackDelete(w http.ResponseWriter, r *http.Request, id string) {
 		if dp, err := getDockerPath(); err == nil {
 			dockerPath = dp
 		} else {
+			// Sin path · borramos la row directamente, no hay nada de stack que limpiar.
+			if delErr := appsRepo.DeleteDockerApp(r.Context(), safeId); delErr != nil {
+				logMsg("docker: stack uninstall row delete failed for %s: %v", safeId, delErr)
+			}
 			jsonOk(w, map[string]interface{}{"ok": true})
 			return
 		}
@@ -1393,7 +1461,8 @@ func dockerStackDelete(w http.ResponseWriter, r *http.Request, id string) {
 	stackPath := filepath.Join(dockerPath, "stacks", safeId)
 	composePath := filepath.Join(stackPath, "docker-compose.yml")
 
-	// Cleanup in background
+	// Cleanup en background + DELETE final tras compose down.
+	idCapture := safeId
 	go func() {
 		if _, err := os.Stat(composePath); err == nil {
 			cmd := exec.Command("docker", "compose", "-f", composePath, "down", "-v", "--remove-orphans")
@@ -1401,7 +1470,14 @@ func dockerStackDelete(w http.ResponseWriter, r *http.Request, id string) {
 			cmd.Run()
 		}
 		os.RemoveAll(stackPath)
-		os.RemoveAll(filepath.Join(dockerPath, "containers", safeId))
+		os.RemoveAll(filepath.Join(dockerPath, "containers", idCapture))
+
+		// DELETE final libera la row.
+		if err := appsRepo.DeleteDockerApp(context.Background(), idCapture); err != nil {
+			logMsg("docker: stack uninstall final DB delete failed for %s: %v", idCapture, err)
+		}
+		// APP-034 · refresh cache tras cleanup completo.
+		ForceDockerCacheRefresh(context.Background())
 	}()
 
 	jsonOk(w, map[string]interface{}{"ok": true})

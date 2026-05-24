@@ -28,7 +28,9 @@ CREATE TABLE IF NOT EXISTS docker_apps (
     color         TEXT DEFAULT '',                        -- '#00A4DC' hex
     type          TEXT DEFAULT 'container',               -- 'container' | 'stack'
     open_mode     TEXT DEFAULT 'internal',                -- 'internal' | 'external'
-    port          INTEGER DEFAULT 0,                      -- puerto principal expuesto
+    port          INTEGER DEFAULT 0,                      -- puerto principal expuesto (compat legacy)
+    ports_json    TEXT DEFAULT '[]',                      -- APP-033 · JSON array de PortBinding completo
+    deleting      INTEGER DEFAULT 0,                      -- APP-031 · 1 mientras se está desinstalando
     config        TEXT DEFAULT '{}',                      -- JSON: volúmenes, env, ports extra
     installed_at  TEXT NOT NULL,                          -- ISO timestamp
     installed_by  TEXT NOT NULL                           -- username (sin FK; integridad referencial
@@ -36,6 +38,7 @@ CREATE TABLE IF NOT EXISTS docker_apps (
 );
 
 CREATE INDEX IF NOT EXISTS idx_docker_apps_installed_by ON docker_apps(installed_by);
+CREATE INDEX IF NOT EXISTS idx_docker_apps_deleting     ON docker_apps(deleting);
 
 -- ─── Native apps ──────────────────────────────────────────────────────
 -- Apps nativas Linux instaladas (apt packages, systemd services).

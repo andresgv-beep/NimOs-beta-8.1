@@ -860,3 +860,301 @@ func TestAppsRepoNativeIsNativeFalseIsRespected(t *testing.T) {
 		t.Error("IsNative=false was not respected: got true after roundtrip")
 	}
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// APP-033 · Multi-port persistence (PortsJSON)
+// ═══════════════════════════════════════════════════════════════════════
+
+// TestDBDockerAppParsedPorts_FromJSON · lógica pura del parser.
+// PortsJSON válido con varios elementos → array completo.
+func TestDBDockerAppParsedPorts_FromJSON(t *testing.T) {
+	app := &DBDockerApp{
+		ID:        "transmission",
+		PortsJSON: `[{"Host":9091,"Declared":9091,"Protocol":"tcp"},{"Host":51413,"Declared":51413,"Protocol":"tcp"},{"Host":51413,"Declared":51413,"Protocol":"udp"}]`,
+		Port:      9091, // legacy también presente
+	}
+	ports := app.parsedPorts()
+	if len(ports) != 3 {
+		t.Fatalf("parsedPorts: got %d ports, want 3", len(ports))
+	}
+	// Verifica que UDP llega correctamente (no se descarta)
+	hasUDP := false
+	for _, p := range ports {
+		if p.Protocol == "udp" {
+			hasUDP = true
+		}
+	}
+	if !hasUDP {
+		t.Error("parsedPorts: UDP protocol lost in roundtrip")
+	}
+}
+
+// TestDBDockerAppParsedPorts_FallbackToLegacyPort · cuando PortsJSON
+// está vacío o '[]', usar Port legacy como fuente.
+func TestDBDockerAppParsedPorts_FallbackToLegacyPort(t *testing.T) {
+	cases := []struct {
+		name      string
+		portsJSON string
+		port      int
+		wantLen   int
+		wantPort  int
+	}{
+		{"empty json + Port set", "", 8096, 1, 8096},
+		{"literal empty array + Port set", "[]", 8096, 1, 8096},
+		{"empty json + Port 0", "", 0, 0, 0},
+		{"literal empty array + Port 0", "[]", 0, 0, 0},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			app := &DBDockerApp{ID: "jellyfin", PortsJSON: c.portsJSON, Port: c.port}
+			ports := app.parsedPorts()
+			if len(ports) != c.wantLen {
+				t.Fatalf("len = %d, want %d", len(ports), c.wantLen)
+			}
+			if c.wantLen > 0 && ports[0].Host != c.wantPort {
+				t.Errorf("ports[0].Host = %d, want %d", ports[0].Host, c.wantPort)
+			}
+		})
+	}
+}
+
+// TestDBDockerAppParsedPorts_HandlesMalformed · JSON inválido cae al
+// fallback en lugar de panic.
+func TestDBDockerAppParsedPorts_HandlesMalformed(t *testing.T) {
+	app := &DBDockerApp{
+		ID:        "broken",
+		PortsJSON: `{not valid json[}}`,
+		Port:      8080,
+	}
+	ports := app.parsedPorts()
+	// Fallback al Port legacy
+	if len(ports) != 1 {
+		t.Fatalf("expected fallback to single Port, got %d", len(ports))
+	}
+	if ports[0].Host != 8080 {
+		t.Errorf("fallback Host = %d, want 8080", ports[0].Host)
+	}
+}
+
+// TestAppsRepoDockerPortsJSON_RoundTrip · verifica que PortsJSON sobrevive
+// INSERT → SELECT y parsedPorts deserializa correctamente.
+func TestAppsRepoDockerPortsJSON_RoundTrip(t *testing.T) {
+	_, repo, cleanup := setupTestAppsDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	multiPortJSON := `[{"Host":8096,"Declared":8096,"Protocol":"tcp"},{"Host":7359,"Declared":7359,"Protocol":"udp"}]`
+	app := &DBDockerApp{
+		ID:          "jellyfin",
+		Name:        "Jellyfin",
+		Type:        "container",
+		Port:        8096,
+		PortsJSON:   multiPortJSON,
+		InstalledBy: "andres",
+	}
+	if err := repo.CreateOrUpdateDockerApp(ctx, app); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got, err := repo.GetDockerApp(ctx, "jellyfin")
+	if err != nil || got == nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.PortsJSON != multiPortJSON {
+		t.Errorf("PortsJSON roundtrip mismatch:\ngot:  %s\nwant: %s", got.PortsJSON, multiPortJSON)
+	}
+	ports := got.parsedPorts()
+	if len(ports) != 2 {
+		t.Fatalf("parsedPorts after roundtrip: got %d, want 2", len(ports))
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// APP-031 · Race-free uninstall (flag deleting)
+// ═══════════════════════════════════════════════════════════════════════
+
+// TestAppsRepoDockerDeleting_MarkSetsFlag · MarkDockerAppDeleting cambia
+// el flag y persiste.
+func TestAppsRepoDockerDeleting_MarkSetsFlag(t *testing.T) {
+	_, repo, cleanup := setupTestAppsDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	app := &DBDockerApp{
+		ID:          "jellyfin",
+		Name:        "Jellyfin",
+		Type:        "container",
+		InstalledBy: "andres",
+	}
+	if err := repo.CreateOrUpdateDockerApp(ctx, app); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Inicialmente Deleting=false
+	got, _ := repo.GetDockerApp(ctx, "jellyfin")
+	if got == nil || got.Deleting {
+		t.Fatalf("expected Deleting=false initially, got app=%v", got)
+	}
+
+	if err := repo.MarkDockerAppDeleting(ctx, "jellyfin"); err != nil {
+		t.Fatalf("Mark: %v", err)
+	}
+	got, _ = repo.GetDockerApp(ctx, "jellyfin")
+	if got == nil || !got.Deleting {
+		t.Fatalf("expected Deleting=true after Mark, got app=%v", got)
+	}
+}
+
+// TestAppsRepoDockerDeleting_MarkNonexistent · Mark de app que no existe
+// es idempotente (no error).
+func TestAppsRepoDockerDeleting_MarkNonexistent(t *testing.T) {
+	_, repo, cleanup := setupTestAppsDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	if err := repo.MarkDockerAppDeleting(ctx, "nonexistent"); err != nil {
+		t.Errorf("Mark on nonexistent: got error %v, want nil (idempotent)", err)
+	}
+}
+
+// TestAppsRepoDockerDeleting_ListFiltersByDefault · ListDockerApps excluye
+// las marcadas como deleting=1, garantizando que NimHealth no las muestra.
+func TestAppsRepoDockerDeleting_ListFiltersByDefault(t *testing.T) {
+	_, repo, cleanup := setupTestAppsDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// 2 apps: jellyfin (activa), immich (siendo borrada)
+	for _, app := range []*DBDockerApp{
+		{ID: "jellyfin", Name: "Jellyfin", Type: "container", InstalledBy: "andres"},
+		{ID: "immich", Name: "Immich", Type: "stack", InstalledBy: "andres"},
+	} {
+		if err := repo.CreateOrUpdateDockerApp(ctx, app); err != nil {
+			t.Fatalf("Create %s: %v", app.ID, err)
+		}
+	}
+	if err := repo.MarkDockerAppDeleting(ctx, "immich"); err != nil {
+		t.Fatalf("Mark immich: %v", err)
+	}
+
+	// ListDockerApps · debe devolver solo jellyfin
+	active, err := repo.ListDockerApps(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(active) != 1 {
+		t.Fatalf("active count = %d, want 1", len(active))
+	}
+	if active[0].ID != "jellyfin" {
+		t.Errorf("expected jellyfin in active, got %s", active[0].ID)
+	}
+
+	// ListIncludingDeleting · debe devolver ambas
+	all, err := repo.ListDockerAppsIncludingDeleting(ctx)
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("total count = %d, want 2", len(all))
+	}
+}
+
+// TestAppsRepoDockerDeleting_CountExcludesDeleting · CountDockerApps debe
+// ser consistente con ListDockerApps (excluye deleting=1).
+func TestAppsRepoDockerDeleting_CountExcludesDeleting(t *testing.T) {
+	_, repo, cleanup := setupTestAppsDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	for _, app := range []*DBDockerApp{
+		{ID: "a", Name: "A", Type: "container", InstalledBy: "andres"},
+		{ID: "b", Name: "B", Type: "container", InstalledBy: "andres"},
+		{ID: "c", Name: "C", Type: "container", InstalledBy: "andres"},
+	} {
+		if err := repo.CreateOrUpdateDockerApp(ctx, app); err != nil {
+			t.Fatalf("Create %s: %v", app.ID, err)
+		}
+	}
+	if err := repo.MarkDockerAppDeleting(ctx, "b"); err != nil {
+		t.Fatalf("Mark: %v", err)
+	}
+
+	count, err := repo.CountDockerApps(ctx)
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("count = %d, want 2 (3 total, 1 deleting)", count)
+	}
+}
+
+// TestAppsRepoDockerDeleting_FullLifecycle · simula el flujo completo
+// post-APP-031 desde Mark hasta DELETE final.
+func TestAppsRepoDockerDeleting_FullLifecycle(t *testing.T) {
+	_, repo, cleanup := setupTestAppsDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// 1. App creada normalmente
+	if err := repo.CreateOrUpdateDockerApp(ctx, &DBDockerApp{
+		ID: "jellyfin", Name: "Jellyfin", Type: "container", InstalledBy: "andres",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// 2. Mark como deleting (handler hace esto síncrono)
+	if err := repo.MarkDockerAppDeleting(ctx, "jellyfin"); err != nil {
+		t.Fatalf("Mark: %v", err)
+	}
+	// Lista activa: 0
+	active, _ := repo.ListDockerApps(ctx)
+	if len(active) != 0 {
+		t.Errorf("during deleting, active count = %d, want 0", len(active))
+	}
+	// Get sigue devolviéndola con Deleting=true (necesario para cleanup)
+	got, _ := repo.GetDockerApp(ctx, "jellyfin")
+	if got == nil || !got.Deleting {
+		t.Fatalf("during deleting, Get should return app with Deleting=true")
+	}
+
+	// 3. Delete final (goroutine cleanup)
+	if err := repo.DeleteDockerApp(ctx, "jellyfin"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	got, _ = repo.GetDockerApp(ctx, "jellyfin")
+	if got != nil {
+		t.Errorf("post-Delete, Get should return nil, got %v", got)
+	}
+}
+
+// TestAppsRepoDockerReinstall_AfterDeleting · reinstalar (UPSERT) una app
+// marcada deleting debe reactivarla. Caso de uso: user cancela el delete
+// y reinstala antes de que la goroutine de cleanup termine.
+func TestAppsRepoDockerReinstall_AfterDeleting(t *testing.T) {
+	_, repo, cleanup := setupTestAppsDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	if err := repo.CreateOrUpdateDockerApp(ctx, &DBDockerApp{
+		ID: "jellyfin", Name: "Jellyfin", Type: "container", InstalledBy: "andres",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := repo.MarkDockerAppDeleting(ctx, "jellyfin"); err != nil {
+		t.Fatalf("Mark: %v", err)
+	}
+
+	// Re-install vía UPSERT con Deleting=false (default)
+	if err := repo.CreateOrUpdateDockerApp(ctx, &DBDockerApp{
+		ID: "jellyfin", Name: "Jellyfin v2", Type: "container", InstalledBy: "andres",
+	}); err != nil {
+		t.Fatalf("Reinstall: %v", err)
+	}
+	got, _ := repo.GetDockerApp(ctx, "jellyfin")
+	if got == nil || got.Deleting {
+		t.Errorf("reinstall should clear Deleting flag, got app=%v", got)
+	}
+	if got.Name != "Jellyfin v2" {
+		t.Errorf("reinstall should update Name, got %q", got.Name)
+	}
+}

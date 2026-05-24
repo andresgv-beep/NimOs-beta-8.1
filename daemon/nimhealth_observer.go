@@ -177,6 +177,30 @@ func refreshDockerCache(_ context.Context) {
 	dockerCache.mu.Unlock()
 }
 
+// ForceDockerCacheRefresh · APP-034 · invalidación de cache post-operación.
+//
+// Wrapper sobre refreshDockerCache pensado para ser llamado desde handlers
+// HTTP del módulo Docker tras operaciones que modifican el estado real:
+//
+//   - dockerStackDeploy / dockerContainerCreate (tras OK)
+//   - dockerContainerDelete / dockerStackDelete (tras cleanup)
+//   - dockerContainerAction (start/stop/restart)
+//
+// Sin esto, el observer espera hasta 30s para reflejar el cambio en /api/services,
+// lo cual produce ventana visible de inconsistencia para el usuario.
+//
+// Es safe llamarlo concurrentemente con el tick natural del observer · el
+// RWMutex de dockerCache serializa las escrituras.
+//
+// La llamada es BLOQUEANTE (~80-150ms en Pi 4). Si el handler necesita devolver
+// respuesta HTTP rápida y la frescura de cache no es crítica, invocar en goroutine:
+//
+//	go ForceDockerCacheRefresh(context.Background())
+func ForceDockerCacheRefresh(ctx context.Context) {
+	logMsg("nimhealth: forced cache refresh requested")
+	refreshDockerCache(ctx)
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // enrichDockerInstance · helper que añade children + reasonCode al map
 // del Docker engine en el response de /api/services.

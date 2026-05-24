@@ -510,11 +510,20 @@ func handleInstalledAppsRoutes(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// GET /api/installed-apps · lista apps Docker registradas
+	//
+	// APP-010 · DEPRECATED desde Beta 8.1.x.
+	// El frontend nuevo debe leer /api/services y filtrar por type="docker-app",
+	// que devuelve el cruce completo registry + docker ps con estados precisos.
+	// Mantenido para compat con clientes pre-Beta-8.
 	if path == "/api/installed-apps" && method == "GET" {
 		session := requireAuth(w, r)
 		if session == nil {
 			return
 		}
+		// APP-010 · headers RFC 8594 de deprecación
+		w.Header().Set("Deprecation", "true")
+		w.Header().Set("Link", `</api/services>; rel="successor-version"`)
+
 		apps, err := appsRepo.ListDockerApps(ctx)
 		if err != nil {
 			jsonError(w, 500, err.Error())

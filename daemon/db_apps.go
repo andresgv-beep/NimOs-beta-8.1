@@ -22,6 +22,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -40,14 +41,17 @@ type DBDockerApp struct {
 	Color       string
 	Type        string // 'container' | 'stack'
 	OpenMode    string // 'internal' | 'external'
-	Port        int
+	Port        int    // legacy: puerto principal (compat con clientes viejos)
+	PortsJSON   string // APP-033 · JSON array de PortBinding · canonical multi-port source
+	Deleting    bool   // APP-031 · true mientras la app está siendo desinstalada
 	Config      string // JSON serializado: volúmenes, env, ports extra
 	InstalledAt string
 	InstalledBy string
 }
 
 // ToMap convierte DBDockerApp a map para serialización JSON HTTP.
-// Mantiene compatibilidad con el contrato anterior (installed-apps.json).
+// Mantiene compatibilidad con el contrato anterior (campo `port` legacy + `external` bool).
+// Añade `ports` (array) tras APP-033 sin romper consumidores existentes.
 func (a *DBDockerApp) ToMap() map[string]interface{} {
 	m := map[string]interface{}{
 		"id":          a.ID,
@@ -57,13 +61,48 @@ func (a *DBDockerApp) ToMap() map[string]interface{} {
 		"color":       a.Color,
 		"type":        a.Type,
 		"openMode":    a.OpenMode,
-		"port":        a.Port,
+		"port":        a.Port, // legacy · clientes viejos
 		"installedAt": a.InstalledAt,
 		"installedBy": a.InstalledBy,
 	}
 	// Backwards compat: "external" bool derivado de openMode
 	m["external"] = a.OpenMode == "external"
+
+	// APP-033 · multi-port array. Si PortsJSON está vacío o malformado,
+	// fallback a array de 1 elemento con Port legacy.
+	if ports := a.parsedPorts(); len(ports) > 0 {
+		portMaps := make([]map[string]interface{}, len(ports))
+		for i, p := range ports {
+			portMaps[i] = p.ToMap()
+		}
+		m["ports"] = portMaps
+	} else {
+		m["ports"] = []map[string]interface{}{}
+	}
+
 	return m
+}
+
+// parsedPorts devuelve el array de PortBinding deserializado de PortsJSON.
+// Si PortsJSON está vacío, malformado, o es '[]', cae al fallback de Port legacy.
+//
+// Único punto de deserialización: cualquier consumidor que necesite los ports
+// reales (con todos los protocolos y mappings host/declared) llama a este método.
+func (a *DBDockerApp) parsedPorts() []PortBinding {
+	if a.PortsJSON != "" && a.PortsJSON != "[]" {
+		var ports []PortBinding
+		if err := json.Unmarshal([]byte(a.PortsJSON), &ports); err == nil && len(ports) > 0 {
+			return ports
+		}
+		// Si parse falla, log + fallback (no propagamos error, mejor degradar
+		// que romper el listado entero por una row con JSON corrupto).
+		logMsg("db_apps: parsedPorts: invalid ports_json for app %q (len=%d), falling back to Port",
+			a.ID, len(a.PortsJSON))
+	}
+	if a.Port > 0 {
+		return []PortBinding{{Declared: a.Port, Host: a.Port, Protocol: "tcp"}}
+	}
+	return nil
 }
 
 // DBNativeApp representa una fila de la tabla native_apps.
@@ -180,11 +219,16 @@ func (r *AppsRepo) CreateOrUpdateDockerApp(ctx context.Context, app *DBDockerApp
 	if config == "" {
 		config = "{}"
 	}
+	portsJSON := app.PortsJSON
+	if portsJSON == "" {
+		portsJSON = "[]"
+	}
+	deletingInt := boolToInt(app.Deleting)
 
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO docker_apps
-			(id, name, icon, image, color, type, open_mode, port, config, installed_at, installed_by)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(id, name, icon, image, color, type, open_mode, port, ports_json, deleting, config, installed_at, installed_by)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			icon = excluded.icon,
@@ -193,9 +237,11 @@ func (r *AppsRepo) CreateOrUpdateDockerApp(ctx context.Context, app *DBDockerApp
 			type = excluded.type,
 			open_mode = excluded.open_mode,
 			port = excluded.port,
+			ports_json = excluded.ports_json,
+			deleting = excluded.deleting,
 			config = excluded.config
 	`, app.ID, app.Name, app.Icon, app.Image, app.Color, typ,
-		openMode, app.Port, config, installedAt, app.InstalledBy)
+		openMode, app.Port, portsJSON, deletingInt, config, installedAt, app.InstalledBy)
 	if err != nil {
 		return fmt.Errorf("upsert docker app %q: %w", app.ID, err)
 	}
@@ -204,31 +250,61 @@ func (r *AppsRepo) CreateOrUpdateDockerApp(ctx context.Context, app *DBDockerApp
 
 // GetDockerApp obtiene una app Docker por id.
 // Devuelve (nil, nil) si no existe (no es error).
+//
+// NOTA: incluye apps con deleting=1. Si necesitas la app SOLO si está activa,
+// chequea el campo Deleting tras obtener el resultado, o usa ListDockerApps
+// que ya filtra (lista global de "apps activas").
 func (r *AppsRepo) GetDockerApp(ctx context.Context, id string) (*DBDockerApp, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT id, name, icon, image, color, type, open_mode, port, config, installed_at, installed_by
+		SELECT id, name, icon, image, color, type, open_mode, port, ports_json, deleting, config, installed_at, installed_by
 		FROM docker_apps WHERE id = ?
 	`, id)
 
 	var a DBDockerApp
+	var deletingInt int
 	err := row.Scan(&a.ID, &a.Name, &a.Icon, &a.Image, &a.Color, &a.Type,
-		&a.OpenMode, &a.Port, &a.Config, &a.InstalledAt, &a.InstalledBy)
+		&a.OpenMode, &a.Port, &a.PortsJSON, &deletingInt, &a.Config, &a.InstalledAt, &a.InstalledBy)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get docker app %q: %w", id, err)
 	}
+	a.Deleting = deletingInt == 1
 	return &a, nil
 }
 
-// ListDockerApps devuelve todas las apps Docker, ordenadas por nombre.
+// ListDockerApps devuelve todas las apps Docker activas, ordenadas por nombre.
+//
+// FILTRO POR DEFECTO: excluye apps con deleting=1 (en proceso de desinstalación).
+// Este comportamiento es el esperado por:
+//
+//   - getDockerAppStatuses (observer · evita orphan flicker entre stop y rm)
+//   - dockerInstalledApps  (handler legacy · UI no debe mostrar apps borradas)
+//   - handleInstalledAppsRoutes GET (handler · idem)
+//
+// Si necesitas ver TODAS las rows incluyendo deleting=1 (debug, admin tooling),
+// usar ListDockerAppsIncludingDeleting (no expuesto via HTTP).
 func (r *AppsRepo) ListDockerApps(ctx context.Context) ([]*DBDockerApp, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, name, icon, image, color, type, open_mode, port, config, installed_at, installed_by
-		FROM docker_apps
-		ORDER BY name COLLATE NOCASE
-	`)
+	return r.listDockerAppsFiltered(ctx, true)
+}
+
+// ListDockerAppsIncludingDeleting · devuelve TODAS las rows, incluyendo las
+// marcadas como deleting=1. Uso restringido a debugging y admin tooling.
+func (r *AppsRepo) ListDockerAppsIncludingDeleting(ctx context.Context) ([]*DBDockerApp, error) {
+	return r.listDockerAppsFiltered(ctx, false)
+}
+
+func (r *AppsRepo) listDockerAppsFiltered(ctx context.Context, hideDeleting bool) ([]*DBDockerApp, error) {
+	query := `
+		SELECT id, name, icon, image, color, type, open_mode, port, ports_json, deleting, config, installed_at, installed_by
+		FROM docker_apps`
+	if hideDeleting {
+		query += ` WHERE deleting = 0`
+	}
+	query += ` ORDER BY name COLLATE NOCASE`
+
+	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("list docker apps: %w", err)
 	}
@@ -237,10 +313,12 @@ func (r *AppsRepo) ListDockerApps(ctx context.Context) ([]*DBDockerApp, error) {
 	var apps []*DBDockerApp
 	for rows.Next() {
 		var a DBDockerApp
+		var deletingInt int
 		if err := rows.Scan(&a.ID, &a.Name, &a.Icon, &a.Image, &a.Color, &a.Type,
-			&a.OpenMode, &a.Port, &a.Config, &a.InstalledAt, &a.InstalledBy); err != nil {
+			&a.OpenMode, &a.Port, &a.PortsJSON, &deletingInt, &a.Config, &a.InstalledAt, &a.InstalledBy); err != nil {
 			return nil, fmt.Errorf("scan docker app: %w", err)
 		}
+		a.Deleting = deletingInt == 1
 		apps = append(apps, &a)
 	}
 	if err := rows.Err(); err != nil {
@@ -251,6 +329,16 @@ func (r *AppsRepo) ListDockerApps(ctx context.Context) ([]*DBDockerApp, error) {
 
 // DeleteDockerApp elimina una app Docker por id.
 // No es error si no existe (DELETE idempotente).
+//
+// FLUJO RECOMENDADO post-APP-031 para evitar race con observer:
+//
+//  1. appsRepo.MarkDockerAppDeleting(ctx, id) — marca flag, observer ya no la
+//     ve como activa (no aparece en list ni en cruce con docker ps).
+//  2. docker stop / docker rm de los containers reales (puede tardar segundos).
+//  3. appsRepo.DeleteDockerApp(ctx, id) — DELETE definitivo de la row.
+//
+// El flujo legacy (DELETE directo + container stop async) seguía funcionando
+// pero generaba flicker temporal en orphanCount durante 0-30s.
 func (r *AppsRepo) DeleteDockerApp(ctx context.Context, id string) error {
 	_, err := r.db.ExecContext(ctx, `DELETE FROM docker_apps WHERE id = ?`, id)
 	if err != nil {
@@ -259,10 +347,27 @@ func (r *AppsRepo) DeleteDockerApp(ctx context.Context, id string) error {
 	return nil
 }
 
-// CountDockerApps devuelve el número total de apps Docker instaladas.
+// MarkDockerAppDeleting · APP-031 · pone deleting=1 en la row sin borrarla.
+// El observer la filtra inmediatamente (no aparece como activa, su container
+// no se cuenta como orphan). Permite cleanup async de Docker sin race window.
+//
+// No es error si la app no existe (la operación es no-op idempotente).
+//
+// El caller debe ejecutar DeleteDockerApp tras el cleanup real de los
+// containers para liberar la row.
+func (r *AppsRepo) MarkDockerAppDeleting(ctx context.Context, id string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE docker_apps SET deleting = 1 WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("mark docker app %q as deleting: %w", id, err)
+	}
+	return nil
+}
+
+// CountDockerApps devuelve el número de apps Docker activas (excluye deleting=1).
+// Consistente con ListDockerApps que también filtra.
 func (r *AppsRepo) CountDockerApps(ctx context.Context) (int, error) {
 	var count int
-	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM docker_apps`).Scan(&count)
+	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM docker_apps WHERE deleting = 0`).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("count docker apps: %w", err)
 	}

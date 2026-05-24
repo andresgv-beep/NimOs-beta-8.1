@@ -263,3 +263,145 @@ func TestNimHealthObserver_ReconcileWithCancelledCtx(t *testing.T) {
 	t.Skip("requires DB · ejecutar en integration tests con sqlite real")
 	_ = context.Background()
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// APP-017 · Stack-matching helpers (matchContainerForAppID + isPossibleStackSubContainer)
+// ═══════════════════════════════════════════════════════════════════════
+
+// TestMatchContainerForAppID_ExactMatch · prefiere el match exacto sobre
+// cualquier sufijo. Si existe un container llamado "jellyfin" Y otro
+// "jellyfin_server", debe devolver "jellyfin".
+func TestMatchContainerForAppID_ExactMatch(t *testing.T) {
+	containers := map[string]dockerContainer{
+		"jellyfin":        {Name: "jellyfin", Image: "jellyfin/jellyfin"},
+		"jellyfin_server": {Name: "jellyfin_server", Image: "other"},
+	}
+	name, c := matchContainerForAppID("jellyfin", containers)
+	if name != "jellyfin" {
+		t.Errorf("expected exact match 'jellyfin', got %q", name)
+	}
+	if c == nil || c.Image != "jellyfin/jellyfin" {
+		t.Errorf("expected container with image jellyfin/jellyfin, got %v", c)
+	}
+}
+
+// TestMatchContainerForAppID_SuffixMatch · prueba todos los sufijos
+// soportados en orden de preferencia.
+func TestMatchContainerForAppID_SuffixMatch(t *testing.T) {
+	cases := []struct {
+		name      string
+		appID     string
+		container string
+	}{
+		{"_server suffix", "immich", "immich_server"},
+		{"-server suffix", "immich2", "immich2-server"},
+		{"_app suffix", "nextcloud", "nextcloud_app"},
+		{"-app suffix", "nextcloud2", "nextcloud2-app"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			containers := map[string]dockerContainer{
+				c.container: {Name: c.container, Image: "test"},
+			}
+			gotName, gotContainer := matchContainerForAppID(c.appID, containers)
+			if gotName != c.container {
+				t.Errorf("expected match %q, got %q", c.container, gotName)
+			}
+			if gotContainer == nil {
+				t.Error("expected container, got nil")
+			}
+		})
+	}
+}
+
+// TestMatchContainerForAppID_PrefixFallback · cuando no hay sufijo
+// conocido, cae al prefix-match con "_" o "-" como separador.
+func TestMatchContainerForAppID_PrefixFallback(t *testing.T) {
+	containers := map[string]dockerContainer{
+		"immich_microservices": {Name: "immich_microservices", Image: "test"},
+	}
+	name, c := matchContainerForAppID("immich", containers)
+	if name != "immich_microservices" {
+		t.Errorf("expected prefix fallback to 'immich_microservices', got %q", name)
+	}
+	if c == nil {
+		t.Error("expected container, got nil")
+	}
+}
+
+// TestMatchContainerForAppID_NoMatch · si no hay candidatos, devuelve
+// ("", nil) sin panic.
+func TestMatchContainerForAppID_NoMatch(t *testing.T) {
+	containers := map[string]dockerContainer{
+		"unrelated": {Name: "unrelated", Image: "test"},
+	}
+	name, c := matchContainerForAppID("jellyfin", containers)
+	if name != "" {
+		t.Errorf("expected empty name, got %q", name)
+	}
+	if c != nil {
+		t.Errorf("expected nil container, got %v", c)
+	}
+}
+
+// TestMatchContainerForAppID_EmptyMap · map vacío no debe panic.
+func TestMatchContainerForAppID_EmptyMap(t *testing.T) {
+	name, c := matchContainerForAppID("jellyfin", map[string]dockerContainer{})
+	if name != "" || c != nil {
+		t.Errorf("expected empty match on empty map, got %q / %v", name, c)
+	}
+}
+
+// TestIsPossibleStackSubContainer_Keyword · containers con substrings
+// conocidos de stack-sub son identificados.
+func TestIsPossibleStackSubContainer_Keyword(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"immich_redis", true},
+		{"immich_postgres", true},
+		{"immich_ml", true},
+		{"immich_machine_learning", true},
+		{"immich_db", true},
+		{"immich_cache", true},
+		{"jellyfin", false},
+		{"plex_server", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := isPossibleStackSubContainer(c.name, map[string]bool{})
+			if got != c.want {
+				t.Errorf("isPossibleStackSubContainer(%q) = %v, want %v", c.name, got, c.want)
+			}
+		})
+	}
+}
+
+// TestIsPossibleStackSubContainer_PrefixFromMatched · containers que
+// comparten prefijo con un match previo son tratados como subcomponentes.
+func TestIsPossibleStackSubContainer_PrefixFromMatched(t *testing.T) {
+	matched := map[string]bool{
+		"immich_server": true,
+	}
+	cases := []struct {
+		name string
+		want bool
+	}{
+		// Comparte prefijo "immich" con matched immich_server → sub
+		{"immich_proxy", true},
+		{"immich-something", true},
+		// No comparte prefijo con ningún matched
+		{"jellyfin", false},
+		{"sonarr", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := isPossibleStackSubContainer(c.name, matched)
+			if got != c.want {
+				t.Errorf("isPossibleStackSubContainer(%q, matched=%v) = %v, want %v",
+					c.name, matched, got, c.want)
+			}
+		})
+	}
+}
