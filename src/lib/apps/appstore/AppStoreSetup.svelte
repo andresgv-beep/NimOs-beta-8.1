@@ -161,7 +161,7 @@
 
   /**
    * "Sin Docker" · Lanza el install de Docker engine en el pool elegido.
-   * Modo async · polling en vivo del operation.
+   * DIAGNÓSTICO TEMPORAL · modo sync para probar si el backend responde.
    */
   async function handleInstallDocker() {
     if (!selectedPool) return;
@@ -170,46 +170,31 @@
     currentOp = null;
     viewMode = 'installing';
 
-    opAbort = new AbortController();
+    // En modo sync no hay polling · solo esperar la respuesta del POST.
+    const startTime = Date.now();
+    currentOp = { status: 'running', progress: 5, message: 'Llamando al backend (modo sync · puede tardar varios minutos)…' };
 
     try {
-      const res = await installDockerEngine(
-        { pool: selectedPool },
-        { async: true }
-      );
-      if (!res?.operationId) {
-        throw new Error('Backend no devolvió operationId · respuesta: ' + JSON.stringify(res));
-      }
-      const finalOp = await waitForOperation(
-        res.operationId,
-        (op) => {
-          currentOp = op;
-        },
-        { signal: opAbort.signal, intervalMs: 1000 }
-      );
-      currentOp = finalOp;
-      if (finalOp.status === 'succeeded') {
-        // Esperar un instante a que la UI muestre 100% antes de irse
-        setTimeout(() => {
-          onReady();
-        }, 400);
-      } else {
-        installError = finalOp.error || 'La instalación falló sin mensaje.';
-        installing = false;
-      }
+      const res = await installDockerEngine({ pool: selectedPool });
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      // Si el backend respondió OK · install completado en sync
+      currentOp = {
+        status: 'succeeded',
+        progress: 100,
+        message: `Instalación completada en ${elapsed}s. Respuesta: ${JSON.stringify(res)}`,
+      };
+      setTimeout(() => {
+        onReady();
+      }, 1500);
     } catch (err) {
-      if (err?.name === 'AbortError') {
-        // Component unmounted · silencioso
-        return;
-      }
-      // Detalle máximo · qué tipo de error, código HTTP si aplica
-      const parts = [];
+      if (err?.name === 'AbortError') return;
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      const parts = [`(tras ${elapsed}s)`];
       parts.push(err?.message || String(err));
       if (err?.code) parts.push(`code: ${err.code}`);
       if (err?.status) parts.push(`status: ${err.status}`);
       if (err?.details) parts.push(`details: ${JSON.stringify(err.details)}`);
       installError = parts.join(' · ');
-      // Log en consola por si el browser tiene devtools
       console.error('[appstore/setup] install failed:', err);
       installing = false;
     }

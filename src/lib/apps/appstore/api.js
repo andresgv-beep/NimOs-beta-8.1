@@ -230,7 +230,10 @@ export async function getInstalledApps() {
  *                              Async: { operationId, pollUrl, status, type }
  */
 export async function installDockerEngine(request, { async: asyncMode = false } = {}) {
-  const url = asyncMode ? '/api/docker/install?async=true' : '/api/docker/install';
+  // DIAGNÓSTICO TEMPORAL · forzar sync ignorando el flag · si el POST tarda
+  // mucho (procesa la instalación de verdad), confirma que el backend NO
+  // tiene Batch 3 aplicado al binario corriendo.
+  const url = '/api/docker/install';
   const res = await fetch(url, {
     method: 'POST',
     headers: jsonHdrs(),
