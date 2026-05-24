@@ -887,22 +887,18 @@ func dockerInstall(w http.ResponseWriter, r *http.Request) {
 	conf["installedAt"] = time.Now().UTC().Format(time.RFC3339)
 	saveDockerConfigGo(conf)
 
-	// ── 11. Register in service registry ──
-	poolNameStr := ""
-	if targetPool != nil {
-		poolNameStr = targetPool.Name
-	}
-	if poolNameStr != "" {
-		instanceID := "docker@" + poolNameStr
-		dbServiceRegister(ServiceInstance{
-			ID: instanceID, AppID: "containers", PoolName: poolNameStr,
-			Path: dockerPath, Status: "running", Health: "healthy",
-			Owner: "system", Config: "{}",
-		}, []ServiceDependency{
-			{InstanceID: instanceID, DepType: "pool", Target: poolNameStr, Required: "required"},
-			{InstanceID: instanceID, DepType: "path", Target: dockerPath, Required: "required"},
-		})
-	}
+	// ── 11. APP-013 · registro vía único punto canónico ──
+	// Antes de Beta 8.1.1 había un dbServiceRegister hardcodeado aquí con
+	// Status="running"/Health="healthy" sin verificar nada, paralelo al
+	// detector. Si los IDs divergían (findPoolFromPath vs targetPool.Name),
+	// quedaban dos rows.
+	//
+	// Ahora: docker.json ya tiene installed=true tras saveDockerConfigGo.
+	// runAutoRegister invoca detectDockerEngine que registra con Status=unknown.
+	// reconcileServices corrige el status real en el próximo tick (≤30s).
+	// Trade-off aceptado: gap UX <30s en lugar de doble fuente de registro.
+	// APP-034 cerrará el gap con cache invalidation explícita.
+	runAutoRegister(r.Context())
 
 	jsonOk(w, map[string]interface{}{"ok": true, "path": dockerPath, "dockerAvailable": dockerAvailable})
 }

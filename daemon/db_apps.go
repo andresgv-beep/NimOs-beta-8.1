@@ -138,6 +138,18 @@ var appsRepo *AppsRepo
 //
 // NO muta el struct `app` recibido: trabaja con variables locales para
 // los defaults, evitando race conditions y side-effects.
+// CreateOrUpdateDockerApp inserta o actualiza una app Docker.
+// Idempotente: si el id ya existe, actualiza los campos.
+// La política UPSERT evita race conditions en reinstalaciones.
+//
+// NO muta el struct `app` recibido: trabaja con variables locales para
+// los defaults, evitando race conditions y side-effects.
+//
+// APP-032 · valida Type y OpenMode contra valores aceptados.
+//
+//	Type     ∈ {"container", "stack"}              (default "container")
+//	OpenMode ∈ {"internal", "external"}            (default "internal")
+//	                                                ("auto" reservado, no implementado aún)
 func (r *AppsRepo) CreateOrUpdateDockerApp(ctx context.Context, app *DBDockerApp) error {
 	if app.ID == "" {
 		return fmt.Errorf("docker app: ID required")
@@ -154,9 +166,15 @@ func (r *AppsRepo) CreateOrUpdateDockerApp(ctx context.Context, app *DBDockerApp
 	if typ == "" {
 		typ = "container"
 	}
+	if typ != "container" && typ != "stack" {
+		return fmt.Errorf("docker app: type must be 'container' or 'stack', got %q", typ)
+	}
 	openMode := app.OpenMode
 	if openMode == "" {
 		openMode = "internal"
+	}
+	if openMode != "internal" && openMode != "external" {
+		return fmt.Errorf("docker app: open_mode must be 'internal' or 'external', got %q", openMode)
 	}
 	config := app.Config
 	if config == "" {

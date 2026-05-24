@@ -113,6 +113,16 @@ func findPoolFromPath(path string) string {
 // ── Detectores ──────────────────────────────────────────────────────────
 
 // detectDockerEngine · 1 instance si Docker está configurado en un pool.
+//
+// APP-030 · defensive logging: si docker.json dice installed=true pero el
+// path no vive bajo nimosPoolsDir, el engine NO se registra. Sin log
+// visible, el síntoma (NimHealth no muestra Docker) es difícil de
+// diagnosticar. El warning explícito guía al usuario o al log de soporte.
+//
+// Convención asumida: docker data path siempre bajo /nimos/pools/{name}/docker.
+// Si el path es custom, la integración con el resto de NimOS (services
+// registry, pool dependencies, share creation) no funciona — por eso el
+// engine no se registra como instance. El warning lo deja claro.
 func detectDockerEngine(_ context.Context) []registrableService {
 	conf := getDockerConfigGo()
 	installed, _ := conf["installed"].(bool)
@@ -122,6 +132,10 @@ func detectDockerEngine(_ context.Context) []registrableService {
 	}
 	poolName := findPoolFromPath(dockerPath)
 	if poolName == "" {
+		logMsg("nimhealth: detectDockerEngine: docker.json says installed=true but path %q "+
+			"doesn't live under %s/ — engine NOT registered as a service instance. "+
+			"Either move Docker data to a pool path or fix docker.json manually.",
+			dockerPath, nimosPoolsDir)
 		return nil
 	}
 	id := "docker@" + poolName

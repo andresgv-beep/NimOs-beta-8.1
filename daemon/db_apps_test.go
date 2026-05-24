@@ -285,6 +285,36 @@ func TestAppsRepoDockerValidation(t *testing.T) {
 			app:     &DBDockerApp{ID: "test", InstalledBy: "andres"},
 			wantErr: "Name required",
 		},
+		// APP-032 · validación de Type
+		{
+			name: "invalid Type",
+			app: &DBDockerApp{
+				ID: "test", Name: "Test", Type: "fubar", InstalledBy: "andres",
+			},
+			wantErr: "type must be 'container' or 'stack'",
+		},
+		{
+			name: "Type case-sensitive (Stack with capital S rejected)",
+			app: &DBDockerApp{
+				ID: "test", Name: "Test", Type: "Stack", InstalledBy: "andres",
+			},
+			wantErr: "type must be 'container' or 'stack'",
+		},
+		// APP-032 · validación de OpenMode
+		{
+			name: "invalid OpenMode",
+			app: &DBDockerApp{
+				ID: "test", Name: "Test", OpenMode: "auto", InstalledBy: "andres",
+			},
+			wantErr: "open_mode must be 'internal' or 'external'",
+		},
+		{
+			name: "OpenMode arbitrary value rejected",
+			app: &DBDockerApp{
+				ID: "test", Name: "Test", OpenMode: "tab", InstalledBy: "andres",
+			},
+			wantErr: "open_mode must be 'internal' or 'external'",
+		},
 	}
 
 	for _, tt := range tests {
