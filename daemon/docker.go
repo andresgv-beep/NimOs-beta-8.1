@@ -1228,17 +1228,22 @@ func dockerStackDeploy(w http.ResponseWriter, r *http.Request) {
 	//   HOST_IP     · IP local del NAS · usada por apps que generan URLs
 	//                 absolutas (e.g. Jellyfin PublishedServerUrl).
 	//
-	// Estas dos vars se inyectan SIEMPRE antes de escribir .env, de modo que
-	// docker-compose las pueda resolver al hacer 'up'. Si el frontend manda
-	// también values en body.env, esos prevalecen (override · por si una app
-	// específica necesita un valor custom).
+	//   TZ          · timezone del host (e.g. "Europe/Madrid"). Apps con
+	//                 cron interno o logs timestamp lo necesitan. Si no
+	//                 se puede determinar, queda "UTC".
 	//
-	// Decisión: el backend es la fuente canónica de estos paths/IPs · evita
-	// que el frontend tenga que conocer la estructura interna del filesystem
-	// del pool o adivinar la IP del host.
+	// Estas vars se inyectan SIEMPRE antes de escribir .env. Si el body del
+	// frontend manda también values en body.env, esos prevalecen (override).
+	//
+	// Tras el merge, expandimos referencias ${OTRA_VAR} dentro de los values
+	// recursivamente · permite que el catálogo defina vars compuestas como
+	// `PROJECTS_PATH = ${CONFIG_PATH}/projects` y que se resuelvan al path
+	// completo antes de que docker-compose lo lea. Sin esta expansión, las
+	// vars del .env no se interpolan entre sí (limitación de docker-compose).
 	autoEnv := map[string]interface{}{
 		"CONFIG_PATH": containerPath,
 		"HOST_IP":     getStackHostIP(),
+		"TZ":          getStackTimezone(),
 	}
 	// Merge body.env encima · permitir override desde el catálogo si hace falta
 	if env, ok := body["env"].(map[string]interface{}); ok {
@@ -1246,6 +1251,10 @@ func dockerStackDeploy(w http.ResponseWriter, r *http.Request) {
 			autoEnv[k] = v
 		}
 	}
+	// Expandir referencias ${KEY} dentro de values · max 4 pasadas para evitar
+	// loops infinitos en caso de referencia circular (raro, pero defensivo).
+	autoEnv = expandStackEnvRefs(autoEnv, 4)
+
 	var lines []string
 	for k, v := range autoEnv {
 		lines = append(lines, fmt.Sprintf("%s=%v", k, v))

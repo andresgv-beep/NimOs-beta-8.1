@@ -31,6 +31,10 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"regexp"
+	"strings"
+	"time"
 )
 
 // httpStatusError · error tipado con código HTTP específico.
@@ -161,4 +165,83 @@ func getStackHostIP() string {
 		}
 	}
 	return "127.0.0.1"
+}
+
+// getStackTimezone devuelve el timezone del host (e.g. "Europe/Madrid") usado
+// como valor por defecto para TZ en los .env de los stacks Docker.
+//
+// Lee /etc/timezone, fallback a la zona de time.Local (que en sistemas
+// systemd suele ser correcto), último recurso "UTC".
+//
+// Apps Docker con cron interno, logs con timestamp, o jobs schedulados
+// (e.g. Sonarr/Radarr buscando releases) necesitan TZ para coherencia.
+func getStackTimezone() string {
+	// /etc/timezone es lo más fiable en Debian/Ubuntu/Raspbian.
+	if data, err := os.ReadFile("/etc/timezone"); err == nil {
+		tz := strings.TrimSpace(string(data))
+		if tz != "" {
+			return tz
+		}
+	}
+	// Fallback al runtime de Go (refleja TZ=... env var si existe).
+	if loc := time.Local; loc != nil {
+		s := loc.String()
+		if s != "" && s != "Local" {
+			return s
+		}
+	}
+	return "UTC"
+}
+
+// expandStackEnvRefs · resuelve referencias ${KEY} dentro de los values del
+// env recursivamente, hasta `maxPasses` pasadas. Necesario porque docker-compose
+// NO interpola variables entre sí dentro del archivo .env (solo las usa para
+// interpolar el YAML del compose).
+//
+// Ejemplo:
+//
+//	Input:  { CONFIG_PATH: "/a/b/c", PROJECTS_PATH: "${CONFIG_PATH}/projects" }
+//	Output: { CONFIG_PATH: "/a/b/c", PROJECTS_PATH: "/a/b/c/projects" }
+//
+// Solo expande strings · valores numéricos u objetos quedan tal cual.
+// Si una referencia apunta a una clave que no existe, queda literal (el
+// usuario verá el ${UNKNOWN} en el container, error visible).
+//
+// maxPasses defiende contra referencias circulares · raro pero posible si el
+// catálogo define mal A=${B} y B=${A}. Cuatro pasadas es más que suficiente
+// para cualquier caso real (1-2 niveles de anidamiento como máximo).
+func expandStackEnvRefs(env map[string]interface{}, maxPasses int) map[string]interface{} {
+	if maxPasses <= 0 {
+		return env
+	}
+	// Patrón ${IDENT} con IDENT = letras/dígitos/underscore, empezando por letra o _.
+	refRe := regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+	for pass := 0; pass < maxPasses; pass++ {
+		changed := false
+		for k, v := range env {
+			s, ok := v.(string)
+			if !ok {
+				continue
+			}
+			expanded := refRe.ReplaceAllStringFunc(s, func(match string) string {
+				key := refRe.FindStringSubmatch(match)[1]
+				if val, exists := env[key]; exists {
+					if sv, ok := val.(string); ok {
+						return sv
+					}
+					return fmt.Sprintf("%v", val)
+				}
+				return match // ref no resuelta · queda literal
+			})
+			if expanded != s {
+				env[k] = expanded
+				changed = true
+			}
+		}
+		if !changed {
+			break // estable, no hace falta más pasadas
+		}
+	}
+	return env
 }
