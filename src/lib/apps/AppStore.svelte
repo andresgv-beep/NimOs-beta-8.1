@@ -6,23 +6,17 @@
    *
    *   1. ¿No hay pool? → AppStoreSetup (mockup 1 "sin pool")
    *   2. ¿No hay Docker? → AppStoreSetup (mockup 2 "sin docker")
-   *   3. ¿Todo OK? → catálogo (Fase 3 · todavía placeholder)
-   *
-   * Esta Fase 2 entrega los casos 1 y 2. El caso 3 muestra un placeholder
-   * temporal hasta que llegue Fase 3 con AppStoreOverview.
+   *   3. ¿Todo OK? → AppStoreOverview (mockup 3 · catálogo grid)
+   *   4. Detalle de una app: Fase 4 (pendiente)
    *
    * La lógica de decisión vive en api.js::getCapabilities() · esta vista
-   * solo es un router que reacciona al estado derivado.
-   *
-   * Reintento manual:
-   *   El usuario puede pulsar "Reintentar" en cualquier empty state · eso
-   *   re-invoca getCapabilities() y refresca el flujo. Útil tras crear un
-   *   pool o instalar Docker desde otro tab.
+   * es un router que reacciona al estado derivado.
    */
 
   import { onMount } from 'svelte';
   import { getCapabilities } from './appstore/api.js';
   import AppStoreSetup from './appstore/AppStoreSetup.svelte';
+  import AppStoreOverview from './appstore/AppStoreOverview.svelte';
 
   /** @typedef {import('./appstore/types').AppStoreCapabilities} AppStoreCapabilities */
 
@@ -54,6 +48,16 @@
   async function handleSetupReady() {
     await loadCapabilities();
   }
+
+  /**
+   * Click en una card del catálogo · Fase 4 implementará vista detalle.
+   * Por ahora solo loggea para verificar que el evento llega.
+   *
+   * @param {CustomEvent<{appId: string}>} ev
+   */
+  function handleSelectApp(ev) {
+    console.log('[appstore] select app · pendiente Fase 4 (detalle):', ev.detail.appId);
+  }
 </script>
 
 {#if loading}
@@ -71,21 +75,8 @@
   <!-- Setup · sin pool o sin Docker -->
   <AppStoreSetup {capabilities} onReady={handleSetupReady} />
 {:else}
-  <!-- Catálogo · Fase 3 implementará AppStoreOverview · placeholder mientras -->
-  <div class="appstore-placeholder">
-    <div class="ph-icon">⊞</div>
-    <div class="ph-title">AppStore listo</div>
-    <div class="ph-desc">
-      Docker instalado y pool montado. El catálogo de apps se construye en
-      la siguiente fase del frontend.
-    </div>
-    <div class="ph-status">
-      <span>Docker:</span>
-      <span class:ok={capabilities.dockerRunning} class:warn={!capabilities.dockerRunning}>
-        {capabilities.dockerRunning ? 'running' : 'stopped'}
-      </span>
-    </div>
-  </div>
+  <!-- Catálogo · Fase 3 ✓ -->
+  <AppStoreOverview on:select={handleSelectApp} />
 {/if}
 
 <style>
@@ -113,9 +104,7 @@
     0%, 100% { opacity: 0.3; transform: scale(0.9); }
     50%      { opacity: 1;   transform: scale(1.1); }
   }
-  .loading-text {
-    letter-spacing: 0.5px;
-  }
+  .loading-text { letter-spacing: 0.5px; }
 
   /* ═══ Error fatal · cuando getCapabilities falla del todo ═══ */
   .appstore-error {
@@ -159,47 +148,4 @@
     color: var(--ink);
     background: var(--line);
   }
-
-  /* ═══ Placeholder · catálogo aún no implementado (Fase 3) ═══ */
-  .appstore-placeholder {
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: var(--sp-3);
-    padding: var(--sp-5);
-    background: var(--panel-elev);
-    color: var(--ink-dim);
-    text-align: center;
-    font-family: var(--font-sans);
-  }
-  .ph-icon {
-    font-size: 32px;
-    color: var(--signal);
-    line-height: 1;
-  }
-  .ph-title {
-    font-size: var(--fs-14);
-    font-weight: 600;
-    color: var(--ink);
-  }
-  .ph-desc {
-    font-size: var(--fs-12);
-    max-width: 420px;
-    line-height: 1.55;
-  }
-  .ph-status {
-    margin-top: var(--sp-2);
-    padding: var(--sp-2) var(--sp-3);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-sm);
-    font-size: var(--fs-11);
-    font-family: var(--font-mono);
-    color: var(--ink-mute);
-    display: flex;
-    gap: var(--sp-2);
-  }
-  .ph-status .ok { color: var(--signal); }
-  .ph-status .warn { color: var(--warn); }
 </style>
