@@ -1216,14 +1216,41 @@ func dockerStackDeploy(w http.ResponseWriter, r *http.Request) {
 	composePath := filepath.Join(stackPath, "docker-compose.yml")
 	os.WriteFile(composePath, []byte(compose), 0644)
 
-	// Write .env
-	if env, ok := body["env"].(map[string]interface{}); ok {
-		var lines []string
-		for k, v := range env {
-			lines = append(lines, fmt.Sprintf("%s=%v", k, v))
-		}
-		os.WriteFile(filepath.Join(stackPath, ".env"), []byte(strings.Join(lines, "\n")), 0644)
+	// APP-064 · Inyección automática de variables canónicas en .env del stack.
+	//
+	// Los composes del catálogo NimOS Appstore usan placeholders estándar
+	// que el backend conoce pero el frontend no:
+	//
+	//   CONFIG_PATH · ruta del directorio de configuración del container
+	//                 (montado como volumen para persistencia de configs).
+	//                 = {dockerPath}/containers/{stackId}
+	//
+	//   HOST_IP     · IP local del NAS · usada por apps que generan URLs
+	//                 absolutas (e.g. Jellyfin PublishedServerUrl).
+	//
+	// Estas dos vars se inyectan SIEMPRE antes de escribir .env, de modo que
+	// docker-compose las pueda resolver al hacer 'up'. Si el frontend manda
+	// también values en body.env, esos prevalecen (override · por si una app
+	// específica necesita un valor custom).
+	//
+	// Decisión: el backend es la fuente canónica de estos paths/IPs · evita
+	// que el frontend tenga que conocer la estructura interna del filesystem
+	// del pool o adivinar la IP del host.
+	autoEnv := map[string]interface{}{
+		"CONFIG_PATH": containerPath,
+		"HOST_IP":     getStackHostIP(),
 	}
+	// Merge body.env encima · permitir override desde el catálogo si hace falta
+	if env, ok := body["env"].(map[string]interface{}); ok {
+		for k, v := range env {
+			autoEnv[k] = v
+		}
+	}
+	var lines []string
+	for k, v := range autoEnv {
+		lines = append(lines, fmt.Sprintf("%s=%v", k, v))
+	}
+	os.WriteFile(filepath.Join(stackPath, ".env"), []byte(strings.Join(lines, "\n")+"\n"), 0644)
 
 	// Deploy
 	cmd := exec.Command("docker", "compose", "-f", composePath, "up", "-d")

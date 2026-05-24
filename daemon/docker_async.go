@@ -29,6 +29,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 )
 
@@ -138,4 +139,26 @@ func updateOpProgressSafe(ctx context.Context, opID string, progress int, messag
 	if err := operationsRepo.UpdateProgress(ctx, opID, progress, message); err != nil {
 		logMsg("docker_async: UpdateProgress failed for %s: %v", opID, err)
 	}
+}
+
+// getStackHostIP devuelve la primera IP IPv4 no-loopback del host, usada
+// como valor por defecto para HOST_IP en los .env de los stacks Docker.
+//
+// Apps del catálogo NimOS (p.ej. Jellyfin con JELLYFIN_PublishedServerUrl)
+// necesitan saber la IP del NAS para generar URLs absolutas dentro del LAN.
+// El backend es la fuente canónica · el frontend no debería adivinar.
+//
+// Fallback: si no se encuentra ninguna IP IPv4 válida, devuelve "127.0.0.1"
+// (mejor que cadena vacía · al menos el container arranca).
+func getStackHostIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "127.0.0.1"
+	}
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
+			return ipnet.IP.String()
+		}
+	}
+	return "127.0.0.1"
 }
