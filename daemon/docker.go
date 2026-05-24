@@ -95,6 +95,37 @@ func isDockerInstalledGo() bool {
 	return ok
 }
 
+// dockerVarLibHasData · APP-063 protección
+//
+// Devuelve true si /var/lib/docker existe y contiene al menos una entrada
+// (archivo o subdirectorio). No existir o estar vacío devuelve false.
+//
+// Usado por dockerInstall para detectar Docker pre-existente (instalado fuera
+// de NimOS) con data que NimOS NO debe borrar sin permiso del usuario.
+//
+// Contexto: dockerInstall hace `rm -rf /var/lib/docker` para asegurar que el
+// nuevo Docker daemon arranca limpio con data-root apuntando al pool. Si había
+// data previa de otro Docker que el usuario instaló manualmente, el rm la
+// borraría silenciosamente. Este helper habilita el bloqueo defensivo.
+func dockerVarLibHasData() (bool, error) {
+	const path = "/var/lib/docker"
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if !info.IsDir() {
+		return false, fmt.Errorf("%s exists but is not a directory", path)
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false, fmt.Errorf("readdir %s: %w", path, err)
+	}
+	return len(entries) > 0, nil
+}
+
 func getRealContainersGo() []map[string]interface{} {
 	out, ok := runSafe("docker", "ps", "-a", "--format", `{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.Ports}}|{{.State}}`)
 	if !ok || out == "" {
@@ -657,6 +688,30 @@ func dockerInstall(w http.ResponseWriter, r *http.Request) {
 	}
 	body, _ := readBody(r)
 
+	// ── 0. APP-063 · proteger data Docker pre-existente ──
+	// Si NimOS no había instalado Docker antes pero /var/lib/docker tiene
+	// data, probablemente es de un Docker instalado manualmente por el user.
+	// El paso 6 más abajo hace `rm -rf /var/lib/docker` para limpiar al
+	// reapuntar data-root al pool · sin este check, borraría data ajena.
+	prevConf := getDockerConfigGo()
+	prevInstalled, _ := prevConf["installed"].(bool)
+	if !prevInstalled {
+		hasData, checkErr := dockerVarLibHasData()
+		if checkErr != nil {
+			jsonError(w, 500, fmt.Sprintf("Failed to check /var/lib/docker: %v", checkErr))
+			return
+		}
+		if hasData {
+			jsonError(w, 409,
+				"/var/lib/docker contains existing data not managed by NimOS. "+
+					"To prevent accidental data loss, NimOS won't overwrite it automatically. "+
+					"Either move the data elsewhere or remove the directory manually, "+
+					"then retry installation.")
+			logMsg("docker: install aborted · /var/lib/docker has pre-existing data, NimOS hadn't installed Docker previously")
+			return
+		}
+	}
+
 	// ── 1. Find the target pool (Beta 8.1: usa service v2) ──
 	if storageService == nil {
 		jsonError(w, 500, "Storage service not initialized")
@@ -765,6 +820,10 @@ func dockerInstall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── 6. Kill /var/lib/docker — pool only ──
+	// Seguro: si NimOS no había instalado Docker antes, el check APP-063 en
+	// paso 0 ya verificó que /var/lib/docker está vacío o no existe. Si NimOS
+	// SÍ había instalado Docker antes, data-root ya estaba en el pool desde
+	// el primer install · /var/lib/docker no debería tener data nuestra.
 	runSafe("rm", "-rf", "/var/lib/docker")
 
 	// ── 7. Start Docker with correct config ──
@@ -1206,6 +1265,22 @@ func dockerContainerMounts(w http.ResponseWriter, r *http.Request, id string) {
 	jsonOk(w, map[string]interface{}{"containerId": safeId, "mounts": mounts})
 }
 
+// dockerContainerRebuild · reconstruye una app instalada preservando su config.
+//
+// Política Beta 8.1 (post-APP-001):
+//
+//	type='stack'     → docker compose -f {stack}/docker-compose.yml up -d --force-recreate
+//	                   El compose file ES la fuente de verdad: preserva volumes, env,
+//	                   networks, ports, labels, restart policy — todo lo declarado.
+//	type='container' → 501 Not Implemented. Rebuild de container suelto requiere
+//	                   reconstruir flags desde `docker inspect` (ticket APP-001-B).
+//
+// CONTEXTO HISTÓRICO (Beta 7 y anteriores):
+// La implementación previa hacía `docker stop && rm && run -d --name X image` lo cual
+// PERDÍA volumes, env vars, port mappings y network attachments. Una app con datos
+// (Jellyfin biblioteca, Immich DB, Vaultwarden vault) quedaba inutilizable tras un
+// click en "Rebuild". Esta versión bloquea el path peligroso devolviendo 501 hasta
+// que la implementación correcta esté lista.
 func dockerContainerRebuild(w http.ResponseWriter, r *http.Request, id string) {
 	session := requireAuth(w, r)
 	if session == nil {
@@ -1220,23 +1295,74 @@ func dockerContainerRebuild(w http.ResponseWriter, r *http.Request, id string) {
 		jsonError(w, 400, "Invalid container ID")
 		return
 	}
-	// Get current image
-	imgOut, ok := runSafe("docker", "inspect", safeId, "--format", "{{.Config.Image}}")
-	if !ok {
-		jsonError(w, 500, "Failed to inspect container")
+
+	// Lookup app type en docker_apps. Sin registro no podemos garantizar rebuild seguro.
+	app, err := appsRepo.GetDockerApp(r.Context(), safeId)
+	if err != nil {
+		jsonError(w, 500, fmt.Sprintf("Failed to lookup app: %v", err))
 		return
 	}
-	image := strings.TrimSpace(imgOut)
-	// Validate the image name from docker inspect before reusing
-	safeImage := sanitizeDockerNameGo(image)
-	if safeImage == "" || safeImage != image {
-		jsonError(w, 500, "Container has invalid image name")
+	if app == nil {
+		jsonError(w, 404, "App not found in registry · rebuild requires a registered app")
 		return
 	}
-	runSafe("docker", "stop", safeId)
-	runSafe("docker", "rm", safeId)
-	runSafe("docker", "run", "-d", "--name", safeId, "--restart", "unless-stopped", safeImage)
-	jsonOk(w, map[string]interface{}{"ok": true, "containerId": safeId})
+
+	switch app.Type {
+	case "stack":
+		dockerPath, err := getDockerPath()
+		if err != nil {
+			jsonError(w, 400, "Docker path not configured")
+			return
+		}
+		stackDir := filepath.Join(dockerPath, "stacks", safeId)
+		composePath := filepath.Join(stackDir, "docker-compose.yml")
+		if _, err := os.Stat(composePath); err != nil {
+			jsonError(w, 404, fmt.Sprintf("Compose file not found at %s", composePath))
+			return
+		}
+		// `docker compose up -d --force-recreate` reusa el compose existente y
+		// recrea containers preservando TODO lo declarado (volumes, env, ports,
+		// networks, labels). Único cambio: containers nuevos con IDs nuevos.
+		cmd := exec.Command("docker", "compose", "-f", composePath, "up", "-d", "--force-recreate")
+		cmd.Dir = stackDir
+		out, runErr := cmd.CombinedOutput()
+		if runErr != nil {
+			logMsg("docker: stack rebuild %s failed: %v · output: %s", safeId, runErr, string(out))
+			jsonError(w, 500, fmt.Sprintf("Rebuild failed: %s", string(out)))
+			return
+		}
+		logMsg("docker: stack rebuild %s ok", safeId)
+		jsonOk(w, map[string]interface{}{
+			"ok":          true,
+			"containerId": safeId,
+			"type":        "stack",
+			"method":      "compose_force_recreate",
+		})
+		return
+
+	case "container", "":
+		// Rebuild de container suelto (no stack) está deshabilitado hasta tener
+		// implementación correcta basada en `docker inspect` + reconstrucción de
+		// flags. Devolver 501 explícito previene que la UI lo invoque silenciosamente.
+		//
+		// Workaround para el usuario: desinstalar y reinstalar la app desde AppStore.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotImplemented)
+		_, _ = w.Write([]byte(`{` +
+			`"ok":false,` +
+			`"error":"container_rebuild_not_implemented",` +
+			`"message":"Rebuild for standalone containers is temporarily disabled. ` +
+			`The previous implementation lost volumes, environment variables, port mappings and ` +
+			`network attachments. To rebuild this app, uninstall and reinstall it.",` +
+			`"ticket":"APP-001-B"` +
+			`}`))
+		logMsg("docker: rebuild %s rejected (type=container, APP-001-B pending)", safeId)
+		return
+
+	default:
+		jsonError(w, 500, fmt.Sprintf("Unknown app type %q for rebuild", app.Type))
+		return
+	}
 }
 
 func dockerStackDelete(w http.ResponseWriter, r *http.Request, id string) {
