@@ -85,7 +85,32 @@ func validateInstanceID(id string) error {
 	return nil
 }
 
+// validateServicePath asegura que el path del servicio es coherente con su
+// scope (pool-managed vs system-wide).
+//
+// Dos casos:
+//
+//  1. PoolName != "" — service vive dentro de un pool gestionado (apps
+//     Docker, NimTorrent, etc.). El path DEBE estar bajo el mount point
+//     /nimos/pools/<poolName>/.
+//
+//  2. PoolName == "" — service system-wide (ssh, samba, nfs, nimbackup,
+//     vms). Estos servicios viven en paths del sistema (/etc/ssh,
+//     /var/lib/nimos, etc.) y no pertenecen a ningún pool. Solo validamos
+//     que el path sea absoluto (mínima sanity check para evitar inputs
+//     vacíos o relativos por bug).
+//
+// Ver nimhealth_detectors.go para los 4 detectors que generan instancias
+// con PoolName="" (system services).
 func validateServicePath(path, poolName string) error {
+	if poolName == "" {
+		// System service: solo exigimos path absoluto.
+		if !strings.HasPrefix(path, "/") {
+			return fmt.Errorf("system service path must be absolute: %q", path)
+		}
+		return nil
+	}
+	// Pool-managed service: path DEBE estar dentro del mount point.
 	prefix := nimosPoolsDir + "/" + poolName + "/"
 	if !strings.HasPrefix(path, prefix) {
 		return fmt.Errorf("path must be within pool mount point (%s)", prefix)
