@@ -282,6 +282,23 @@ export async function uninstallDockerEngine() {
  * usar `pullImage()` async antes de llamar a esta función para que el
  * download tenga progreso real.
  *
+ * Body que espera el backend (POST /api/docker/stack):
+ *   {
+ *     id:       string,             // app id sanitizado
+ *     name:     string,             // display name
+ *     compose:  string,              // YAML completo del docker-compose
+ *     icon?:    string,             // URL del icono
+ *     color?:   string,             // hex color
+ *     port?:    number,             // puerto principal (legacy compat)
+ *     external?: boolean,            // true → openMode="external" en BD
+ *     env?:     Object<string,any>  // claves para .env (sobrescriben las
+ *                                     auto-inyectadas CONFIG_PATH y HOST_IP)
+ *   }
+ *
+ * NOTA: el body usa `external: bool`, NO `openMode: string`. El backend
+ * convierte internamente a openMode. Aquí traducimos para que el caller
+ * pueda usar tanto openMode como external.
+ *
  * @param {InstallStackRequest} request
  * @returns {Promise<Object>}  { ok, stack, path }
  */
@@ -289,10 +306,26 @@ export async function installApp(request) {
   if (!request?.id || !request?.compose) {
     throw new Error('installApp: id and compose are required');
   }
+  // Traducir openMode → external para que el backend lo interprete bien.
+  // Si el caller pasa external directo, también vale.
+  const body = {
+    id: request.id,
+    name: request.name,
+    compose: request.compose,
+    icon: request.icon,
+    color: request.color,
+    port: request.port,
+    env: request.env,
+  };
+  if (typeof request.external === 'boolean') {
+    body.external = request.external;
+  } else if (request.openMode === 'external') {
+    body.external = true;
+  }
   const res = await fetch('/api/docker/stack', {
     method: 'POST',
     headers: jsonHdrs(),
-    body: JSON.stringify(request),
+    body: JSON.stringify(body),
   });
   return unwrap(res, 'install app');
 }

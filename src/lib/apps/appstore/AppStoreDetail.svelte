@@ -25,6 +25,7 @@
   import { onMount, createEventDispatcher } from 'svelte';
   import { fetchCatalog } from './catalog.js';
   import { getInstalledApps } from './api.js';
+  import InstallFlow from './InstallFlow.svelte';
   import {
     composeAppViews,
     formatStatus,
@@ -33,7 +34,6 @@
     formatPort,
     categoryDisplayName,
     extractComposeServices,
-    resolveEnvRef,
   } from './formatters.js';
 
   /** @typedef {import('./types').AppView} AppView */
@@ -52,7 +52,10 @@
   let loading = true;
   let loadError = '';
   let iconError = false;
-  let showTech = false; // sección "Información técnica" plegable
+  let showTech = false;
+
+  /** Modo de vista interno · 'detail' | 'installing' */
+  let mode = 'detail';
 
   // ── Lifecycle ──────────────────────────────────────────────────────
   onMount(load);
@@ -113,8 +116,18 @@
   }
 
   function handleInstall() {
-    // Placeholder · Fase 5 implementará pull async + stack deploy
-    console.log('[appstore/detail] install · pendiente Fase 5:', appId);
+    if (!view) return;
+    mode = 'installing';
+  }
+
+  async function handleInstallDone() {
+    // Tras instalar, recargamos para reflejar el nuevo estado y volvemos al detalle
+    mode = 'detail';
+    await load();
+  }
+
+  function handleInstallCancel() {
+    mode = 'detail';
   }
 
   function handleOpen() {
@@ -144,6 +157,8 @@
     <div class="err-body">{loadError}</div>
     <button class="btn btn-secondary" on:click={handleBack}>← Volver</button>
   </div>
+{:else if mode === 'installing' && view}
+  <InstallFlow {view} on:done={handleInstallDone} on:cancel={handleInstallCancel} />
 {:else if view}
   <div class="detail">
     <!-- Barra superior con botón Volver -->
