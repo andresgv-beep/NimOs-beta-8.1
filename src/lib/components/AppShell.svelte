@@ -181,6 +181,9 @@
                   tabindex="0"
                 >
                   <span class="sb-prefix">{active === item.id ? '▸' : '\u00A0'}</span>
+                  {#if item.icon}
+                    <span class="sb-icon">{@html item.icon}</span>
+                  {/if}
                   <span class="sb-label">{item.label}</span>
                   {#if item.badge !== undefined && item.badge !== null && item.badge !== 0}
                     <Badge size="sm" variant={item.badgeVariant || 'default'}>{item.badge}</Badge>
@@ -487,6 +490,20 @@
   }
   .sb-prefix {
     display: none;
+  }
+  .sb-icon {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    color: currentColor;
+    opacity: 0.85;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .sb-icon :global(svg) {
+    width: 100%;
+    height: 100%;
   }
   .sb-label {
     flex: 1;
