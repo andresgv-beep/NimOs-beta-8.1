@@ -685,12 +685,72 @@ func dockerInstalledApps(w http.ResponseWriter, r *http.Request) {
 	jsonOk(w, map[string]interface{}{"apps": apps})
 }
 
+// dockerInstall · POST /api/docker/install
+//
+// Wrapper sync/async sobre runDockerInstallWork.
+//
+// Modo sync (default · sin query param):
+//   - Bloquea hasta completar (~30s-5min según si Docker ya está instalado).
+//   - Responde 200 OK con resultado, o jsonError con el código apropiado.
+//
+// Modo async (con ?async=true):
+//   - Crea una operation en operationsRepo (type="docker.install").
+//   - Lanza goroutine que ejecuta el trabajo y reporta progreso.
+//   - Responde 202 Accepted con {operationId, pollUrl} para polling.
+//   - El cliente debe GET /api/operations/{id} para ver estado.
 func dockerInstall(w http.ResponseWriter, r *http.Request) {
 	session := requireAdmin(w, r)
 	if session == nil {
 		return
 	}
 	body, _ := readBody(r)
+
+	if isAsyncRequested(r) {
+		// Async path · APP-014
+		op, err := operationsRepo.Create(r.Context(), "docker.install", session.Username)
+		if err != nil {
+			jsonError(w, 500, "Failed to create operation: "+err.Error())
+			return
+		}
+		runWorkerAsync(op.ID, func(ctx context.Context) (map[string]interface{}, error) {
+			return runDockerInstallWork(ctx, body, op.ID)
+		})
+		writeAsyncAccepted(w, op)
+		return
+	}
+
+	// Sync path (legacy · compat 100%)
+	result, err := runDockerInstallWork(r.Context(), body, "")
+	if err != nil {
+		writeWorkerError(w, err)
+		return
+	}
+	jsonOk(w, result)
+}
+
+// runDockerInstallWork · trabajo real de instalación de Docker engine en el pool.
+//
+// Función pura sin acceso a HTTP. Reusada por el wrapper sync y por el
+// trabajo async (runWorkerAsync). Si opID != "" reporta progreso a
+// operationsRepo en pasos clave.
+//
+// Returns:
+//   - map: payload de éxito (mismo contrato que el endpoint sync previo)
+//   - error: si es *httpStatusError, el wrapper sync usa Code; si no, 500
+//
+// Pasos (con % de progreso reportado en modo async):
+//
+//	 0% · validaciones (paso 0)
+//	10% · ubicar pool destino (paso 1-2)
+//	20% · crear directorios + daemon.json (pasos 3-4)
+//	30% · instalar Docker engine (paso 5 · ~60% del tiempo en el peor caso)
+//	80% · arrancar Docker + permisos (pasos 6-8)
+//	90% · crear share docker-apps (paso 9)
+//	95% · guardar config + registrar (pasos 10-11)
+//
+// El caller ya verificó admin · este worker no re-autoriza.
+func runDockerInstallWork(ctx context.Context, body map[string]interface{}, opID string) (map[string]interface{}, error) {
+	updateOpProgressSafe(ctx, opID, 0, "Checking environment")
 
 	// ── 0. APP-063 · proteger data Docker pre-existente ──
 	// Si NimOS no había instalado Docker antes pero /var/lib/docker tiene
@@ -702,33 +762,30 @@ func dockerInstall(w http.ResponseWriter, r *http.Request) {
 	if !prevInstalled {
 		hasData, checkErr := dockerVarLibHasData()
 		if checkErr != nil {
-			jsonError(w, 500, fmt.Sprintf("Failed to check /var/lib/docker: %v", checkErr))
-			return
+			return nil, asHTTPError(500, "Failed to check /var/lib/docker: %v", checkErr)
 		}
 		if hasData {
-			jsonError(w, 409,
+			logMsg("docker: install aborted · /var/lib/docker has pre-existing data, NimOS hadn't installed Docker previously")
+			return nil, asHTTPError(409,
 				"/var/lib/docker contains existing data not managed by NimOS. "+
 					"To prevent accidental data loss, NimOS won't overwrite it automatically. "+
 					"Either move the data elsewhere or remove the directory manually, "+
 					"then retry installation.")
-			logMsg("docker: install aborted · /var/lib/docker has pre-existing data, NimOS hadn't installed Docker previously")
-			return
 		}
 	}
 
+	updateOpProgressSafe(ctx, opID, 10, "Locating storage pool")
+
 	// ── 1. Find the target pool (Beta 8.1: usa service v2) ──
 	if storageService == nil {
-		jsonError(w, 500, "Storage service not initialized")
-		return
+		return nil, asHTTPError(500, "Storage service not initialized")
 	}
-	pools, err := storageService.ListPools(r.Context())
+	pools, err := storageService.ListPools(ctx)
 	if err != nil {
-		jsonError(w, 500, fmt.Sprintf("listing pools: %v", err))
-		return
+		return nil, asHTTPError(500, "listing pools: %v", err)
 	}
 	if len(pools) == 0 {
-		jsonError(w, 400, "No storage pools available. Create a pool in Storage Manager first.")
-		return
+		return nil, asHTTPError(400, "No storage pools available. Create a pool in Storage Manager first.")
 	}
 
 	poolName := bodyStr(body, "pool")
@@ -748,26 +805,25 @@ func dockerInstall(w http.ResponseWriter, r *http.Request) {
 
 	mountPoint := targetPool.MountPoint
 	if mountPoint == "" {
-		jsonError(w, 400, "Pool has no mount point configured")
-		return
+		return nil, asHTTPError(400, "Pool has no mount point configured")
 	}
 
 	// ── 2. Verify pool is REALLY mounted ──
 	mountSrc, _ := runSafe("findmnt", "-n", "-o", "SOURCE", mountPoint)
 	rootSrc, _ := runSafe("findmnt", "-n", "-o", "SOURCE", "/")
 	if strings.TrimSpace(mountSrc) == "" || strings.TrimSpace(mountSrc) == strings.TrimSpace(rootSrc) {
-		jsonError(w, 400, "Storage pool is not mounted. Check Storage Manager.")
-		return
+		return nil, asHTTPError(400, "Storage pool is not mounted. Check Storage Manager.")
 	}
 
 	dockerPath := filepath.Join(mountPoint, "docker")
 	dockerDataPath := filepath.Join(dockerPath, "data")
 
+	updateOpProgressSafe(ctx, opID, 20, "Preparing directories")
+
 	// ── 3. Create ALL directories on the pool FIRST ──
 	for _, dir := range []string{"data", "containers", "stacks", "volumes"} {
 		if err := os.MkdirAll(filepath.Join(dockerPath, dir), 0755); err != nil {
-			jsonError(w, 500, fmt.Sprintf("Failed to create directory: %v", err))
-			return
+			return nil, asHTTPError(500, "Failed to create directory: %v", err)
 		}
 	}
 	log.Printf("Docker directories created at %s", dockerPath)
@@ -777,40 +833,37 @@ func dockerInstall(w http.ResponseWriter, r *http.Request) {
 	daemonConf := map[string]interface{}{"data-root": dockerDataPath}
 	daemonData, _ := json.MarshalIndent(daemonConf, "", "  ")
 	if err := os.WriteFile("/etc/docker/daemon.json", daemonData, 0644); err != nil {
-		jsonError(w, 500, fmt.Sprintf("Failed to write daemon.json: %v", err))
-		return
+		return nil, asHTTPError(500, "Failed to write daemon.json: %v", err)
 	}
 	log.Printf("Docker daemon.json → data-root=%s", dockerDataPath)
 
 	// ── 5. Install Docker if not present ──
 	dockerAvailable := isDockerInstalledGo()
 	if !dockerAvailable {
+		updateOpProgressSafe(ctx, opID, 30, "Installing Docker engine (this can take several minutes)")
 		log.Println("Docker not found, installing...")
 		runSafe("systemctl", "stop", "docker.socket", "docker", "containerd")
 
-		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+		installCtx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 		defer cancel()
 		// SECURITY: Download Docker install script to file first, then execute
 		// (avoids pipe-to-shell which can't be verified)
 		scriptPath := "/tmp/docker-install.sh"
 		if _, ok := runSafe("curl", "-fsSL", "https://get.docker.com", "-o", scriptPath); !ok {
-			jsonError(w, 500, "Failed to download Docker install script")
-			return
+			return nil, asHTTPError(500, "Failed to download Docker install script")
 		}
 		// Verify script was downloaded and is non-empty
 		if info, err := os.Stat(scriptPath); err != nil || info.Size() < 1000 {
 			os.Remove(scriptPath)
-			jsonError(w, 500, "Docker install script is invalid or empty")
-			return
+			return nil, asHTTPError(500, "Docker install script is invalid or empty")
 		}
 		defer os.Remove(scriptPath)
-		cmd := exec.CommandContext(ctx, "bash", scriptPath)
+		cmd := exec.CommandContext(installCtx, "bash", scriptPath)
 		cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
 		installOut, err := cmd.CombinedOutput()
 		if err != nil {
 			log.Printf("Docker install failed: %v\nOutput: %s", err, string(installOut))
-			jsonError(w, 500, "Docker installation failed. Check system logs.")
-			return
+			return nil, asHTTPError(500, "Docker installation failed. Check system logs.")
 		}
 		log.Println("Docker engine installed")
 		runSafe("usermod", "-aG", "docker", "nimos")
@@ -822,6 +875,8 @@ func dockerInstall(w http.ResponseWriter, r *http.Request) {
 		// Docker exists — stop to reconfigure
 		runSafe("systemctl", "stop", "docker.socket", "docker", "containerd")
 	}
+
+	updateOpProgressSafe(ctx, opID, 80, "Starting Docker service")
 
 	// ── 6. Kill /var/lib/docker — pool only ──
 	// Seguro: si NimOS no había instalado Docker antes, el check APP-063 en
@@ -850,6 +905,8 @@ func dockerInstall(w http.ResponseWriter, r *http.Request) {
 		runSafe("chmod", "755", filepath.Join(dockerPath, "containers"))
 		runSafe("chmod", "755", filepath.Join(dockerPath, "stacks"))
 		runSafe("chmod", "755", filepath.Join(dockerPath, "volumes"))
+
+		updateOpProgressSafe(ctx, opID, 90, "Creating docker-apps share")
 
 		// ── 9. Create docker-apps share ──
 		dockerSharePath := filepath.Join(dockerPath, "containers")
@@ -880,6 +937,8 @@ func dockerInstall(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	updateOpProgressSafe(ctx, opID, 95, "Registering Docker engine")
+
 	// ── 10. Save config ──
 	conf := getDockerConfigGo()
 	conf["installed"] = true
@@ -905,11 +964,11 @@ func dockerInstall(w http.ResponseWriter, r *http.Request) {
 	//      el status real inmediatamente · sin esperar al tick (≤30s)
 	//   4. ForceDockerCacheRefresh prepara la cache para que /api/services
 	//      pueda servir Docker engine + children sin lag perceptible
-	runAutoRegister(r.Context())
+	runAutoRegister(ctx)
 	reconcileServices()
-	ForceDockerCacheRefresh(r.Context())
+	ForceDockerCacheRefresh(ctx)
 
-	jsonOk(w, map[string]interface{}{"ok": true, "path": dockerPath, "dockerAvailable": dockerAvailable})
+	return map[string]interface{}{"ok": true, "path": dockerPath, "dockerAvailable": dockerAvailable}, nil
 }
 
 
@@ -1483,6 +1542,10 @@ func dockerStackDelete(w http.ResponseWriter, r *http.Request, id string) {
 	jsonOk(w, map[string]interface{}{"ok": true})
 }
 
+// dockerPull · GET /api/docker/pull/{image}
+//
+// Wrapper sync/async sobre runDockerPullWork.
+// APP-053 · soporta ?async=true para devolver 202 + operationId.
 func dockerPull(w http.ResponseWriter, r *http.Request) {
 	session := requireAuth(w, r)
 	if session == nil {
@@ -1499,11 +1562,47 @@ func dockerPull(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, 400, "Invalid image name")
 		return
 	}
-	if _, ok := runSafe("docker", "pull", image); !ok {
-		jsonError(w, 500, "Failed to pull image")
+
+	if isAsyncRequested(r) {
+		// Async path · APP-053
+		op, err := operationsRepo.Create(r.Context(), "docker.pull", session.Username)
+		if err != nil {
+			jsonError(w, 500, "Failed to create operation: "+err.Error())
+			return
+		}
+		runWorkerAsync(op.ID, func(ctx context.Context) (map[string]interface{}, error) {
+			return runDockerPullWork(ctx, image, op.ID)
+		})
+		writeAsyncAccepted(w, op)
 		return
 	}
-	jsonOk(w, map[string]interface{}{"ok": true, "image": image})
+
+	// Sync path (legacy)
+	result, err := runDockerPullWork(r.Context(), image, "")
+	if err != nil {
+		writeWorkerError(w, err)
+		return
+	}
+	jsonOk(w, result)
+}
+
+// runDockerPullWork · trabajo real de `docker pull <image>`.
+//
+// Función pura sin acceso a HTTP. Si opID != "" reporta progreso a
+// operationsRepo. Como docker pull es una sola operación de duración variable
+// (10s-2min) y no expone progreso real, solo reporta start (5%) y end (100%).
+//
+// Returns:
+//   - map: {"ok": true, "image": image}
+//   - error: *httpStatusError(500) si docker pull falla
+func runDockerPullWork(ctx context.Context, image, opID string) (map[string]interface{}, error) {
+	updateOpProgressSafe(ctx, opID, 5, "Pulling image "+image)
+
+	if _, ok := runSafe("docker", "pull", image); !ok {
+		return nil, asHTTPError(500, "Failed to pull image")
+	}
+
+	return map[string]interface{}{"ok": true, "image": image}, nil
 }
 
 func permissionsMatrix(w http.ResponseWriter, r *http.Request) {
