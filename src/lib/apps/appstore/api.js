@@ -1,0 +1,420 @@
+// api.js — Cliente HTTP del backend NimOS daemon · módulo AppStore.
+//
+// Centraliza todas las llamadas a `/api/services`, `/api/docker/*` y
+// `/api/operations/*` que necesita el módulo AppStore.
+//
+// Patrón replicado de `apps/storage/api.js` para consistencia:
+//   - `unwrap()` normaliza respuestas v2 (objeto con `data` o `error`)
+//   - funciones nombradas con tipos JSDoc
+//   - errores lanzados con `.code` y `.details`
+//
+// Endpoints que toca este cliente (todos confirmados en daemon Beta 8.1.x):
+//
+//   GET    /api/services                            · capacidades + apps instaladas
+//   POST   /api/docker/install [?async=true]        · instalar Docker engine
+//   POST   /api/docker/uninstall                    · quitar Docker engine
+//   POST   /api/docker/stack                        · deploy de app del catálogo
+//   POST   /api/docker/container                    · container individual
+//   DELETE /api/docker/stack/:id                    · uninstall stack
+//   DELETE /api/docker/container/:id                · uninstall container
+//   POST   /api/docker/container/:id/:action        · start | stop | restart
+//   GET    /api/docker/pull/:image [?async=true]    · pull explícito
+//   GET    /api/operations/:opId                    · polling de async ops
+//
+// LIMITACIONES CONOCIDAS (resueltas o documentadas en backend Fase 2):
+//
+//   - `dockerStackDeploy` (POST /api/docker/stack) NO tiene `?async=true`.
+//     Es síncrono. Para apps grandes, usar `pullImage()` async PRIMERO
+//     (con progreso real del download) y luego `installApp()` que será
+//     rápido porque la imagen ya está local.
+//   - APP-001-B (rebuild de container individual) devuelve 501. Solo stacks
+//     se pueden rebuild via `docker compose --force-recreate`.
+
+/** @typedef {import('./types').InstalledApp} InstalledApp */
+/** @typedef {import('./types').DockerEngineStatus} DockerEngineStatus */
+/** @typedef {import('./types').AppStoreCapabilities} AppStoreCapabilities */
+/** @typedef {import('./types').Operation} Operation */
+/** @typedef {import('./types').InstallEngineRequest} InstallEngineRequest */
+/** @typedef {import('./types').InstallStackRequest} InstallStackRequest */
+/** @typedef {import('./types').InstallContainerRequest} InstallContainerRequest */
+
+import { hdrs, jsonHdrs } from '$lib/stores/auth.js';
+
+// ────────────────────────────────────────────────────────────────────────
+// unwrap — replica del helper de storage/api.js
+//
+// Soporta dos formatos del backend NimOS:
+//   · v2:     { data: payload }  ó  { error: { code, message, details } }
+//   · legacy: payload directo (objeto u array)
+//
+// Lanza Error con .code y .details cuando el backend devuelve error.
+// ────────────────────────────────────────────────────────────────────────
+async function unwrap(res, label = 'api call') {
+  let body;
+  try {
+    body = await res.json();
+  } catch {
+    throw new Error(`${label}: invalid JSON response (status ${res.status})`);
+  }
+  if (!res.ok) {
+    let code = `http_${res.status}`;
+    let msg = res.statusText || 'request failed';
+    let details;
+    if (body?.error) {
+      if (typeof body.error === 'string') {
+        msg = body.error;
+        code = body.error;
+      } else if (typeof body.error === 'object') {
+        code = body.error.code || code;
+        msg = body.error.message || msg;
+        details = body.error.details;
+      }
+    }
+    const e = new Error(`${label}: ${msg}`);
+    e.code = code;
+    e.status = res.status;
+    e.details = details;
+    throw e;
+  }
+  if (body && typeof body === 'object' && 'data' in body && !Array.isArray(body)) {
+    return body.data;
+  }
+  return body;
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// CAPABILITIES · derivadas de /api/services
+//
+// El frontend consulta /api/services (canonical desde Beta 8.1) y deriva
+// localmente las capacidades para decidir qué pantalla mostrar:
+//
+//   - sin pool         → mockup 1 ("Necesitas un pool")
+//   - sin docker       → mockup 2 ("Instalar Docker engine")
+//   - todo OK          → mockup 3 (catálogo)
+//
+// Esta función es el ÚNICO sitio donde el frontend interpreta el shape de
+// /api/services. Si cambia la respuesta del backend, este es el punto de fix.
+// ────────────────────────────────────────────────────────────────────────
+
+/**
+ * Lista completa de servicios desde NimHealth.
+ *
+ * @returns {Promise<Array<Object>>}
+ */
+export async function getServices() {
+  const res = await fetch('/api/services', { headers: hdrs() });
+  return unwrap(res, 'services');
+}
+
+/**
+ * Status específico del Docker engine.
+ * Devuelve null si Docker no está registrado en NimHealth todavía.
+ *
+ * @returns {Promise<DockerEngineStatus | null>}
+ */
+export async function getDockerEngine() {
+  const services = await getServices();
+  if (!Array.isArray(services)) return null;
+  return services.find((s) => s.type === 'docker-engine' || s.id === 'containers') || null;
+}
+
+/**
+ * Deriva las capacidades del sistema relevantes para AppStore.
+ *
+ * Esta función decide qué pantalla mostrar al user:
+ *   - !hasPool         → empty state "sin pool"
+ *   - !dockerInstalled → empty state "sin docker"
+ *   - else             → catálogo
+ *
+ * @returns {Promise<AppStoreCapabilities>}
+ */
+export async function getCapabilities() {
+  const services = await getServices();
+  /** @type {AppStoreCapabilities} */
+  const caps = {
+    hasPool: false,
+    dockerInstalled: false,
+    dockerRunning: false,
+    // TODO Fase 3 · derivar de session permissions
+    hasPermission: true,
+  };
+  if (!Array.isArray(services)) return caps;
+
+  // Pool: presencia de cualquier service con type "storage-pool" o equivalente.
+  // El backend de Storage v2 registra los pools como services.
+  const pools = services.filter(
+    (s) =>
+      s?.type === 'storage-pool' ||
+      s?.type === 'pool' ||
+      (s?.id && typeof s.id === 'string' && s.id.startsWith('pool-'))
+  );
+  caps.hasPool = pools.length > 0;
+
+  // Docker engine: registered y status running
+  const docker = services.find((s) => s?.type === 'docker-engine' || s?.id === 'containers');
+  if (docker) {
+    caps.dockerInstalled = true;
+    caps.dockerRunning = docker.status === 'running';
+  }
+
+  return caps;
+}
+
+/**
+ * Lista de apps Docker instaladas (filtradas de /api/services).
+ *
+ * @returns {Promise<InstalledApp[]>}
+ */
+export async function getInstalledApps() {
+  const services = await getServices();
+  if (!Array.isArray(services)) return [];
+  return services.filter((s) => s?.type === 'docker-app');
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// DOCKER ENGINE · install / uninstall
+// ────────────────────────────────────────────────────────────────────────
+
+/**
+ * Instala Docker engine en el pool indicado.
+ *
+ * Si `async: true`, devuelve { operationId, pollUrl } y el cliente debe
+ * llamar `waitForOperation(operationId)` para ver el progreso.
+ *
+ * Si `async: false` (default · legacy), bloquea ~30s-5min y devuelve el
+ * resultado final.
+ *
+ * @param {InstallEngineRequest} request
+ * @param {Object} [opts]
+ * @param {boolean} [opts.async]
+ * @returns {Promise<Object>}  Sync: { ok, path, dockerAvailable }
+ *                              Async: { operationId, pollUrl, status, type }
+ */
+export async function installDockerEngine(request, { async: asyncMode = false } = {}) {
+  const url = asyncMode ? '/api/docker/install?async=true' : '/api/docker/install';
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: jsonHdrs(),
+    body: JSON.stringify(request),
+  });
+  return unwrap(res, 'install docker engine');
+}
+
+/**
+ * Desinstala Docker engine. Síncrono.
+ *
+ * @returns {Promise<Object>}
+ */
+export async function uninstallDockerEngine() {
+  const res = await fetch('/api/docker/uninstall', {
+    method: 'POST',
+    headers: hdrs(),
+  });
+  return unwrap(res, 'uninstall docker engine');
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// APPS · install / uninstall / action
+// ────────────────────────────────────────────────────────────────────────
+
+/**
+ * Instala una app del catálogo (vía docker-compose · stack deploy).
+ *
+ * BACKEND SÍNCRONO · este endpoint NO soporta async. Para apps grandes
+ * usar `pullImage()` async antes de llamar a esta función para que el
+ * download tenga progreso real.
+ *
+ * @param {InstallStackRequest} request
+ * @returns {Promise<Object>}  { ok, stack, path }
+ */
+export async function installApp(request) {
+  if (!request?.id || !request?.compose) {
+    throw new Error('installApp: id and compose are required');
+  }
+  const res = await fetch('/api/docker/stack', {
+    method: 'POST',
+    headers: jsonHdrs(),
+    body: JSON.stringify(request),
+  });
+  return unwrap(res, 'install app');
+}
+
+/**
+ * Instala un container individual (sin compose).
+ *
+ * Para uso desde catálogos custom o apps simples. El catálogo oficial
+ * actual entrega `compose` siempre · usa `installApp()` para esos.
+ *
+ * @param {InstallContainerRequest} request
+ * @returns {Promise<Object>}
+ */
+export async function installContainer(request) {
+  if (!request?.id || !request?.image) {
+    throw new Error('installContainer: id and image are required');
+  }
+  const res = await fetch('/api/docker/container', {
+    method: 'POST',
+    headers: jsonHdrs(),
+    body: JSON.stringify(request),
+  });
+  return unwrap(res, 'install container');
+}
+
+/**
+ * Desinstala una app · stack o container.
+ *
+ * Backend race-free desde APP-031: marca deleting=1 sync, cleanup async.
+ * El observer ya no la muestra como activa en cuanto este endpoint retorna OK.
+ *
+ * @param {string} id     App ID
+ * @param {"stack"|"container"} type
+ * @returns {Promise<Object>}
+ */
+export async function uninstallApp(id, type) {
+  if (!id) throw new Error('uninstallApp: id required');
+  if (type !== 'stack' && type !== 'container') {
+    throw new Error(`uninstallApp: invalid type "${type}"`);
+  }
+  const path = type === 'stack' ? `/api/docker/stack/${encodeURIComponent(id)}` : `/api/docker/container/${encodeURIComponent(id)}`;
+  const res = await fetch(path, {
+    method: 'DELETE',
+    headers: hdrs(),
+  });
+  return unwrap(res, `uninstall ${type}`);
+}
+
+/**
+ * Start / stop / restart de una app instalada.
+ *
+ * @param {string} id
+ * @param {"start"|"stop"|"restart"} action
+ * @returns {Promise<Object>}
+ */
+export async function appAction(id, action) {
+  if (!id) throw new Error('appAction: id required');
+  if (!['start', 'stop', 'restart'].includes(action)) {
+    throw new Error(`appAction: invalid action "${action}"`);
+  }
+  const res = await fetch(
+    `/api/docker/container/${encodeURIComponent(id)}/${action}`,
+    {
+      method: 'POST',
+      headers: hdrs(),
+    }
+  );
+  return unwrap(res, `app ${action}`);
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// PULL · download de imagen Docker (sin install)
+// ────────────────────────────────────────────────────────────────────────
+
+/**
+ * Hace docker pull de una imagen.
+ *
+ * Soporta async desde Fase 2 Batch 3 del backend (APP-053). Con `async: true`
+ * devuelve operationId para polling. Sin async, bloquea 10s-2min.
+ *
+ * Estrategia recomendada para install de apps grandes:
+ *   1. pullImage(app.image, { async: true }) → operationId
+ *   2. waitForOperation(operationId, onProgress) → mostrar progreso al user
+ *   3. installApp({ id, compose }) → rápido porque la imagen ya está
+ *
+ * @param {string} image                      "jellyfin/jellyfin:latest"
+ * @param {Object} [opts]
+ * @param {boolean} [opts.async]
+ * @returns {Promise<Object>}
+ */
+export async function pullImage(image, { async: asyncMode = false } = {}) {
+  if (!image) throw new Error('pullImage: image required');
+  const path = `/api/docker/pull/${encodeURIComponent(image)}`;
+  const url = asyncMode ? `${path}?async=true` : path;
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: hdrs(),
+  });
+  return unwrap(res, 'pull image');
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// OPERATIONS · polling de async ops
+// ────────────────────────────────────────────────────────────────────────
+
+/**
+ * Lee el estado actual de una operation async.
+ *
+ * Estados terminales: "succeeded", "failed", "cancelled".
+ * No-terminales: "pending", "running".
+ *
+ * @param {string} opId
+ * @returns {Promise<Operation>}
+ */
+export async function getOperation(opId) {
+  if (!opId) throw new Error('getOperation: opId required');
+  const res = await fetch(`/api/operations/${encodeURIComponent(opId)}`, {
+    headers: hdrs(),
+  });
+  return unwrap(res, 'get operation');
+}
+
+/**
+ * Polling de una operation hasta estado terminal.
+ *
+ * Llama `onProgress(op)` cada vez que recibe un update (incluyendo el inicial
+ * y el terminal). Resolves con la operation final cuando alcanza terminal.
+ *
+ * Cancelable via `opts.signal` (AbortController). En caso de abort, lanza
+ * AbortError; el trabajo del backend SIGUE corriendo (el frontend solo deja
+ * de pollear), porque async ops del backend no son cancelables (todavía).
+ *
+ * @param {string} opId
+ * @param {(op: Operation) => void} [onProgress]
+ * @param {Object} [opts]
+ * @param {number} [opts.intervalMs]              Default 1000
+ * @param {AbortSignal} [opts.signal]
+ * @returns {Promise<Operation>}
+ */
+export async function waitForOperation(
+  opId,
+  onProgress,
+  { intervalMs = 1000, signal } = {}
+) {
+  if (!opId) throw new Error('waitForOperation: opId required');
+  const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
+
+  while (true) {
+    if (signal?.aborted) {
+      const e = new Error('waitForOperation aborted');
+      e.name = 'AbortError';
+      throw e;
+    }
+    const op = await getOperation(opId);
+    if (typeof onProgress === 'function') {
+      try {
+        onProgress(op);
+      } catch (cbErr) {
+        // No abortamos el polling por errores del callback de UI
+        console.error('[appstore/api] onProgress threw:', cbErr);
+      }
+    }
+    if (TERMINAL.has(op.status)) {
+      return op;
+    }
+    // Esperar el intervalo, respetando el signal
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(resolve, intervalMs);
+      if (signal) {
+        signal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(t);
+            const e = new Error('waitForOperation aborted');
+            e.name = 'AbortError';
+            reject(e);
+          },
+          { once: true }
+        );
+      }
+    });
+  }
+}
