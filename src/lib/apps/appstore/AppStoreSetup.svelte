@@ -178,7 +178,7 @@
         { async: true }
       );
       if (!res?.operationId) {
-        throw new Error('Backend no devolvió operationId');
+        throw new Error('Backend no devolvió operationId · respuesta: ' + JSON.stringify(res));
       }
       const finalOp = await waitForOperation(
         res.operationId,
@@ -202,7 +202,15 @@
         // Component unmounted · silencioso
         return;
       }
-      installError = err?.message || String(err);
+      // Detalle máximo · qué tipo de error, código HTTP si aplica
+      const parts = [];
+      parts.push(err?.message || String(err));
+      if (err?.code) parts.push(`code: ${err.code}`);
+      if (err?.status) parts.push(`status: ${err.status}`);
+      if (err?.details) parts.push(`details: ${JSON.stringify(err.details)}`);
+      installError = parts.join(' · ');
+      // Log en consola por si el browser tiene devtools
+      console.error('[appstore/setup] install failed:', err);
       installing = false;
     }
   }
