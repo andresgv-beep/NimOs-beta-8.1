@@ -622,34 +622,3 @@ func NormalizeDockerHealth(healthStatus string) string {
 	}
 }
 
-// ComputeDockerAggregateHealth calculates the parent Docker service health
-// from its children's statuses.
-//
-//	all running+healthy  → "healthy"
-//	any error            → "degraded"
-//	any stopped (no err) → "degraded"
-//	all stopped          → "idle"
-//	no children          → "healthy"
-func ComputeDockerAggregateHealth(children []DockerAppStatus) string {
-	if len(children) == 0 {
-		return "healthy"
-	}
-	allStopped := true
-	for _, c := range children {
-		if c.Status != "stopped" {
-			allStopped = false
-		}
-		if c.Status == "error" || c.Health == "unhealthy" {
-			return "degraded"
-		}
-	}
-	if allStopped {
-		return "idle"
-	}
-	for _, c := range children {
-		if c.Status == "stopped" {
-			return "degraded"
-		}
-	}
-	return "healthy"
-}

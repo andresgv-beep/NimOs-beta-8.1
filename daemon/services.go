@@ -3,11 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"net/url"
-	"os"
-	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,16 +27,21 @@ var poolLocked = map[string]bool{} // protected by storageMu
 func createServiceRegistryTables() error {
 	_, err := db.Exec(`
 	CREATE TABLE IF NOT EXISTS service_instances (
-		id          TEXT PRIMARY KEY,
-		app_id      TEXT NOT NULL,
-		pool_name   TEXT NOT NULL,
-		path        TEXT NOT NULL,
-		status      TEXT DEFAULT 'stopped',
-		health      TEXT DEFAULT 'unknown',
-		owner       TEXT DEFAULT 'system',
-		config      TEXT DEFAULT '{}',
-		created_at  TEXT NOT NULL,
-		updated_at  TEXT NOT NULL,
+		id               TEXT PRIMARY KEY,
+		app_id           TEXT NOT NULL,
+		pool_name        TEXT NOT NULL,
+		path             TEXT NOT NULL,
+		status           TEXT CHECK (status IN
+		                   ('running','stopped','starting','stopping','error','unknown'))
+		                   DEFAULT 'unknown',
+		health           TEXT CHECK (health IN
+		                   ('healthy','degraded','failed','partial','unknown','stale'))
+		                   DEFAULT 'unknown',
+		owner            TEXT DEFAULT 'system',
+		config           TEXT DEFAULT '{}',
+		created_at       TEXT NOT NULL,
+		updated_at       TEXT NOT NULL,
+		last_observed_at TEXT,
 		FOREIGN KEY (app_id) REFERENCES app_registry(id)
 	);
 
@@ -60,13 +63,24 @@ func createServiceRegistryTables() error {
 
 // ─── Validation helpers ──────────────────────────────────────────────────────
 
+// instanceIDRegex valida el formato de IDs de service_instances.
+// Forma canónica: app_id@pool_name (o app_id@system para servicios system-wide).
+// Reglas:
+//
+//	· Ambas partes (antes/después de @) son obligatorias, mínimo 1 char.
+//	· Primer carácter de cada parte ∈ [a-z0-9_] (sin '-' al inicio para no
+//	  parecer flag CLI).
+//	· Resto de caracteres ∈ [a-z0-9_-].
+//	· Exactamente UN '@' (no admite app@pool@otro).
+//
+// Acepta: docker@plex_pool, ssh@system, nimbackup@system, nimtorrent@media-1
+// Rechaza: @bar, foo@, foo@bar@baz, -bad@pool, foo bar@pool, foo@bar/baz
+var instanceIDRegex = regexp.MustCompile(`^[a-z0-9_][a-z0-9_-]*@[a-z0-9_][a-z0-9_-]*$`)
+
 func validateInstanceID(id string) error {
-	if !strings.Contains(id, "@") {
-		return fmt.Errorf("invalid instance ID format: must be app_id@pool_name")
-	}
-	parts := strings.SplitN(id, "@", 2)
-	if parts[0] == "" || parts[1] == "" {
-		return fmt.Errorf("invalid instance ID: both app_id and pool_name required")
+	if !instanceIDRegex.MatchString(id) {
+		return fmt.Errorf("invalid instance ID %q: must match app_id@pool_name "+
+			"(lowercase alphanumeric + _ -)", id)
 	}
 	return nil
 }
@@ -304,7 +318,11 @@ func serviceStop(instanceID string) error {
 	var managedBy string
 	db.QueryRow(`SELECT managed_by FROM app_registry WHERE id = ?`, instance.AppID).Scan(&managedBy)
 
-	dbServiceUpdateStatus(instanceID, "stopping", instance.Health)
+	// Estado intermedio honesto · el observer confirmará la transición real
+	// en su próximo tick (≤30s). NO escribimos 'stopped' al final asumiendo
+	// éxito · el systemctl stop puede fallar silenciosamente o el proceso
+	// puede tardar en morir.
+	dbServiceUpdateStatus(instanceID, "stopping", "unknown")
 
 	opts := CmdOptions{Timeout: 30 * time.Second}
 	var stopErr error
@@ -313,6 +331,11 @@ func serviceStop(instanceID string) error {
 	case "systemd":
 		// Get systemd unit name from config or convention
 		unitName := getSystemdUnit(instance)
+		if unitName == "" {
+			// No unit definido para este AppID · operación no aplicable.
+			// (caso típico: managed_by inconsistente con AppID)
+			return fmt.Errorf("no systemd unit defined for app %s", instance.AppID)
+		}
 		_, stopErr = runCmd("systemctl", []string{"stop", unitName}, opts)
 	case "docker":
 		// Stop all containers (Docker engine stays)
@@ -325,12 +348,19 @@ func serviceStop(instanceID string) error {
 	}
 
 	if stopErr != nil {
-		dbServiceUpdateStatus(instanceID, "failed", "degraded")
+		// Acción falló · marcar como error/failed (estado terminal honesto)
+		dbServiceUpdateStatus(instanceID, "error", "failed")
 		return fmt.Errorf("failed to stop %s: %v", instanceID, stopErr)
 	}
 
-	dbServiceUpdateStatus(instanceID, "stopped", "unknown")
-	addNotification("info", "system", "Service stopped", fmt.Sprintf("%s stopped", instanceID))
+	// Comando emitido sin error · NO escribimos 'stopped/healthy' final.
+	// El observer detectará el estado real en su próximo tick.
+	// Para 'internal' (nimbackup) sí podemos afirmar el estado, ya que
+	// somos el daemon que ejecuta esa lógica.
+	if managedBy == "internal" {
+		dbServiceUpdateStatus(instanceID, "stopped", "unknown")
+	}
+	addNotification("info", "system", "Service stop requested", fmt.Sprintf("%s stop command issued", instanceID))
 	return nil
 }
 
@@ -350,7 +380,7 @@ func serviceStart(instanceID string) error {
 
 	// Verify pool exists and is mounted
 	if !isPathOnMountedPool(nimosPoolsDir + "/" + instance.PoolName) {
-		dbServiceUpdateStatus(instanceID, "error", "unreachable")
+		dbServiceUpdateStatus(instanceID, "error", "failed")
 		return fmt.Errorf("pool %s is not mounted", instance.PoolName)
 	}
 
@@ -365,6 +395,9 @@ func serviceStart(instanceID string) error {
 	switch managedBy {
 	case "systemd":
 		unitName := getSystemdUnit(instance)
+		if unitName == "" {
+			return fmt.Errorf("no systemd unit defined for app %s", instance.AppID)
+		}
 		_, startErr = runCmd("systemctl", []string{"start", unitName}, opts)
 	case "docker":
 		_, startErr = runCmd("systemctl", []string{"start", "docker"}, opts)
@@ -375,22 +408,46 @@ func serviceStart(instanceID string) error {
 	}
 
 	if startErr != nil {
-		dbServiceUpdateStatus(instanceID, "failed", "degraded")
+		dbServiceUpdateStatus(instanceID, "error", "failed")
 		return fmt.Errorf("failed to start %s: %v", instanceID, startErr)
 	}
 
-	dbServiceUpdateStatus(instanceID, "running", "healthy")
-	addNotification("info", "system", "Service started", fmt.Sprintf("%s started", instanceID))
+	// Comando emitido sin error · NO escribimos 'running/healthy' final.
+	// El observer detectará el estado real en su próximo tick. Si el servicio
+	// crashea 200ms después de arrancar, el observer lo verá y lo marcará
+	// como error/failed · hoy nunca se enteraría.
+	// Para 'internal' (nimbackup) sí afirmamos estado, somos el daemon.
+	if managedBy == "internal" {
+		dbServiceUpdateStatus(instanceID, "running", "healthy")
+	}
+	addNotification("info", "system", "Service start requested", fmt.Sprintf("%s start command issued", instanceID))
 	return nil
 }
 
 // getSystemdUnit returns the systemd unit name for a service instance.
+// Returns "" if no unit is appropriate (e.g. internal services that don't
+// have a separate systemd unit). Callers MUST check for "" and handle it
+// rather than passing it to systemctl, which would either fail or — for the
+// dangerous default "nimos-daemon.service" of older versions — affect the
+// daemon itself.
 func getSystemdUnit(instance *ServiceInstance) string {
 	switch instance.AppID {
 	case "nimtorrent":
 		return "nimos-torrentd.service"
 	case "nimbackup":
-		return "nimos-daemon.service" // backup runs inside the daemon
+		// nimbackup runs INSIDE the daemon (managed_by='internal').
+		// Returning "nimos-daemon.service" here would mean Stop nimbackup
+		// = kill daemon. Return "" so callers don't accidentally do that.
+		return ""
+	// System-level services that ship with the OS · NOT prefixed with "nimos-"
+	case "ssh":
+		return "ssh.service"
+	case "samba":
+		return "smbd.service"
+	case "nfs":
+		return "nfs-server.service"
+	case "vms":
+		return "libvirtd.service"
 	default:
 		return "nimos-" + instance.AppID + ".service"
 	}
@@ -413,6 +470,10 @@ func getServiceLogs(instanceID string, n int) ([]map[string]interface{}, error) 
 	switch managedBy {
 	case "systemd":
 		unitName := getSystemdUnit(instance)
+		if unitName == "" {
+			// No unit aplicable · sin logs systemd que mostrar.
+			return []map[string]interface{}{}, nil
+		}
 		out, _ := runCmd("journalctl", []string{
 			"-u", unitName,
 			"-n", fmt.Sprintf("%d", n),
@@ -497,93 +558,20 @@ func getServiceLogs(instanceID string, n int) ([]map[string]interface{}, error) 
 
 // ─── Boot reconciliation ─────────────────────────────────────────────────────
 
-// autoRegisterServices detects running services and registers them if not already present.
-// Called once at boot, before reconcileServices.
+// autoRegisterServices detects running services and registers them if not
+// already present. Called periódicamente desde reconcileServices.
+//
+// Fase 5: delegación al slice de detectores en nimhealth.go. Para añadir
+// un nuevo servicio detectable, añadir su función al slice `detectors`
+// en nimhealth.go · NO modificar esta función.
 func autoRegisterServices() {
-	// ── NimTorrent ──
-	// Detect from torrent.conf which pool it uses
-	if _, err := dbServiceGet("nimtorrent@*"); err != nil {
-		// No wildcard support — check if ANY nimtorrent instance exists
-		existing, _ := dbServiceList("")
-		hasTorrent := false
-		for _, inst := range existing {
-			if inst.AppID == "nimtorrent" {
-				hasTorrent = true
-				break
-			}
-		}
-		if !hasTorrent {
-			// Try to detect pool from torrent.conf
-			if data, err := os.ReadFile(torrentConfPath); err == nil {
-				for _, line := range strings.Split(string(data), "\n") {
-					if strings.HasPrefix(line, "download_dir=") {
-						dir := strings.TrimPrefix(line, "download_dir=")
-						dir = strings.TrimSpace(dir)
-						if strings.HasPrefix(dir, nimosPoolsDir+"/") {
-							// Extract pool name: /nimos/pools/{pool}/shares → pool
-							parts := strings.Split(strings.TrimPrefix(dir, nimosPoolsDir+"/"), "/")
-							if len(parts) > 0 && parts[0] != "" {
-								poolName := parts[0]
-								instanceID := "nimtorrent@" + poolName
-								path := filepath.Join(nimosPoolsDir, poolName, "shares")
-								dbServiceRegister(ServiceInstance{
-									ID:       instanceID,
-									AppID:    "nimtorrent",
-									PoolName: poolName,
-									Path:     path,
-									Status:   "unknown",
-									Health:   "unknown",
-									Owner:    "system",
-									Config:   "{}",
-								}, []ServiceDependency{
-									{InstanceID: instanceID, DepType: "pool", Target: poolName, Required: "required"},
-								})
-								logMsg("service auto-register: NimTorrent on pool %s", poolName)
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// ── Docker ──
-	existing, _ := dbServiceList("")
-	hasDocker := false
-	for _, inst := range existing {
-		if inst.AppID == "containers" {
-			hasDocker = true
-			break
-		}
-	}
-	if !hasDocker {
-		// Check if Docker is installed and configured on a pool
-		conf := getDockerConfigGo()
-		installed, _ := conf["installed"].(bool)
-		dockerPath, _ := conf["path"].(string)
-		if installed && dockerPath != "" && strings.HasPrefix(dockerPath, nimosPoolsDir+"/") {
-			parts := strings.Split(strings.TrimPrefix(dockerPath, nimosPoolsDir+"/"), "/")
-			if len(parts) > 0 && parts[0] != "" {
-				poolName := parts[0]
-				instanceID := "docker@" + poolName
-				dbServiceRegister(ServiceInstance{
-					ID:       instanceID,
-					AppID:    "containers",
-					PoolName: poolName,
-					Path:     dockerPath,
-					Status:   "unknown",
-					Health:   "unknown",
-					Owner:    "system",
-					Config:   "{}",
-				}, []ServiceDependency{
-					{InstanceID: instanceID, DepType: "pool", Target: poolName, Required: "required"},
-					{InstanceID: instanceID, DepType: "path", Target: dockerPath, Required: "required"},
-				})
-				logMsg("service auto-register: Docker on pool %s", poolName)
-			}
-		}
-	}
+	runAutoRegister(context.Background())
 }
+
+// reconcileMaxConcurrency · número máximo de instances reconciliadas en
+// paralelo. 4 es razonable para Pi 4 (4 cores). Cada worker hace 1-2
+// runCmd con timeout 5s, así que el peor caso es CPU-bound, no IO-bound.
+const reconcileMaxConcurrency = 4
 
 func reconcileServices() {
 	// Auto-register first — detect services that exist but aren't registered
@@ -610,54 +598,61 @@ func reconcileServices() {
 		}
 	}
 
-	// ── Reconcile remaining services ──
+	// ── Reconcile remaining services in parallel (Fase 6) ──
+	// Cada instance es independiente (lecturas/escrituras de SU fila),
+	// así que paralelizamos con semáforo bounded. Disciplina §1: NO usamos
+	// errgroup (dependencia externa) cuando WaitGroup+canal cubre el caso.
 	instances, err := dbServiceList("")
 	if err != nil {
 		logMsg("service reconcile: error loading instances: %v", err)
 		return
 	}
 
+	sem := make(chan struct{}, reconcileMaxConcurrency)
+	var wg sync.WaitGroup
 	for _, inst := range instances {
-		poolPath := nimosPoolsDir + "/" + inst.PoolName
+		inst := inst // capture por valor para la goroutine
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			reconcileOneInstance(inst)
+		}()
+	}
+	wg.Wait()
+}
 
-		// Check pool exists and is mounted
-		if !isPathOnMountedPool(poolPath) {
-			if inst.Status != "error" {
-				dbServiceUpdateStatus(inst.ID, "error", "unreachable")
-				logMsg("service reconcile: %s → error (pool %s not mounted)", inst.ID, inst.PoolName)
-			}
-			continue
-		}
-
-		// Check path exists
-		if _, err := runCmd("test", []string{"-d", inst.Path}, CmdOptions{Timeout: 2 * time.Second}); err != nil {
-			if inst.Status != "error" {
-				dbServiceUpdateStatus(inst.ID, "error", "unreachable")
-				logMsg("service reconcile: %s → error (path %s missing)", inst.ID, inst.Path)
-			}
-			continue
-		}
-
-		// Sync real status
+// reconcileOneInstance reconcilia el estado de UNA instance. Llamada
+// desde un worker pool en reconcileServices. Cada invocación es
+// independiente · no comparte estado con otras instances.
+func reconcileOneInstance(inst ServiceInstance) {
+	// System-wide services (PoolName=="") no están atados a un pool ·
+	// son cosas como SSH, Samba, NFS, NimBackup interno, libvirtd, etc.
+	// No se valida pool/path; comprobamos directamente su status via
+	// systemctl/internal.
+	if inst.PoolName == "" {
 		var managedBy string
 		db.QueryRow(`SELECT managed_by FROM app_registry WHERE id = ?`, inst.AppID).Scan(&managedBy)
 
-		reallyRunning := false
+		newStatus := "unknown"
+		newHealth := "unknown"
+
 		switch managedBy {
 		case "systemd":
 			unitName := getSystemdUnit(&inst)
-			out, _ := runCmd("systemctl", []string{"is-active", unitName}, CmdOptions{Timeout: 5 * time.Second})
-			reallyRunning = strings.TrimSpace(out.Stdout) == "active"
-		case "docker":
-			out, _ := runCmd("systemctl", []string{"is-active", "docker"}, CmdOptions{Timeout: 5 * time.Second})
-			reallyRunning = strings.TrimSpace(out.Stdout) == "active"
+			if unitName != "" {
+				out, _ := runCmd("systemctl", []string{"is-active", unitName}, CmdOptions{Timeout: 5 * time.Second})
+				if strings.TrimSpace(out.Stdout) == "active" {
+					newStatus = "running"
+					newHealth = "healthy"
+				} else {
+					newStatus = "stopped"
+					newHealth = "unknown"
+				}
+			}
 		case "internal":
-			reallyRunning = true // daemon is running, so internal services are too
-		}
-
-		newStatus := "stopped"
-		newHealth := "unknown"
-		if reallyRunning {
+			// Daemon is alive (we are the daemon), so internal services are running
 			newStatus = "running"
 			newHealth = "healthy"
 		}
@@ -666,240 +661,57 @@ func reconcileServices() {
 			dbServiceUpdateStatus(inst.ID, newStatus, newHealth)
 			logMsg("service reconcile: %s → %s/%s", inst.ID, newStatus, newHealth)
 		}
-	}
-}
-
-// ─── HTTP Handlers ───────────────────────────────────────────────────────────
-
-func handleServiceRoutes(w http.ResponseWriter, r *http.Request) {
-	session := requireAuth(w, r)
-	if session == nil {
 		return
 	}
 
-	path := r.URL.Path
-	method := r.Method
+	poolPath := nimosPoolsDir + "/" + inst.PoolName
 
-	// GET /api/services — list all services
-	if path == "/api/services" && method == "GET" {
-		poolFilter := r.URL.Query().Get("pool")
-		instances, err := dbServiceList(poolFilter)
-		if err != nil {
-			jsonError(w, 500, err.Error())
-			return
+	// Check pool exists and is mounted
+	if !isPathOnMountedPool(poolPath) {
+		if inst.Status != "error" {
+			dbServiceUpdateStatus(inst.ID, "error", "failed")
+			logMsg("service reconcile: %s → error (pool %s not mounted)", inst.ID, inst.PoolName)
 		}
-
-		// Enrich with app name + Docker children
-		result := make([]map[string]interface{}, len(instances))
-		for i, inst := range instances {
-			var appName string
-			db.QueryRow(`SELECT name FROM app_registry WHERE id = ?`, inst.AppID).Scan(&appName)
-			deps, _ := dbServiceDependencies(inst.ID)
-			result[i] = inst.ToMap()
-			result[i]["appName"] = appName
-			depsMap := make([]map[string]interface{}, len(deps))
-			for j, d := range deps {
-				depsMap[j] = d.ToMap()
-			}
-			result[i]["dependencies"] = depsMap
-
-			// If this is the Docker service, inject app children + aggregate health
-			if inst.AppID == "containers" && isDockerInstalledGo() {
-				children, orphanCount := getDockerAppStatuses(inst.ID)
-				childrenMaps := make([]map[string]interface{}, len(children))
-				for j, c := range children {
-					childrenMaps[j] = c.ToMap()
-				}
-				result[i]["children"] = childrenMaps
-				result[i]["orphanCount"] = orphanCount
-
-				// Override health with aggregate from children
-				aggHealth := ComputeDockerAggregateHealth(children)
-				result[i]["health"] = aggHealth
-			}
-		}
-		jsonOk(w, map[string]interface{}{"services": result})
 		return
 	}
 
-	// GET /api/services/dependencies?pool=X — check pool dependencies
-	if path == "/api/services/dependencies" && method == "GET" {
-		poolName := r.URL.Query().Get("pool")
-		if poolName == "" {
-			jsonError(w, 400, "pool parameter required")
-			return
+	// Check path exists
+	if _, err := runCmd("test", []string{"-d", inst.Path}, CmdOptions{Timeout: 2 * time.Second}); err != nil {
+		if inst.Status != "error" {
+			dbServiceUpdateStatus(inst.ID, "error", "failed")
+			logMsg("service reconcile: %s → error (path %s missing)", inst.ID, inst.Path)
 		}
-		deps, canDestroy, canForce, err := canDestroyPool(poolName)
-		if err != nil {
-			jsonError(w, 500, err.Error())
-			return
-		}
-		depsMap := make([]map[string]interface{}, len(deps))
-		for i, d := range deps {
-			depsMap[i] = d.ToMap()
-		}
-		jsonOk(w, map[string]interface{}{
-			"pool":         poolName,
-			"dependencies": depsMap,
-			"canDestroy":   canDestroy,
-			"canForce":     canForce,
-		})
 		return
 	}
 
-	// POST /api/services/{id}/stop
-	// POST /api/services/{id}/start
-	// POST /api/services/{id}/restart
-	// GET  /api/services/{id}/logs
-	//
-	// Works for both registry services (docker@pool, nimtorrent@pool) and
-	// Docker app containers (jellyfin, immich, etc.) by falling through to
-	// docker commands if the ID is not in the service registry.
-	if strings.HasPrefix(path, "/api/services/") {
-		trimmed := strings.TrimPrefix(path, "/api/services/")
-		parts := strings.SplitN(trimmed, "/", 2)
-		if len(parts) != 2 {
-			jsonError(w, 404, "Not found")
-			return
+	// Sync real status
+	var managedBy string
+	db.QueryRow(`SELECT managed_by FROM app_registry WHERE id = ?`, inst.AppID).Scan(&managedBy)
+
+	reallyRunning := false
+	switch managedBy {
+	case "systemd":
+		unitName := getSystemdUnit(&inst)
+		if unitName != "" {
+			out, _ := runCmd("systemctl", []string{"is-active", unitName}, CmdOptions{Timeout: 5 * time.Second})
+			reallyRunning = strings.TrimSpace(out.Stdout) == "active"
 		}
-		instanceID := parts[0]
-		// URL-decode the instance ID (@ gets encoded as %40)
-		if decoded, err := url.PathUnescape(instanceID); err == nil {
-			instanceID = decoded
-		}
-		action := parts[1]
-
-		// Check if this is a registered service or a docker-app container
-		registeredSvc, _ := dbServiceGet(instanceID)
-		isDockerApp := registeredSvc == nil && isDockerInstalledGo()
-
-		// Validate: must be either a registered service or a known docker app
-		if registeredSvc == nil && !isDockerApp {
-			jsonError(w, 404, "Service not found")
-			return
-		}
-
-		// For docker-app: find the actual container name
-		containerName := instanceID
-		if isDockerApp {
-			// Look up in docker_apps DB to verify it exists.
-			// containerName defaults to instanceID (the app's ID); if needed,
-			// docker.go's container matching logic resolves the actual name.
-			if appsRepo != nil {
-				app, _ := appsRepo.GetDockerApp(r.Context(), instanceID)
-				if app != nil {
-					containerName = app.ID
-				}
-			}
-		}
-
-		// GET /api/services/{id}/logs
-		if method == "GET" && action == "logs" {
-			n := 50
-			if nStr := r.URL.Query().Get("n"); nStr != "" {
-				if parsed := parseIntDefault(nStr, 50); parsed > 0 && parsed <= 200 {
-					n = parsed
-				}
-			}
-
-			if isDockerApp {
-				// Docker container logs
-				out, _ := runSafe("docker", "logs", "--tail", fmt.Sprintf("%d", n), "--timestamps", containerName)
-				var lines []map[string]interface{}
-				if out != "" {
-					for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-						ts := ""
-						msg := line
-						// Try to split timestamp from message (docker --timestamps format)
-						if len(line) > 30 && line[4] == '-' {
-							if idx := strings.Index(line, " "); idx > 0 && idx < 35 {
-								ts = line[:idx]
-								msg = line[idx+1:]
-							}
-						}
-						lines = append(lines, map[string]interface{}{"timestamp": ts, "message": msg})
-					}
-				}
-				if lines == nil {
-					lines = []map[string]interface{}{}
-				}
-				jsonOk(w, map[string]interface{}{"logs": lines})
-			} else {
-				lines, err := getServiceLogs(instanceID, n)
-				if err != nil {
-					jsonError(w, 500, err.Error())
-					return
-				}
-				jsonOk(w, map[string]interface{}{"logs": lines})
-			}
-			return
-		}
-
-		// POST actions require admin
-		if method == "POST" {
-			if session.Role != "admin" {
-				jsonError(w, 403, "Admin required")
-				return
-			}
-
-			if isDockerApp {
-				// Docker container actions
-				var cmdErr error
-				switch action {
-				case "stop":
-					_, ok := runSafe("docker", "stop", containerName)
-					if !ok {
-						cmdErr = fmt.Errorf("failed to stop container %s", containerName)
-					}
-				case "start":
-					_, ok := runSafe("docker", "start", containerName)
-					if !ok {
-						cmdErr = fmt.Errorf("failed to start container %s", containerName)
-					}
-				case "restart":
-					_, ok := runSafe("docker", "restart", containerName)
-					if !ok {
-						cmdErr = fmt.Errorf("failed to restart container %s", containerName)
-					}
-				default:
-					jsonError(w, 404, "Unknown action")
-					return
-				}
-				if cmdErr != nil {
-					jsonError(w, 500, cmdErr.Error())
-					return
-				}
-				jsonOk(w, map[string]interface{}{"ok": true, "action": action, "container": containerName})
-			} else {
-				// Registry service actions (systemd)
-				switch action {
-				case "stop":
-					if err := serviceStop(instanceID); err != nil {
-						jsonError(w, 500, err.Error())
-						return
-					}
-					jsonOk(w, map[string]interface{}{"ok": true, "status": "stopped"})
-				case "start":
-					if err := serviceStart(instanceID); err != nil {
-						jsonError(w, 500, err.Error())
-						return
-					}
-					jsonOk(w, map[string]interface{}{"ok": true, "status": "running"})
-				case "restart":
-					serviceStop(instanceID)
-					time.Sleep(1 * time.Second)
-					if err := serviceStart(instanceID); err != nil {
-						jsonError(w, 500, err.Error())
-						return
-					}
-					jsonOk(w, map[string]interface{}{"ok": true, "status": "running"})
-				default:
-					jsonError(w, 404, "Unknown action")
-				}
-			}
-			return
-		}
+	case "docker":
+		out, _ := runCmd("systemctl", []string{"is-active", "docker"}, CmdOptions{Timeout: 5 * time.Second})
+		reallyRunning = strings.TrimSpace(out.Stdout) == "active"
+	case "internal":
+		reallyRunning = true // daemon is running, so internal services are too
 	}
 
-	jsonError(w, 404, "Not found")
+	newStatus := "stopped"
+	newHealth := "unknown"
+	if reallyRunning {
+		newStatus = "running"
+		newHealth = "healthy"
+	}
+
+	if inst.Status != newStatus || inst.Health != newHealth {
+		dbServiceUpdateStatus(inst.ID, newStatus, newHealth)
+		logMsg("service reconcile: %s → %s/%s", inst.ID, newStatus, newHealth)
+	}
 }

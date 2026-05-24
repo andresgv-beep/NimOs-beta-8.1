@@ -227,8 +227,110 @@ func runSchemaMigrations() {
 		logMsg("schema: migrated to version 2 (nimhealth app)")
 	}
 
+	if version < 3 {
+		// v3: Normalize HealthStatus vocabulary to the 6 official states
+		// (disciplina §6). Adds CHECK constraints on status+health, adds
+		// last_observed_at, drops unused 'optional' dependency level.
+		//
+		// Mapeo old→new:
+		//   status:  failed → error
+		//   health:  unreachable → failed
+		//            unhealthy   → failed
+		//            idle        → healthy  (engine OK, just no containers)
+		//
+		// TRANSACCIONAL: o se aplica entera o nada. Si falla por la mitad,
+		// rollback automático y service_instances queda intacta.
+		if err := migrateToV3(); err != nil {
+			logMsg("schema: ERROR migrating to v3: %v · service_instances unchanged", err)
+		} else {
+			db.Exec("PRAGMA user_version = 3")
+			logMsg("schema: migrated to version 3 (HealthStatus normalized)")
+		}
+	}
+
 	// Future migrations go here:
-	// if version < 3 { ... db.Exec("PRAGMA user_version = 3") }
+	// if version < 4 { ... db.Exec("PRAGMA user_version = 4") }
+}
+
+// migrateToV3 ejecuta la migración v3 en una transacción.
+// Devuelve error si cualquier paso falla; SQLite hace rollback automático.
+func migrateToV3() error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback() // no-op si Commit() tuvo éxito
+
+	stmts := []string{
+		// 1. Nueva tabla con CHECK constraints + last_observed_at
+		`CREATE TABLE service_instances_v3 (
+			id               TEXT PRIMARY KEY,
+			app_id           TEXT NOT NULL,
+			pool_name        TEXT NOT NULL,
+			path             TEXT NOT NULL,
+			status           TEXT CHECK (status IN
+			                   ('running','stopped','starting','stopping','error','unknown'))
+			                   DEFAULT 'unknown',
+			health           TEXT CHECK (health IN
+			                   ('healthy','degraded','failed','partial','unknown','stale'))
+			                   DEFAULT 'unknown',
+			owner            TEXT DEFAULT 'system',
+			config           TEXT DEFAULT '{}',
+			created_at       TEXT NOT NULL,
+			updated_at       TEXT NOT NULL,
+			last_observed_at TEXT,
+			FOREIGN KEY (app_id) REFERENCES app_registry(id)
+		)`,
+
+		// 2. Copiar datos con mapeo CASE
+		`INSERT INTO service_instances_v3
+			(id, app_id, pool_name, path, status, health, owner, config,
+			 created_at, updated_at, last_observed_at)
+		SELECT
+			id, app_id, pool_name, path,
+			CASE status
+				WHEN 'running'  THEN 'running'
+				WHEN 'stopped'  THEN 'stopped'
+				WHEN 'starting' THEN 'starting'
+				WHEN 'stopping' THEN 'stopping'
+				WHEN 'failed'   THEN 'error'
+				WHEN 'error'    THEN 'error'
+				ELSE 'unknown'
+			END AS status,
+			CASE health
+				WHEN 'healthy'     THEN 'healthy'
+				WHEN 'degraded'    THEN 'degraded'
+				WHEN 'unreachable' THEN 'failed'
+				WHEN 'unhealthy'   THEN 'failed'
+				WHEN 'idle'        THEN 'healthy'
+				WHEN 'failed'      THEN 'failed'
+				WHEN 'partial'     THEN 'partial'
+				WHEN 'stale'       THEN 'stale'
+				WHEN 'incomplete'  THEN 'unknown'  -- NimHealth no usa este valor
+				ELSE 'unknown'
+			END AS health,
+			owner, config, created_at, updated_at, NULL
+		FROM service_instances`,
+
+		// 3. Swap tablas
+		`DROP TABLE service_instances`,
+		`ALTER TABLE service_instances_v3 RENAME TO service_instances`,
+
+		// 4. Recrear índices (perdidos al hacer DROP/RENAME)
+		`CREATE INDEX IF NOT EXISTS idx_si_pool ON service_instances(pool_name)`,
+		`CREATE INDEX IF NOT EXISTS idx_si_status ON service_instances(status)`,
+
+		// 5. service_dependencies: 'optional' → 'soft' (nivel no usado en código)
+		`UPDATE service_dependencies SET required='soft' WHERE required='optional'`,
+	}
+
+	for i, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("step %d: %w", i+1, err)
+		}
+	}
+
+	return tx.Commit()
 }
 
 // ═══════════════════════════════════

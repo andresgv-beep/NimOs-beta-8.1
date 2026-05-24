@@ -799,11 +799,28 @@ func main() {
 	// If a remote host is unreachable, NFS mount can take minutes to timeout
 	go remountAllOnStartup()
 
-	// Reconcile service registry in background — don't block daemon startup
-	// runCmd calls to systemctl/test can hang on NFS or slow services
+	// NimHealth observer · Reconciler scheduler propio (no acoplado a
+	// networkReconcilers · disciplina §1). Ver INTEGRATION-v1.2 §4.2.
+	//
+	// El scheduler arranca el observer en el primer tick del Interval()
+	// (30s default). Para tener cache poblada antes, RunOnce() síncrono
+	// al boot dentro de una goroutine para no bloquear main.
+	//
+	// FIXME(D-003): este `time.Sleep(3s)` y la goroutine son patrón
+	// pre-orquestador. Cuando se aborde el boot storm de los 9 starters
+	// (ver §9 D-003), reemplazar por wait coordinado.
+	nimhealthScheduler = NewReconcilerScheduler(NewRealClock())
+	nimhealthObserver := NewNimHealthObserver(NewRealClock(), DefaultNimHealthConfig())
+	if err := nimhealthScheduler.Register(nimhealthObserver); err != nil {
+		logMsg("nimhealth: register observer failed: %v", err)
+	} else if err := nimhealthScheduler.Start(context.Background()); err != nil {
+		logMsg("nimhealth: scheduler start failed: %v", err)
+	}
 	go func() {
-		time.Sleep(3 * time.Second) // wait for socket to be ready
-		reconcileServices()
+		time.Sleep(8 * time.Second) // ceder al boot storm general
+		if err := nimhealthScheduler.RunOnce(context.Background(), nimhealthObserver.Name()); err != nil {
+			logMsg("nimhealth: initial RunOnce failed: %v", err)
+		}
 	}()
 
 	// Start scrub scheduler — checks every 60s if a scheduled verification is due
