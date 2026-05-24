@@ -1,124 +1,205 @@
 <script>
   /**
-   * App Store · Stub temporal de migración
-   * ──────────────────────────────────────────
-   * Esta app está pendiente de portar desde Beta 7 al lenguaje v3.
-   * Ver README.md para el plan y orden de migración.
+   * AppStore · Entry point del módulo
+   * ──────────────────────────────────
+   * Decide qué pantalla mostrar según las capabilities del sistema:
    *
-   * Código original: NimOs-beta-7-main/src/lib/apps/AppStore.svelte
+   *   1. ¿No hay pool? → AppStoreSetup (mockup 1 "sin pool")
+   *   2. ¿No hay Docker? → AppStoreSetup (mockup 2 "sin docker")
+   *   3. ¿Todo OK? → catálogo (Fase 3 · todavía placeholder)
+   *
+   * Esta Fase 2 entrega los casos 1 y 2. El caso 3 muestra un placeholder
+   * temporal hasta que llegue Fase 3 con AppStoreOverview.
+   *
+   * La lógica de decisión vive en api.js::getCapabilities() · esta vista
+   * solo es un router que reacciona al estado derivado.
+   *
+   * Reintento manual:
+   *   El usuario puede pulsar "Reintentar" en cualquier empty state · eso
+   *   re-invoca getCapabilities() y refresca el flujo. Útil tras crear un
+   *   pool o instalar Docker desde otro tab.
    */
-  import AppShell from '$lib/components/AppShell.svelte';
-  import SectionHead from '$lib/ui/SectionHead.svelte';
 
-  let active = 'overview';
+  import { onMount } from 'svelte';
+  import { getCapabilities } from './appstore/api.js';
+  import AppStoreSetup from './appstore/AppStoreSetup.svelte';
+
+  /** @typedef {import('./appstore/types').AppStoreCapabilities} AppStoreCapabilities */
+
+  /** @type {AppStoreCapabilities | null} */
+  let capabilities = null;
+  let loading = true;
+  let loadError = '';
+
+  onMount(loadCapabilities);
+
+  async function loadCapabilities() {
+    loading = true;
+    loadError = '';
+    try {
+      capabilities = await getCapabilities();
+    } catch (err) {
+      loadError = err?.message || String(err);
+      capabilities = null;
+    } finally {
+      loading = false;
+    }
+  }
+
+  /**
+   * Callback que AppStoreSetup invoca cuando termina · pedimos capabilities
+   * de nuevo para detectar el cambio (Docker recién instalado, etc.) y
+   * pasar al catálogo.
+   */
+  async function handleSetupReady() {
+    await loadCapabilities();
+  }
 </script>
 
-<AppShell
-  appId="appstore"
-  title="App Store"
-  headerIcon="⊞"
-  pathSegments={['appstore']}
-  sections={[
-    {
-      label: 'General',
-      items: [
-        { id: 'overview', label: 'Resumen', keyHint: 'R' },
-      ],
-    },
-  ]}
-  bind:active
->
-  <div class="stub">
-    <SectionHead>App Store · estado de migración</SectionHead>
-
-    <div class="stub-body">
-      <div class="stub-head">
-        <span class="stub-tag">WIP</span>
-        <span class="stub-title">Pendiente de migrar</span>
-      </div>
-      <p>
-        Esta app existe como versión funcional en <b>Beta 7</b> pero aún no
-        ha sido portada al lenguaje visual v3 de NimOS.
-      </p>
-      <p>
-        El backend (daemon Go) sigue siendo el mismo: todas las APIs
-        están operativas. Solo falta la capa de presentación.
-      </p>
-      <div class="roadmap">
-        <div class="rm-line">
-          <span class="rm-tag">ref</span>
-          <span>NimOs-beta-7-main/src/lib/apps/AppStore.svelte</span>
-        </div>
-        <div class="rm-line">
-          <span class="rm-tag">next</span>
-          <span>Portar template HTML · mantener &lt;script&gt; como base</span>
-        </div>
-      </div>
+{#if loading}
+  <div class="appstore-loading">
+    <div class="loading-dot"></div>
+    <div class="loading-text">Cargando…</div>
+  </div>
+{:else if loadError}
+  <div class="appstore-error">
+    <div class="err-title">No se pudo cargar el AppStore</div>
+    <div class="err-body">{loadError}</div>
+    <button class="err-btn" on:click={loadCapabilities}>Reintentar</button>
+  </div>
+{:else if !capabilities?.hasPool || !capabilities?.dockerInstalled}
+  <!-- Setup · sin pool o sin Docker -->
+  <AppStoreSetup {capabilities} onReady={handleSetupReady} />
+{:else}
+  <!-- Catálogo · Fase 3 implementará AppStoreOverview · placeholder mientras -->
+  <div class="appstore-placeholder">
+    <div class="ph-icon">⊞</div>
+    <div class="ph-title">AppStore listo</div>
+    <div class="ph-desc">
+      Docker instalado y pool montado. El catálogo de apps se construye en
+      la siguiente fase del frontend.
+    </div>
+    <div class="ph-status">
+      <span>Docker:</span>
+      <span class:ok={capabilities.dockerRunning} class:warn={!capabilities.dockerRunning}>
+        {capabilities.dockerRunning ? 'running' : 'stopped'}
+      </span>
     </div>
   </div>
-</AppShell>
+{/if}
 
 <style>
-  .stub {
-    padding: 24px 28px;
-  }
-  .stub-body {
-    margin-top: 18px;
-    padding: 20px 24px;
-    background: var(--bg-1);
-    border: 1px solid var(--border);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--fg-dim);
-    line-height: 1.7;
-    max-width: 640px;
-  }
-  .stub-head {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding-bottom: 12px;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 14px;
-  }
-  .stub-tag {
-    background: var(--warn);
-    color: var(--bg);
-    padding: 2px 8px;
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 1.5px;
-  }
-  .stub-title {
-    font-size: 12px;
-    color: var(--fg);
-    font-weight: 600;
-    letter-spacing: 0.5px;
-  }
-  p { margin: 10px 0; }
-  p b { color: var(--accent); }
-
-  .roadmap {
-    margin-top: 16px;
-    padding-top: 14px;
-    border-top: 1px solid var(--border);
+  /* ═══ Loading ═══ */
+  .appstore-loading {
+    height: 100%;
     display: flex;
     flex-direction: column;
-    gap: 6px;
-  }
-  .rm-line {
-    display: flex;
-    gap: 10px;
     align-items: center;
-    font-size: 10px;
-    color: var(--fg-mute);
+    justify-content: center;
+    gap: var(--sp-3);
+    background: var(--panel-elev);
+    color: var(--ink-mute);
+    font-family: var(--font-mono);
+    font-size: var(--fs-11);
   }
-  .rm-tag {
-    font-size: 8px;
-    border: 1px solid var(--border);
-    padding: 1px 5px;
-    color: var(--accent);
-    letter-spacing: 1px;
-    text-transform: uppercase;
+  .loading-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--signal);
+    animation: pulse 1.4s ease-in-out infinite;
   }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.3; transform: scale(0.9); }
+    50%      { opacity: 1;   transform: scale(1.1); }
+  }
+  .loading-text {
+    letter-spacing: 0.5px;
+  }
+
+  /* ═══ Error fatal · cuando getCapabilities falla del todo ═══ */
+  .appstore-error {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sp-3);
+    padding: var(--sp-5);
+    background: var(--panel-elev);
+    color: var(--ink);
+    text-align: center;
+  }
+  .err-title {
+    font-size: var(--fs-13);
+    font-weight: 600;
+    color: var(--crit);
+  }
+  .err-body {
+    font-size: var(--fs-11);
+    color: var(--ink-dim);
+    font-family: var(--font-mono);
+    max-width: 420px;
+    line-height: 1.55;
+    word-break: break-word;
+  }
+  .err-btn {
+    margin-top: var(--sp-2);
+    padding: 8px 16px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--ink-dim);
+    font-size: var(--fs-12);
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+  }
+  .err-btn:hover {
+    color: var(--ink);
+    background: var(--line);
+  }
+
+  /* ═══ Placeholder · catálogo aún no implementado (Fase 3) ═══ */
+  .appstore-placeholder {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sp-3);
+    padding: var(--sp-5);
+    background: var(--panel-elev);
+    color: var(--ink-dim);
+    text-align: center;
+    font-family: var(--font-sans);
+  }
+  .ph-icon {
+    font-size: 32px;
+    color: var(--signal);
+    line-height: 1;
+  }
+  .ph-title {
+    font-size: var(--fs-14);
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .ph-desc {
+    font-size: var(--fs-12);
+    max-width: 420px;
+    line-height: 1.55;
+  }
+  .ph-status {
+    margin-top: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    font-size: var(--fs-11);
+    font-family: var(--font-mono);
+    color: var(--ink-mute);
+    display: flex;
+    gap: var(--sp-2);
+  }
+  .ph-status .ok { color: var(--signal); }
+  .ph-status .warn { color: var(--warn); }
 </style>
