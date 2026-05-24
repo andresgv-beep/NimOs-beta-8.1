@@ -83,27 +83,40 @@ async function unwrap(res, label = 'api call') {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// CAPABILITIES · derivadas de /api/services
+// CAPABILITIES · derivadas de /api/services + /api/storage/v2/pools
 //
-// El frontend consulta /api/services (canonical desde Beta 8.1) y deriva
-// localmente las capacidades para decidir qué pantalla mostrar:
+// El frontend consulta dos endpoints diferentes para componer las
+// capabilities del AppStore:
 //
-//   - sin pool         → mockup 1 ("Necesitas un pool")
-//   - sin docker       → mockup 2 ("Instalar Docker engine")
-//   - todo OK          → mockup 3 (catálogo)
+//   1. /api/storage/v2/pools  → ¿hay al menos un pool BTRFS?
+//   2. /api/services          → ¿está Docker engine instalado y corriendo?
 //
-// Esta función es el ÚNICO sitio donde el frontend interpreta el shape de
-// /api/services. Si cambia la respuesta del backend, este es el punto de fix.
+// Los pools NO están en /api/services (esa lista son service instances de
+// NimHealth: Docker engine, NimShield, etc). El servicio canonical para
+// pools es Storage v2.
+//
+// Esta función es el ÚNICO sitio donde el frontend interpreta el shape
+// de ambas APIs. Si cambian, este es el punto de fix.
 // ────────────────────────────────────────────────────────────────────────
 
 /**
- * Lista completa de servicios desde NimHealth.
+ * Lista completa de service instances desde NimHealth (Docker, NimShield...).
+ *
+ * El backend responde con `{ services: [...] }` envolviendo el array dentro
+ * de un objeto. Esta función deshace ese wrap y devuelve solo el array.
  *
  * @returns {Promise<Array<Object>>}
  */
 export async function getServices() {
   const res = await fetch('/api/services', { headers: hdrs() });
-  return unwrap(res, 'services');
+  const body = await unwrap(res, 'services');
+  // El backend devuelve { services: [...] } · deshacer el wrap.
+  if (body && typeof body === 'object' && Array.isArray(body.services)) {
+    return body.services;
+  }
+  // Fallback defensivo · por si en algún futuro el backend devuelve el array directo.
+  if (Array.isArray(body)) return body;
+  return [];
 }
 
 /**
@@ -114,12 +127,39 @@ export async function getServices() {
  */
 export async function getDockerEngine() {
   const services = await getServices();
-  if (!Array.isArray(services)) return null;
-  return services.find((s) => s.type === 'docker-engine' || s.id === 'containers') || null;
+  return services.find((s) => s.type === 'docker-engine' || s.id === 'containers' || s.appId === 'containers') || null;
 }
 
 /**
- * Deriva las capacidades del sistema relevantes para AppStore.
+ * Comprueba si hay al menos un pool BTRFS gestionable.
+ *
+ * Consulta /api/storage/v2/pools y considera "hasPool" cuando existe al menos
+ * un pool en la respuesta. No filtra por estado · cualquier pool registrado
+ * cuenta. El install de Docker valida después que el pool esté montado.
+ *
+ * @returns {Promise<boolean>}
+ */
+export async function hasAnyPool() {
+  try {
+    const res = await fetch('/api/storage/v2/pools', {
+      headers: hdrs(),
+    });
+    if (!res.ok) return false;
+    const body = await res.json();
+    // Storage v2 envuelve en { data: [...] } según patrón observado en storage/api.js
+    const data = body?.data ?? body;
+    if (Array.isArray(data)) return data.length > 0;
+    // Alternativa · { pools: [...] }
+    if (data?.pools && Array.isArray(data.pools)) return data.pools.length > 0;
+    return false;
+  } catch (err) {
+    console.warn('[appstore/api] hasAnyPool failed:', err);
+    return false;
+  }
+}
+
+/**
+ * Deriva las capabilities del sistema relevantes para AppStore.
  *
  * Esta función decide qué pantalla mostrar al user:
  *   - !hasPool         → empty state "sin pool"
@@ -129,29 +169,29 @@ export async function getDockerEngine() {
  * @returns {Promise<AppStoreCapabilities>}
  */
 export async function getCapabilities() {
-  const services = await getServices();
   /** @type {AppStoreCapabilities} */
   const caps = {
     hasPool: false,
     dockerInstalled: false,
     dockerRunning: false,
-    // TODO Fase 3 · derivar de session permissions
+    // TODO Fase futura · derivar de session permissions
     hasPermission: true,
   };
-  if (!Array.isArray(services)) return caps;
 
-  // Pool: presencia de cualquier service con type "storage-pool" o equivalente.
-  // El backend de Storage v2 registra los pools como services.
-  const pools = services.filter(
-    (s) =>
-      s?.type === 'storage-pool' ||
-      s?.type === 'pool' ||
-      (s?.id && typeof s.id === 'string' && s.id.startsWith('pool-'))
+  // Lanzamos las dos consultas en paralelo · son independientes.
+  const [pool, services] = await Promise.all([
+    hasAnyPool(),
+    getServices().catch(() => []),
+  ]);
+
+  caps.hasPool = pool;
+
+  // Docker engine: presencia de la instance "containers" + status running.
+  // En el cache de Docker engine en /api/services, el id es 'containers' y
+  // el appId también. El status se enriquece desde la cache del observer.
+  const docker = services.find(
+    (s) => s?.type === 'docker-engine' || s?.id === 'containers' || s?.appId === 'containers'
   );
-  caps.hasPool = pools.length > 0;
-
-  // Docker engine: registered y status running
-  const docker = services.find((s) => s?.type === 'docker-engine' || s?.id === 'containers');
   if (docker) {
     caps.dockerInstalled = true;
     caps.dockerRunning = docker.status === 'running';
@@ -167,7 +207,6 @@ export async function getCapabilities() {
  */
 export async function getInstalledApps() {
   const services = await getServices();
-  if (!Array.isArray(services)) return [];
   return services.filter((s) => s?.type === 'docker-app');
 }
 

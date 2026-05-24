@@ -99,10 +99,11 @@
   }
 
   /**
-   * Carga la lista de pools disponibles desde /api/services.
-   * Pendiente Fase 3 · de momento llamamos a un endpoint genérico
-   * que ya existe en Storage. Si falla, dejamos lista vacía y el
-   * botón se deshabilita.
+   * Carga la lista de pools disponibles desde Storage v2.
+   * Soporta dos shapes posibles de la respuesta:
+   *   { data: [...] }       (patrón v2 canonical)
+   *   { pools: [...] }      (algunos endpoints anidan así)
+   *   [...] directo         (fallback defensivo)
    */
   async function loadPools() {
     try {
@@ -114,8 +115,18 @@
         return;
       }
       const body = await res.json();
-      const data = body?.data || body;
-      pools = Array.isArray(data) ? data : [];
+      // Tres formatos posibles · probamos en orden.
+      let list = null;
+      if (Array.isArray(body)) {
+        list = body;
+      } else if (body && Array.isArray(body.data)) {
+        list = body.data;
+      } else if (body && Array.isArray(body.pools)) {
+        list = body.pools;
+      } else if (body?.data && Array.isArray(body.data.pools)) {
+        list = body.data.pools;
+      }
+      pools = list || [];
       if (pools.length > 0) selectedPool = pools[0].name;
     } catch (err) {
       console.warn('[appstore/setup] failed to load pools:', err);
