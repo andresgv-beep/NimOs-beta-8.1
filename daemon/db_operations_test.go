@@ -75,7 +75,7 @@ func TestOperationsCreateGet(t *testing.T) {
 	if !strings.HasPrefix(op.ID, "op_") {
 		t.Errorf("expected ID to start with 'op_', got %q", op.ID)
 	}
-	if op.Status != OpStatusPending {
+	if op.Status != OpsStatusPending {
 		t.Errorf("expected Status=pending, got %q", op.Status)
 	}
 	if op.Progress != 0 {
@@ -200,7 +200,7 @@ func TestOperationsStateMachine_HappyPath(t *testing.T) {
 		t.Fatalf("MarkRunning: %v", err)
 	}
 	got, _ := repo.Get(ctx, op.ID)
-	if got.Status != OpStatusRunning {
+	if got.Status != OpsStatusRunning {
 		t.Errorf("expected running, got %q", got.Status)
 	}
 	if got.StartedAt == "" {
@@ -224,7 +224,7 @@ func TestOperationsStateMachine_HappyPath(t *testing.T) {
 		t.Fatalf("MarkSucceeded: %v", err)
 	}
 	got, _ = repo.Get(ctx, op.ID)
-	if got.Status != OpStatusSucceeded {
+	if got.Status != OpsStatusSucceeded {
 		t.Errorf("expected succeeded, got %q", got.Status)
 	}
 	if got.FinishedAt == "" {
@@ -250,7 +250,7 @@ func TestOperationsStateMachine_PendingToFailed(t *testing.T) {
 		t.Fatalf("MarkFailed: %v", err)
 	}
 	got, _ := repo.Get(ctx, op.ID)
-	if got.Status != OpStatusFailed {
+	if got.Status != OpsStatusFailed {
 		t.Errorf("expected failed, got %q", got.Status)
 	}
 	if got.Error != "Image not found in registry" {
@@ -444,7 +444,7 @@ func TestDBOperationToMap_PendingOmitsResult(t *testing.T) {
 	op := &DBOperation{
 		ID:     "op_1_abc12345",
 		Type:   "docker.install",
-		Status: OpStatusPending,
+		Status: OpsStatusPending,
 	}
 	m := op.ToMap()
 	if _, ok := m["resultRaw"]; ok {
@@ -460,7 +460,7 @@ func TestDBOperationToMap_FailedIncludesError(t *testing.T) {
 	op := &DBOperation{
 		ID:     "op_1_abc12345",
 		Type:   "docker.install",
-		Status: OpStatusFailed,
+		Status: OpsStatusFailed,
 		Error:  "Image pull timeout",
 	}
 	m := op.ToMap()
@@ -475,7 +475,7 @@ func TestDBOperationToMap_SucceededIncludesResult(t *testing.T) {
 	op := &DBOperation{
 		ID:         "op_1_abc12345",
 		Type:       "docker.install",
-		Status:     OpStatusSucceeded,
+		Status:     OpsStatusSucceeded,
 		ResultJSON: `{"containerId":"abc"}`,
 	}
 	m := op.ToMap()

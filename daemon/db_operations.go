@@ -33,19 +33,19 @@ import (
 // ─────────────────────────────────────────────────────────────────────
 
 const (
-	OpStatusPending   = "pending"
-	OpStatusRunning   = "running"
-	OpStatusSucceeded = "succeeded"
-	OpStatusFailed    = "failed"
-	OpStatusCancelled = "cancelled"
+	OpsStatusPending   = "pending"
+	OpsStatusRunning   = "running"
+	OpsStatusSucceeded = "succeeded"
+	OpsStatusFailed    = "failed"
+	OpsStatusCancelled = "cancelled"
 
 	// Defaultexpiry tras finalización · GC manual usa este valor.
-	OpExpiryAfterFinish = 24 * time.Hour
+	OpsExpiryAfterFinish = 24 * time.Hour
 )
 
-// IsTerminalOpStatus · status del que no se puede salir.
-func IsTerminalOpStatus(status string) bool {
-	return status == OpStatusSucceeded || status == OpStatusFailed || status == OpStatusCancelled
+// IsTerminalOpsStatus · status del que no se puede salir.
+func IsTerminalOpsStatus(status string) bool {
+	return status == OpsStatusSucceeded || status == OpsStatusFailed || status == OpsStatusCancelled
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -81,13 +81,13 @@ func (op *DBOperation) ToMap() map[string]interface{} {
 		"startedAt":  op.StartedAt,
 		"finishedAt": op.FinishedAt,
 	}
-	if op.Status == OpStatusFailed && op.Error != "" {
+	if op.Status == OpsStatusFailed && op.Error != "" {
 		m["error"] = op.Error
 	}
 	// result_json se devuelve como objeto JSON deserializado para que el
 	// cliente no tenga que parsear un string. Si está vacío o malformado,
 	// se omite.
-	if op.ResultJSON != "" && op.Status == OpStatusSucceeded {
+	if op.ResultJSON != "" && op.Status == OpsStatusSucceeded {
 		// El caller que tenga el JSON sabe deserializarlo. Aquí mantenemos
 		// el string para que el cliente decida. Decisión: devolver como
 		// `resultRaw` string · es predecible y no requiere doble parse.
@@ -151,7 +151,7 @@ func (r *OperationsRepo) Create(ctx context.Context, opType, createdBy string) (
 	op := &DBOperation{
 		ID:        generateOperationID(),
 		Type:      opType,
-		Status:    OpStatusPending,
+		Status:    OpsStatusPending,
 		Progress:  0,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		CreatedBy: createdBy,
@@ -258,7 +258,7 @@ func (r *OperationsRepo) MarkRunning(ctx context.Context, id string) error {
 		UPDATE nimos_operations
 		SET status = ?, started_at = ?
 		WHERE id = ? AND status = ?
-	`, OpStatusRunning, now, id, OpStatusPending)
+	`, OpsStatusRunning, now, id, OpsStatusPending)
 	if err != nil {
 		return fmt.Errorf("mark running %q: %w", id, err)
 	}
@@ -292,7 +292,7 @@ func (r *OperationsRepo) UpdateProgress(ctx context.Context, id string, progress
 		UPDATE nimos_operations
 		SET progress = ?, message = ?
 		WHERE id = ? AND status = ?
-	`, progress, message, id, OpStatusRunning)
+	`, progress, message, id, OpsStatusRunning)
 	if err != nil {
 		return fmt.Errorf("update progress %q: %w", id, err)
 	}
@@ -312,9 +312,9 @@ func (r *OperationsRepo) UpdateProgress(ctx context.Context, id string, progress
 
 // MarkSucceeded transiciona pending|running → succeeded.
 // resultJSON es el payload serializado (formato libre por tipo de op).
-// expires_at se setea a now + OpExpiryAfterFinish.
+// expires_at se setea a now + OpsExpiryAfterFinish.
 func (r *OperationsRepo) MarkSucceeded(ctx context.Context, id, resultJSON string) error {
-	return r.markFinished(ctx, id, OpStatusSucceeded, resultJSON, "")
+	return r.markFinished(ctx, id, OpsStatusSucceeded, resultJSON, "")
 }
 
 // MarkFailed transiciona pending|running → failed.
@@ -324,18 +324,18 @@ func (r *OperationsRepo) MarkFailed(ctx context.Context, id, errorMsg, resultJSO
 	if errorMsg == "" {
 		errorMsg = "operation failed"
 	}
-	return r.markFinished(ctx, id, OpStatusFailed, resultJSON, errorMsg)
+	return r.markFinished(ctx, id, OpsStatusFailed, resultJSON, errorMsg)
 }
 
 // markFinished es el helper común. No se exporta porque la state machine
 // se controla con los métodos públicos.
 func (r *OperationsRepo) markFinished(ctx context.Context, id, finalStatus, resultJSON, errorMsg string) error {
-	if !IsTerminalOpStatus(finalStatus) {
+	if !IsTerminalOpsStatus(finalStatus) {
 		return fmt.Errorf("markFinished called with non-terminal status %q", finalStatus)
 	}
 	now := time.Now().UTC()
 	finishedAt := now.Format(time.RFC3339)
-	expiresAt := now.Add(OpExpiryAfterFinish).Format(time.RFC3339)
+	expiresAt := now.Add(OpsExpiryAfterFinish).Format(time.RFC3339)
 
 	// Validamos que NO esté ya en terminal · si lo está, devolvemos error
 	// para que el caller sepa que algo raro pasó (e.g. double-mark, race).
@@ -345,7 +345,7 @@ func (r *OperationsRepo) markFinished(ctx context.Context, id, finalStatus, resu
 		    result_json = ?, error = ?
 		WHERE id = ? AND status NOT IN (?, ?, ?)
 	`, finalStatus, finishedAt, expiresAt, resultJSON, errorMsg, id,
-		OpStatusSucceeded, OpStatusFailed, OpStatusCancelled)
+		OpsStatusSucceeded, OpsStatusFailed, OpsStatusCancelled)
 	if err != nil {
 		return fmt.Errorf("mark %s %q: %w", finalStatus, id, err)
 	}
