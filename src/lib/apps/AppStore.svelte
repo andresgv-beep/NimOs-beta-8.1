@@ -1,23 +1,10 @@
 <script>
   /**
-   * AppStore · Entry point del módulo
-   * ──────────────────────────────────
-   * Decide qué pantalla mostrar según las capabilities del sistema:
-   *
-   *   1. ¿No hay pool? → AppStoreSetup (mockup 1 "sin pool")
-   *   2. ¿No hay Docker? → AppStoreSetup (mockup 2 "sin docker")
-   *   3. ¿Todo OK? → catálogo (Fase 3 · todavía placeholder)
-   *
-   * Esta Fase 2 entrega los casos 1 y 2. El caso 3 muestra un placeholder
-   * temporal hasta que llegue Fase 3 con AppStoreOverview.
-   *
-   * La lógica de decisión vive en api.js::getCapabilities() · esta vista
-   * solo es un router que reacciona al estado derivado.
-   *
-   * Reintento manual:
-   *   El usuario puede pulsar "Reintentar" en cualquier empty state · eso
-   *   re-invoca getCapabilities() y refresca el flujo. Útil tras crear un
-   *   pool o instalar Docker desde otro tab.
+   * AppStore · Entry point del módulo (con DEBUG TEMPORAL)
+   * ────────────────────────────────────────────────────────
+   * En esta versión TEMPORAL muestra el JSON crudo de /api/services
+   * para inspeccionar el shape real desde dentro de la propia ventana.
+   * Quitar este código tras debug · ver comentario "DEBUG" abajo.
    */
 
   import { onMount } from 'svelte';
@@ -31,7 +18,27 @@
   let loading = true;
   let loadError = '';
 
-  onMount(loadCapabilities);
+  // ── DEBUG temporal · respuesta cruda de /api/services ─────────────
+  /** @type {any} */
+  let debugServicesRaw = null;
+  let debugServicesError = '';
+
+  onMount(async () => {
+    await loadCapabilities();
+    // Pedir /api/services en paralelo para inspección.
+    // Cuando arreglemos getCapabilities, este bloque se quita.
+    try {
+      const res = await fetch('/api/services', { credentials: 'include' });
+      const text = await res.text();
+      try {
+        debugServicesRaw = JSON.parse(text);
+      } catch {
+        debugServicesRaw = { _rawText: text };
+      }
+    } catch (err) {
+      debugServicesError = err?.message || String(err);
+    }
+  });
 
   async function loadCapabilities() {
     loading = true;
@@ -54,6 +61,19 @@
   async function handleSetupReady() {
     await loadCapabilities();
   }
+
+  // ── DEBUG · derivar un resumen del Docker engine si está en la lista ──
+  function findDockerCandidate(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const list = raw.services || raw.data?.services || raw.data || raw;
+    if (!Array.isArray(list)) return null;
+    // Buscar cualquier service que tenga "docker" en algún campo string
+    return list.filter((s) => {
+      if (!s) return false;
+      const str = JSON.stringify(s).toLowerCase();
+      return str.includes('docker') || str.includes('container');
+    });
+  }
 </script>
 
 {#if loading}
@@ -67,23 +87,51 @@
     <div class="err-body">{loadError}</div>
     <button class="err-btn" on:click={loadCapabilities}>Reintentar</button>
   </div>
-{:else if !capabilities?.hasPool || !capabilities?.dockerInstalled}
-  <!-- Setup · sin pool o sin Docker -->
-  <AppStoreSetup {capabilities} onReady={handleSetupReady} />
 {:else}
-  <!-- Catálogo · Fase 3 implementará AppStoreOverview · placeholder mientras -->
-  <div class="appstore-placeholder">
-    <div class="ph-icon">⊞</div>
-    <div class="ph-title">AppStore listo</div>
-    <div class="ph-desc">
-      Docker instalado y pool montado. El catálogo de apps se construye en
-      la siguiente fase del frontend.
+  <!-- ═════════════ DEBUG TEMPORAL ═════════════
+       Muestra el JSON crudo de /api/services y los flags derivados.
+       Quitar este bloque entero (incluido el {:else}/{/if}) cuando
+       getCapabilities() esté arreglado. -->
+  <div class="debug-pane">
+    <div class="debug-head">DEBUG TEMPORAL · respuesta cruda de /api/services</div>
+
+    <div class="debug-section">
+      <div class="debug-label">Capabilities derivadas:</div>
+      <pre class="debug-block">{JSON.stringify(capabilities, null, 2)}</pre>
     </div>
-    <div class="ph-status">
-      <span>Docker:</span>
-      <span class:ok={capabilities.dockerRunning} class:warn={!capabilities.dockerRunning}>
-        {capabilities.dockerRunning ? 'running' : 'stopped'}
-      </span>
+
+    {#if debugServicesError}
+      <div class="debug-section">
+        <div class="debug-label">ERROR al pedir /api/services:</div>
+        <pre class="debug-block err">{debugServicesError}</pre>
+      </div>
+    {:else if debugServicesRaw}
+      <div class="debug-section">
+        <div class="debug-label">
+          Top-level keys de la respuesta:
+          <span class="debug-meta">{Object.keys(debugServicesRaw).join(', ')}</span>
+        </div>
+      </div>
+
+      {#if findDockerCandidate(debugServicesRaw)}
+        <div class="debug-section">
+          <div class="debug-label">Candidatos relacionados con Docker:</div>
+          <pre class="debug-block">{JSON.stringify(findDockerCandidate(debugServicesRaw), null, 2)}</pre>
+        </div>
+      {/if}
+
+      <details class="debug-section">
+        <summary>Respuesta cruda completa (clic para expandir)</summary>
+        <pre class="debug-block raw">{JSON.stringify(debugServicesRaw, null, 2)}</pre>
+      </details>
+    {:else}
+      <div class="debug-section">
+        <div class="debug-label">Cargando /api/services…</div>
+      </div>
+    {/if}
+
+    <div class="debug-footer">
+      Copia el contenido relevante al chat para que Claude lo analice.
     </div>
   </div>
 {/if}
@@ -202,4 +250,75 @@
   }
   .ph-status .ok { color: var(--signal); }
   .ph-status .warn { color: var(--warn); }
+
+  /* ═══ DEBUG TEMPORAL ═══ */
+  .debug-pane {
+    height: 100%;
+    overflow-y: auto;
+    padding: var(--sp-4) var(--sp-5);
+    background: var(--panel-elev);
+    color: var(--ink-dim);
+    font-family: var(--font-mono);
+    font-size: var(--fs-11);
+    line-height: 1.55;
+  }
+  .debug-head {
+    color: var(--warn);
+    font-weight: 600;
+    margin-bottom: var(--sp-3);
+    padding-bottom: var(--sp-2);
+    border-bottom: 1px solid var(--warn-border);
+    letter-spacing: 0.5px;
+  }
+  .debug-section {
+    margin-bottom: var(--sp-4);
+  }
+  .debug-label {
+    color: var(--ink);
+    font-weight: 500;
+    margin-bottom: var(--sp-2);
+  }
+  .debug-meta {
+    color: var(--info);
+    font-weight: 400;
+    margin-left: var(--sp-2);
+  }
+  .debug-block {
+    background: var(--canvas);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: var(--sp-3);
+    overflow-x: auto;
+    color: var(--ink-dim);
+    font-size: var(--fs-11);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 400px;
+    overflow-y: auto;
+  }
+  .debug-block.err {
+    border-color: var(--crit-border);
+    background: var(--crit-dim);
+    color: var(--ink);
+  }
+  .debug-block.raw {
+    max-height: 600px;
+  }
+  details summary {
+    cursor: pointer;
+    color: var(--info);
+    user-select: none;
+    margin-bottom: var(--sp-2);
+  }
+  details summary:hover {
+    color: var(--ink);
+  }
+  .debug-footer {
+    margin-top: var(--sp-4);
+    padding-top: var(--sp-3);
+    border-top: 1px solid var(--line);
+    color: var(--ink-mute);
+    font-size: var(--fs-10);
+    font-style: italic;
+  }
 </style>
