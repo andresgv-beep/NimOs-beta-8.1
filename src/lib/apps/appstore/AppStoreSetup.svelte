@@ -31,16 +31,11 @@
    *   - installError: string · mensaje si install failed
    */
 
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount } from 'svelte';
   import { openWindow } from '$lib/stores/windows.js';
-  import {
-    getCapabilities,
-    installDockerEngine,
-    waitForOperation,
-  } from './api.js';
+  import { getCapabilities, installDockerEngine } from './api.js';
 
   /** @typedef {import('./types').AppStoreCapabilities} AppStoreCapabilities */
-  /** @typedef {import('./types').Operation} Operation */
   /** @typedef {{ name: string, fsType?: string, layout?: string, freeBytes?: number }} PoolSummary */
 
   /** @type {AppStoreCapabilities | null} */
@@ -54,22 +49,12 @@
   let pools = [];
   let selectedPool = '';
   let installing = false;
-  /** @type {Operation | null} */
-  let currentOp = null;
   let installError = '';
   let retryLoading = false;
-
-  // Para poder cancelar el polling si el componente se desmonta antes de tiempo
-  /** @type {AbortController | null} */
-  let opAbort = null;
 
   // ── Lifecycle ──────────────────────────────────────────────────────
   onMount(() => {
     applyCapabilities(capabilities);
-  });
-
-  onDestroy(() => {
-    if (opAbort) opAbort.abort();
   });
 
   // ── Capabilities → modo de vista ───────────────────────────────────
@@ -161,39 +146,33 @@
 
   /**
    * "Sin Docker" · Lanza el install de Docker engine en el pool elegido.
-   * DIAGNÓSTICO TEMPORAL · modo sync para probar si el backend responde.
+   *
+   * Síncrono · el backend tarda 3-7 minutos. El componente muestra una
+   * barra de progreso indeterminada (estética) mientras espera. Sin
+   * polling porque no hay operation tracking para este install.
+   *
+   * Si el fetch falla por red/timeout, mostramos error y permitimos
+   * reintentar. Si el navegador o proxy corta la conexión pero el
+   * backend completa de todas formas, al recargar AppStore las
+   * capabilities reflejarán que Docker está OK.
    */
   async function handleInstallDocker() {
     if (!selectedPool) return;
     installing = true;
     installError = '';
-    currentOp = null;
     viewMode = 'installing';
 
-    // En modo sync no hay polling · solo esperar la respuesta del POST.
-    const startTime = Date.now();
-    currentOp = { status: 'running', progress: 5, message: 'Llamando al backend (modo sync · puede tardar varios minutos)…' };
-
     try {
-      const res = await installDockerEngine({ pool: selectedPool });
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      // Si el backend respondió OK · install completado en sync
-      currentOp = {
-        status: 'succeeded',
-        progress: 100,
-        message: `Instalación completada en ${elapsed}s. Respuesta: ${JSON.stringify(res)}`,
-      };
+      await installDockerEngine({ pool: selectedPool });
+      // Backend confirmó install OK · pequeña pausa antes de salir a capabilities
       setTimeout(() => {
         onReady();
-      }, 1500);
+      }, 600);
     } catch (err) {
-      if (err?.name === 'AbortError') return;
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      const parts = [`(tras ${elapsed}s)`];
+      const parts = [];
       parts.push(err?.message || String(err));
       if (err?.code) parts.push(`code: ${err.code}`);
       if (err?.status) parts.push(`status: ${err.status}`);
-      if (err?.details) parts.push(`details: ${JSON.stringify(err.details)}`);
       installError = parts.join(' · ');
       console.error('[appstore/setup] install failed:', err);
       installing = false;
@@ -339,10 +318,9 @@
       </div>
 
     {:else if viewMode === 'installing'}
-      <!-- ═══ Instalando · progress en vivo ═══ -->
+      <!-- ═══ Instalando · sin progreso numérico (sync install) ═══ -->
       <div class="card card-wide">
         <div class="card-icon icon-info">
-          <!-- Mismo icono que en no-docker · contexto continuo -->
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
             <rect x="4" y="8" width="16" height="10" rx="2" />
@@ -356,27 +334,24 @@
         {#if installError}
           <h1 class="title-error">La instalación falló</h1>
           <div class="error-box">{installError}</div>
-          <button class="btn btn-secondary" on:click={handleRetryAfterError}>
+          <button class="btn btn-secondary" on:click={() => { installError = ''; viewMode = 'no-docker'; }}>
             Volver
           </button>
         {:else}
           <h1>Instalando Docker Engine</h1>
           <p class="install-msg">
-            {currentOp?.message || 'Preparando…'}
+            Descargando e instalando · puede tardar varios minutos.
           </p>
 
-          <div class="progress-track">
-            <div
-              class="progress-fill"
-              style="width: {currentOp?.progress || 0}%"
-            ></div>
-          </div>
-          <div class="progress-label">
-            {currentOp?.progress || 0}%
+          <!-- Barra con stripes animadas · indeterminada (no hay % real) -->
+          <div class="install-bar-wrap">
+            <div class="install-bar">
+              <div class="install-bar-fill"></div>
+            </div>
           </div>
 
           <p class="hint">
-            Puede tardar varios minutos. No cierres esta ventana.
+            No cierres esta ventana. Al terminar, AppStore continuará solo.
           </p>
         {/if}
       </div>
@@ -640,29 +615,40 @@
     height: 11px;
   }
 
-  /* ═══ Progress bar ═══ */
+  /* ═══ Install · barra indeterminada ═══ */
   .install-msg {
     color: var(--ink) !important;
     min-height: 1.2em;
   }
-  .progress-track {
+  .install-bar-wrap {
     width: 100%;
     max-width: 380px;
+    padding: 0 var(--sp-1);
+  }
+  .install-bar {
     height: 6px;
     background: var(--panel-deep);
     border-radius: 3px;
     overflow: hidden;
     border: 1px solid var(--line);
+    position: relative;
   }
-  .progress-fill {
-    height: 100%;
-    background: var(--signal);
-    transition: width 0.4s ease-out;
+  .install-bar-fill {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 30%;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      var(--signal) 50%,
+      transparent 100%
+    );
+    animation: indeterminate 1.6s ease-in-out infinite;
   }
-  .progress-label {
-    font-size: var(--fs-11);
-    color: var(--ink-mute);
-    font-variant-numeric: tabular-nums;
+  @keyframes indeterminate {
+    0%   { left: -30%; }
+    100% { left: 100%; }
   }
 
   /* ═══ Error box ═══ */

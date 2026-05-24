@@ -229,12 +229,28 @@ export async function getInstalledApps() {
  * @returns {Promise<Object>}  Sync: { ok, path, dockerAvailable }
  *                              Async: { operationId, pollUrl, status, type }
  */
-export async function installDockerEngine(request, { async: asyncMode = false } = {}) {
-  // DIAGNÓSTICO TEMPORAL · forzar sync ignorando el flag · si el POST tarda
-  // mucho (procesa la instalación de verdad), confirma que el backend NO
-  // tiene Batch 3 aplicado al binario corriendo.
-  const url = '/api/docker/install';
-  const res = await fetch(url, {
+/**
+ * Instala Docker engine en el pool indicado.
+ *
+ * SÍNCRONO POR DISEÑO · esta operación se ejecuta UNA SOLA VEZ por NAS
+ * (cuando se prepara el sistema para apps Docker). Mantener infraestructura
+ * async para algo que sucede una vez en la vida del sistema sería
+ * over-engineering. El backend procesa la instalación en ~3-7 minutos
+ * (apt install, modprobe, daemon.json, share creation, registro NimHealth)
+ * y devuelve cuando completa.
+ *
+ * Si la conexión HTTP cae durante el proceso (proxy timeout, navegador
+ * cerrado), el backend SIGUE trabajando. Al recargar AppStore, capabilities
+ * reportará dockerInstalled:true y el flujo continúa normal.
+ *
+ * Para operaciones que SÍ se repiten (docker pull de imagen al instalar app
+ * del catálogo), ver pullImage() que sí usa el patrón async.
+ *
+ * @param {InstallEngineRequest} request
+ * @returns {Promise<Object>}  { ok, path, dockerAvailable }
+ */
+export async function installDockerEngine(request) {
+  const res = await fetch('/api/docker/install', {
     method: 'POST',
     headers: jsonHdrs(),
     body: JSON.stringify(request),
