@@ -38,7 +38,9 @@ CREATE TABLE IF NOT EXISTS docker_apps (
 );
 
 CREATE INDEX IF NOT EXISTS idx_docker_apps_installed_by ON docker_apps(installed_by);
-CREATE INDEX IF NOT EXISTS idx_docker_apps_deleting     ON docker_apps(deleting);
+-- idx_docker_apps_deleting se crea en apps_schema.go::initAppsSchema TRAS el
+-- ALTER TABLE que añade la columna. No puede ir aquí porque en upgrades
+-- desde Beta 8 pre-Batch-2 la columna aún no existe cuando se ejecuta este SQL.
 
 -- ─── Native apps ──────────────────────────────────────────────────────
 -- Apps nativas Linux instaladas (apt packages, systemd services).
