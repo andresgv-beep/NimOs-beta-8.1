@@ -202,14 +202,34 @@
   }
 
   function statusLedVariant(status) {
+    // Vocabulario oficial Fase 3 (6 estados):
+    // running, stopped, starting, stopping, error, unknown
     switch (status) {
       case 'running':  return 'ok';
-      case 'error':
-      case 'failed':   return 'crit';
+      case 'error':    return 'crit';
+      case 'failed':   return 'crit';  // legacy · compatibilidad transición
       case 'stopped':  return 'off';
       case 'starting':
       case 'stopping': return 'warn';
+      case 'unknown':  return 'off';
       default:         return 'off';
+    }
+  }
+
+  // Reason codes (Fase 4) · enum cerrado de 9 valores del backend.
+  // Se traduce a texto humano para mostrar al usuario en estados ambiguos.
+  function reasonCodeText(code) {
+    switch (code) {
+      case 'initializing':       return 'Inicializando NimHealth';
+      case 'boot_grace_period':  return 'Sistema arrancando';
+      case 'observer_timeout':   return 'Docker no responde · reintentando';
+      case 'docker_unavailable': return 'Docker no disponible';
+      case 'db_timeout':         return 'Base de datos lenta · reintentando';
+      case 'paused':             return 'Pausado por el usuario';
+      case 'degraded_children':  return 'Hay contenedores con problemas';
+      case 'stale':              return 'Datos antiguos · observer atascado';
+      case 'not_yet_observed':   return 'Pendiente de observación';
+      default:                   return code || '';
     }
   }
 
@@ -239,7 +259,7 @@
     while (!$token && attempts < 10) { await new Promise(r => setTimeout(r, 200)); attempts++; }
     await loadServices();
     await loadMetrics();
-    pollInterval = setInterval(() => { loadServices(); loadMetrics(); }, 5000);
+    pollInterval = setInterval(() => { loadServices(); loadMetrics(); }, 10000);
   });
 
   onDestroy(() => {
@@ -399,9 +419,12 @@
                 {/if}
               </div>
 
-              <div class="svc-state">
+              <div class="svc-state" title={svc.reasonCode ? reasonCodeText(svc.reasonCode) : ''}>
                 <LED size={6} variant={statusLedVariant(svc.status)} />
                 <span>{svc.status}</span>
+                {#if svc.reasonCode}
+                  <span class="reason-dot" aria-label={reasonCodeText(svc.reasonCode)}>·</span>
+                {/if}
               </div>
 
               <div
@@ -525,6 +548,9 @@
           <div class="info-row"><span class="k">path</span>  <span class="v path">{selectedService.path || '—'}</span></div>
           <div class="info-row"><span class="k">owner</span> <span class="v">{selectedService.owner || 'system'}</span></div>
           <div class="info-row"><span class="k">health</span><span class="v">{selectedService.health || 'unknown'}</span></div>
+          {#if selectedService.reasonCode}
+            <div class="info-row"><span class="k">motivo</span><span class="v tc-dim">{reasonCodeText(selectedService.reasonCode)}</span></div>
+          {/if}
           {#if selectedService.status === 'running'}
             <div class="info-row"><span class="k">cpu</span> <span class="v">{(selectedService.cpuPercent || 0).toFixed(1)}%</span></div>
             <div class="info-row"><span class="k">mem</span> <span class="v">{fmtBytes(selectedService.memoryUsage || 0)}</span></div>
@@ -681,6 +707,12 @@
     gap: 8px;
     color: var(--fg-dim);
     font-size: 10px;
+  }
+  .reason-dot {
+    color: var(--accent);
+    font-weight: bold;
+    cursor: help;
+    user-select: none;
   }
 
   .svc-num {
