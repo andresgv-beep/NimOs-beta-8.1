@@ -434,16 +434,36 @@
     {
       label: 'Volúmenes',
       items: [
-        { id: 'overview',  label: 'Resumen',    keyHint: '1', badge: pools.length },
-        { id: 'disks',     label: 'Discos',     keyHint: '2', badge: totalDisksAssigned + totalDisksFree },
-        { id: 'snapshots', label: 'Snapshots',  keyHint: '3' },
+        {
+          id: 'overview',
+          label: 'Resumen',
+          icon: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="3" rx="1"/><rect x="2" y="6.5" width="12" height="3" rx="1"/><rect x="2" y="10" width="12" height="3" rx="1"/></svg>`,
+        },
+        {
+          id: 'disks',
+          label: 'Discos',
+          icon: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="8" cy="4" rx="5" ry="1.5"/><path d="M3 4v8c0 0.8 2.2 1.5 5 1.5s5-0.7 5-1.5V4"/></svg>`,
+        },
+        {
+          id: 'snapshots',
+          label: 'Snapshots',
+          icon: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 4v4l2.5 1.5"/></svg>`,
+        },
       ],
     },
     {
       label: 'Herramientas',
       items: [
-        { id: 'scrub', label: 'Scrub', keyHint: 'S' },
-        { id: 'smart', label: 'SMART', keyHint: 'M' },
+        {
+          id: 'scrub',
+          label: 'Scrub',
+          icon: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8a5.5 5.5 0 0 1 9.5-3.8"/><path d="M13.5 8a5.5 5.5 0 0 1-9.5 3.8"/></svg>`,
+        },
+        {
+          id: 'smart',
+          label: 'SMART',
+          icon: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9l3-1 1.5 3 2-6 1.5 4 2-1h2"/></svg>`,
+        },
       ],
     },
   ]}
