@@ -151,15 +151,20 @@
 /**
  * Body para POST /api/docker/stack (deploy de app desde catálogo).
  *
+ * IMPORTANTE: el backend acepta `external: bool`, NO `openMode: string`.
+ * Internamente convierte a openMode al guardar en BD. El cliente api.js
+ * acepta ambos por compatibilidad pero `external` es lo canónico.
+ *
  * @typedef {Object} InstallStackRequest
  * @property {string} id                            App ID
  * @property {string} name                          Display name (registrado en BD)
  * @property {string} compose                       docker-compose.yml como string
- * @property {Object<string,string>} [env]          Variables de entorno
+ * @property {Object<string,string>} [env]          Variables de entorno (sobrescriben CONFIG_PATH y HOST_IP auto-inyectadas)
  * @property {string} [icon]                        URL del icono
  * @property {string} [color]                       Hex color
  * @property {number} [port]                        Puerto principal (legacy compat · canonical es ports[])
- * @property {string} [openMode]                    "internal" | "external"
+ * @property {boolean} [external]                   true → openMode="external" en BD
+ * @property {string} [openMode]                    Alias legacy · se traduce a external internamente
  */
 
 /**
