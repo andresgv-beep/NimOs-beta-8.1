@@ -97,6 +97,10 @@
       // El backend ejecuta `docker compose up -d`, que hace pull automático
       // si la imagen no es local. Tarda 30s-5min según tamaño de la imagen
       // y velocidad de red.
+      //
+      // Pasamos view.catalog.env si existe · el backend lo mergea encima
+      // de CONFIG_PATH/HOST_IP/TZ auto-inyectadas y expande referencias
+      // ${VAR} entre los values antes de escribir el .env del stack.
       await installApp({
         id: view.id,
         name: view.name,
@@ -105,6 +109,7 @@
         color: view.color,
         port: view.catalog.port,
         external: view.catalog.openMode === 'external',
+        env: view.catalog.env,
       });
 
       // ── Step 2 · pausa visual del registro NimHealth ──
