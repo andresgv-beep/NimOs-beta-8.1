@@ -1,42 +1,36 @@
 <script>
   /**
-   * InstallFlow · Pantalla del proceso de instalación de una app del catálogo
-   * ───────────────────────────────────────────────────────────────────────
-   * Cubre el patrón pull-then-deploy diseñado en Fase 1:
+   * InstallFlow · Proceso de instalación de una app del catálogo
+   * ─────────────────────────────────────────────────────────────
+   * Patrón SÍNCRONO simplificado (decisión tras Fase 5 hotfix):
    *
-   *   1. Pull async (operación larga · 10s-2min · imagen 300MB-2GB)
-   *      · Usa /api/docker/pull/:image?async=true
-   *      · Polling cada 1s con waitForOperation()
-   *      · Reporta progreso visible al user
+   *   1. Desplegar contenedor (sync · 30s-5min)
+   *      · Una sola llamada a /api/docker/stack
+   *      · Backend hace `docker compose up -d`, lo cual incluye `docker pull`
+   *        automático si la imagen no es local
+   *      · Sin pull explícito previo · evita dependencia de ?async=true
+   *      · Barra indeterminada animada (no podemos reportar % real desde sync)
    *
-   *   2. Stack deploy sync (operación corta · 2-5s · imagen ya local)
-   *      · Usa /api/docker/stack
-   *      · Bloquea esperando respuesta
-   *      · Backend ya tiene CONFIG_PATH y HOST_IP auto-inyectados (APP-064)
+   *   2. Registrar en NimHealth (~150ms)
+   *      · El backend ya hace ForceDockerCacheRefresh() en el handler
+   *      · Aquí solo damos pausa visual para que el user vea el último LED
    *
-   *   3. Registro NimHealth automático (sync · ~150ms)
-   *      · ForceDockerCacheRefresh() invocado en el handler del backend
-   *
-   * Steps visualizados como LEDs done/active/pending:
-   *   ● Descargar imagen   (progress real del pull async)
-   *   ● Desplegar stack    (active mientras dura el stack deploy)
-   *   ● Registrar en NimHealth (último step · al success final)
+   * Si el browser corta la conexión durante el deploy (timeout proxy con
+   * imágenes muy grandes), el backend SIGUE trabajando · al volver al detalle
+   * la app aparecerá como instalada cuando capabilities/services se refresquen.
    *
    * Props:
-   *   - view: AppView   · app que se está instalando
-   *   - onDone: () => void   · invocado al success (parent navega a detalle/catálogo)
-   *   - onCancel: () => void · invocado si user cancela (vuelve al detalle)
+   *   - view: AppView · app que se está instalando
+   *
+   * Eventos:
+   *   - done · install completado con éxito
+   *   - cancel · user pulsó cancelar (no aborta backend, solo cierra UI)
    */
 
-  import { onMount, onDestroy, createEventDispatcher } from 'svelte';
-  import {
-    pullImage,
-    waitForOperation,
-    installApp,
-  } from './api.js';
+  import { onMount, createEventDispatcher } from 'svelte';
+  import { installApp } from './api.js';
 
   /** @typedef {import('./types').AppView} AppView */
-  /** @typedef {import('./types').Operation} Operation */
 
   /** @type {AppView} */
   export let view;
@@ -44,31 +38,20 @@
   const dispatch = createEventDispatcher();
 
   // ── Estado del flow ────────────────────────────────────────────────
-  /** Step actual · 'pull' | 'deploy' | 'register' | 'done' */
-  let phase = 'pull';
-
-  /** @type {Operation | null} */
-  let pullOp = null;
+  /** 'deploy' | 'register' | 'done' */
+  let phase = 'deploy';
   let installError = '';
 
-  // AbortController para cancelar el polling si el componente se desmonta.
-  /** @type {AbortController | null} */
-  let pullAbort = null;
-
   // ── Steps visuales ─────────────────────────────────────────────────
-  // Estado derivado de `phase` y `pullOp.progress`.
-  $: steps = computeSteps(phase, pullOp);
+  $: steps = computeSteps(phase);
 
   /**
    * @param {string} ph
-   * @param {Operation | null} op
-   * @returns {Array<{id: string, label: string, state: 'done'|'active'|'pending', detail?: string}>}
+   * @returns {Array<{id: string, label: string, state: 'done'|'active'|'pending', detail?: string, showBar?: boolean}>}
    */
-  function computeSteps(ph, op) {
-    const PHASES = ['pull', 'deploy', 'register', 'done'];
+  function computeSteps(ph) {
+    const PHASES = ['deploy', 'register', 'done'];
     const idx = PHASES.indexOf(ph);
-
-    /** @param {string} stepPhase */
     const stateOf = (stepPhase) => {
       const stepIdx = PHASES.indexOf(stepPhase);
       if (idx > stepIdx) return 'done';
@@ -76,24 +59,13 @@
       return 'pending';
     };
 
-    const pullDetail = op && ph === 'pull'
-      ? (op.message || `Descargando · ${op.progress}%`)
-      : ph === 'pull'
-        ? 'Conectando con Docker Hub…'
-        : '';
-
     return [
       {
-        id: 'pull',
-        label: 'Descargar imagen',
-        state: stateOf('pull'),
-        detail: pullDetail,
-      },
-      {
         id: 'deploy',
-        label: 'Desplegar contenedor',
+        label: 'Descargar e instalar',
         state: stateOf('deploy'),
-        detail: ph === 'deploy' ? 'Creando stack docker-compose…' : '',
+        detail: ph === 'deploy' ? 'Puede tardar varios minutos según el tamaño de la imagen…' : '',
+        showBar: ph === 'deploy',
       },
       {
         id: 'register',
@@ -107,48 +79,24 @@
   // ── Lifecycle ──────────────────────────────────────────────────────
   onMount(start);
 
-  onDestroy(() => {
-    if (pullAbort) pullAbort.abort();
-  });
-
   async function start() {
     if (!view?.catalog) {
       installError = 'Datos del catálogo no disponibles';
       return;
     }
-    const image = view.catalog.image;
-    if (!image) {
-      installError = 'La app no especifica imagen Docker';
+    if (!view.catalog.compose) {
+      installError = 'La app no especifica compose YAML';
       return;
     }
 
-    pullAbort = new AbortController();
-    phase = 'pull';
-    pullOp = null;
+    phase = 'deploy';
     installError = '';
 
     try {
-      // ── Step 1 · pull async ──
-      const pullRes = await pullImage(image, { async: true });
-      if (!pullRes?.operationId) {
-        throw new Error('Backend no devolvió operationId en pull');
-      }
-      const finalPull = await waitForOperation(
-        pullRes.operationId,
-        (op) => {
-          pullOp = op;
-        },
-        { signal: pullAbort.signal, intervalMs: 1000 }
-      );
-      pullOp = finalPull;
-      if (finalPull.status !== 'succeeded') {
-        throw new Error(
-          finalPull.error || `Pull falló · status=${finalPull.status}`
-        );
-      }
-
-      // ── Step 2 · stack deploy sync ──
-      phase = 'deploy';
+      // ── Step 1 · stack deploy sync ──
+      // El backend ejecuta `docker compose up -d`, que hace pull automático
+      // si la imagen no es local. Tarda 30s-5min según tamaño de la imagen
+      // y velocidad de red.
       await installApp({
         id: view.id,
         name: view.name,
@@ -159,21 +107,17 @@
         external: view.catalog.openMode === 'external',
       });
 
-      // ── Step 3 · registro NimHealth ──
-      // El backend ya hace ForceDockerCacheRefresh() en el handler. Aquí
-      // solo mostramos visualmente que ese paso ocurrió. Pequeña pausa
-      // para que el user vea el LED verde antes de cerrar.
+      // ── Step 2 · pausa visual del registro NimHealth ──
+      // El backend ya hizo ForceDockerCacheRefresh en el handler · esto es
+      // solo para que el user vea el último LED encenderse antes de salir.
       phase = 'register';
-      await new Promise((r) => setTimeout(r, 400));
+      await new Promise((r) => setTimeout(r, 600));
 
       phase = 'done';
-      // Notificar al padre al cabo de un instante (para que vea el último
-      // LED encenderse antes de cambiar de vista).
       setTimeout(() => {
         dispatch('done');
       }, 800);
     } catch (err) {
-      if (err?.name === 'AbortError') return;
       const parts = [];
       parts.push(err?.message || String(err));
       if (err?.code) parts.push(`code: ${err.code}`);
@@ -184,20 +128,18 @@
   }
 
   function handleCancel() {
-    if (pullAbort) pullAbort.abort();
     dispatch('cancel');
   }
 
   function handleRetry() {
     installError = '';
-    phase = 'pull';
-    pullOp = null;
+    phase = 'deploy';
     start();
   }
 </script>
 
 <div class="install-flow">
-  <!-- Hero compacto (icono + nombre) -->
+  <!-- Hero compacto -->
   <div class="hero">
     {#if view.icon}
       <img class="hero-icon" src={view.icon} alt={view.name} />
@@ -221,15 +163,12 @@
   </div>
 
   {#if installError}
-    <div class="error-box">
-      {installError}
-    </div>
+    <div class="error-box">{installError}</div>
     <div class="actions">
       <button class="btn btn-primary" on:click={handleRetry}>Reintentar</button>
       <button class="btn btn-secondary" on:click={handleCancel}>Volver</button>
     </div>
   {:else}
-    <!-- Steps con LEDs -->
     <ol class="steps">
       {#each steps as step (step.id)}
         <li class="step" class:done={step.state === 'done'} class:active={step.state === 'active'} class:pending={step.state === 'pending'}>
@@ -247,10 +186,11 @@
             {#if step.detail}
               <div class="step-detail">{step.detail}</div>
             {/if}
-            {#if step.id === 'pull' && step.state === 'active' && pullOp}
-              <!-- Barra de progreso real del pull async -->
-              <div class="progress-bar">
-                <div class="progress-fill" style="width: {pullOp.progress || 0}%"></div>
+            {#if step.showBar && step.state === 'active'}
+              <!-- Barra indeterminada · sin % real porque el sync deploy
+                   no reporta progreso. La animación honesta indica "trabajando". -->
+              <div class="install-bar">
+                <div class="install-bar-fill"></div>
               </div>
             {/if}
           </div>
@@ -263,7 +203,7 @@
         <button class="btn btn-secondary" on:click={handleCancel}>Cancelar</button>
       </div>
       <p class="hint">
-        Puedes cerrar esta ventana · la instalación continúa en background.
+        No cierres esta ventana hasta que termine.
       </p>
     {/if}
   {/if}
@@ -273,7 +213,7 @@
   .install-flow {
     height: 100%;
     overflow-y: auto;
-    padding: var(--sp-5) var(--sp-5) var(--sp-5);
+    padding: var(--sp-5) var(--sp-5);
     display: flex;
     flex-direction: column;
     gap: var(--sp-4);
@@ -340,7 +280,6 @@
     position: relative;
     padding-left: 4px;
   }
-  /* Línea vertical entre LEDs */
   .step:not(:last-child)::before {
     content: '';
     position: absolute;
@@ -369,10 +308,7 @@
     color: var(--canvas);
     transition: border-color 0.2s, background 0.2s;
   }
-  .step-led svg {
-    width: 14px;
-    height: 14px;
-  }
+  .step-led svg { width: 14px; height: 14px; }
   .led-pulse {
     width: 8px;
     height: 8px;
@@ -384,7 +320,6 @@
     0%, 100% { opacity: 0.5; transform: scale(0.85); }
     50%      { opacity: 1;   transform: scale(1.15); }
   }
-
   .step.done .step-led {
     border-color: var(--signal);
     background: var(--signal);
@@ -405,9 +340,7 @@
     color: var(--ink);
     line-height: 1.3;
   }
-  .step.pending .step-label {
-    color: var(--ink-mute);
-  }
+  .step.pending .step-label { color: var(--ink-mute); }
   .step-detail {
     font-size: var(--fs-11);
     color: var(--ink-mute);
@@ -415,19 +348,33 @@
     font-family: var(--font-mono);
   }
 
-  /* Barra de progreso del pull async */
-  .progress-bar {
+  /* Barra indeterminada · gradient deslizándose */
+  .install-bar {
     height: 4px;
     background: var(--panel-deep);
     border-radius: 2px;
     overflow: hidden;
     margin-top: 8px;
     max-width: 400px;
+    border: 1px solid var(--line);
+    position: relative;
   }
-  .progress-fill {
-    height: 100%;
-    background: var(--info);
-    transition: width 0.4s ease-out;
+  .install-bar-fill {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 30%;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      var(--info) 50%,
+      transparent 100%
+    );
+    animation: indeterminate 1.6s ease-in-out infinite;
+  }
+  @keyframes indeterminate {
+    0%   { left: -30%; }
+    100% { left: 100%; }
   }
 
   /* ═══ Error ═══ */
@@ -443,7 +390,7 @@
     word-break: break-word;
   }
 
-  /* ═══ Actions + hint ═══ */
+  /* ═══ Actions ═══ */
   .actions {
     display: flex;
     gap: var(--sp-2);
