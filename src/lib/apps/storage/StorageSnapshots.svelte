@@ -1,104 +1,205 @@
 <script>
   /**
-   * StorageSnapshots · Vista de snapshots por pool.
-   * ────────────────────────────────────────────────
-   * Lista snapshots de pools (actualmente sólo ZFS — código vestigial: el
-   * proyecto es BTRFS-only desde mayo 2026 y el soporte BTRFS de snapshots
-   * está marcado como "Fase B"). Sin acciones activas hoy: crear/rollback/
-   * eliminar están deshabilitados.
+   * StorageSnapshots · Vista de snapshots por pool BTRFS.
+   * ──────────────────────────────────────────────────────
+   * Beta 8.1: BTRFS snapshots aún NO están implementados en el backend
+   * (storage_btrfs_features.go marca create/list/rollback como "pending Beta 9").
+   *
+   * Esta vista lista los pools BTRFS managed y muestra un mensaje claro
+   * explicando que la gestión está pendiente. Cuando Beta 9 implemente
+   * `btrfs subvolume snapshot/list/rollback`, el frontend ya está listo
+   * para conectar — solo hay que descomentar acciones.
    *
    * Props:
    *   · pools     — array de pools del backend
-   *   · snapshots — { [poolName]: [snapshot, ...] } cargados lazily
+   *   · snapshots — { [poolName]: [snapshot, ...] } cargados lazily (no usado todavía)
    *
    * Eventos:
-   *   · load — { detail: { poolName } } — solicitar carga de snapshots
+   *   · load — { detail: { poolName } } — solicitar carga (no usado todavía)
    */
   import { createEventDispatcher } from 'svelte';
-  import { SectionHead, BevelButton, IconButton, EmptyState } from '$lib/ui';
-  import { fmtBytes, fmtDate } from './formatters.js';
-  import './views-styles.css';
+  import { SectionHead, EmptyState } from '$lib/ui';
 
   export let pools = [];
+  // eslint-disable-next-line no-unused-vars
   export let snapshots = {};
 
+  // eslint-disable-next-line no-unused-vars
   const dispatch = createEventDispatcher();
 
-  $: zfsPools = pools.filter(p => p.type === 'zfs' || p.filesystem === 'zfs');
+  // Beta 8.1 es BTRFS-only. Anteriormente este filtro era `pool.type === 'zfs'`
+  // (código vestigial de Beta 7). Tras la eliminación de ZFS en mayo 2026 todos
+  // los pools son BTRFS, así que listamos todos.
+  $: btrfsPools = pools;
 </script>
 
 <div class="st-section">
   <SectionHead>Snapshots</SectionHead>
 
-  {#if pools.length === 0}
-    <EmptyState icon="◇" title="Sin pools configurados" hint="Crea o restaura un pool ZFS para gestionar snapshots" />
-  {:else}
-    {#each zfsPools as pool}
-      <div class="snap-block">
-        <div class="snap-block-head">
-          <div class="pool-head-icon sm">◆</div>
-          <span class="mono">{pool.name}</span>
-          {#if !snapshots[pool.name]}
-            <BevelButton size="sm" onClick={() => dispatch('load', { poolName: pool.name })}>Cargar</BevelButton>
-          {/if}
-          <div style="flex:1"></div>
-          <BevelButton variant="primary" size="sm" disabled>
-            + Crear snapshot <span class="tc-mute">(Fase B)</span>
-          </BevelButton>
-        </div>
-
-        {#if snapshots[pool.name]}
-          {#if snapshots[pool.name].length === 0}
-            <EmptyState icon="◌" title="Sin snapshots" hint={`No hay snapshots en "${pool.name}"`} />
-          {:else}
-            <div class="disk-table cols-4-snap">
-              <div class="disk-thead">
-                <div>Nombre</div>
-                <div>Usado</div>
-                <div>Creado</div>
-                <div>Acciones</div>
-              </div>
-              {#each snapshots[pool.name] as snap}
-                <div class="disk-row">
-                  <div class="disk-cell mono">{snap.name || snap}</div>
-                  <div class="disk-cell">{snap.used ? fmtBytes(snap.used) : '—'}</div>
-                  <div class="disk-cell">{fmtDate(snap.created)}</div>
-                  <div class="disk-cell">
-                    <IconButton size="sm" title="Rollback" disabled>↺</IconButton>
-                    <IconButton size="sm" variant="danger" title="Eliminar" disabled>×</IconButton>
-                  </div>
-                </div>
-              {/each}
-            </div>
-          {/if}
-        {/if}
+  <div class="beta9-notice">
+    <div class="b9-icon">⚙</div>
+    <div class="b9-text">
+      <div class="b9-title">Gestión de snapshots — pendiente Beta 9</div>
+      <div class="b9-desc">
+        BTRFS soporta snapshots nativamente vía <span class="mono">btrfs subvolume snapshot</span>,
+        pero la gestión desde NimOS está pendiente de implementarse en Beta 9.
+        Por ahora puedes crear snapshots manualmente desde la terminal del NAS.
       </div>
-    {/each}
+    </div>
+  </div>
 
-    {#if zfsPools.length === 0}
-      <EmptyState icon="!" title="Sin pools ZFS" hint="Los snapshots solo están disponibles en pools ZFS. Tus pools son BTRFS." />
-    {/if}
+  {#if pools.length === 0}
+    <EmptyState
+      icon="◇"
+      title="Sin pools configurados"
+      hint="Crea un pool BTRFS desde 'Resumen → + Nuevo volumen' para que aparezca aquí."
+    />
+  {:else}
+    <div class="pool-list">
+      {#each btrfsPools as pool}
+        <div class="pool-card">
+          <div class="pool-card-head">
+            <span class="diamond">◆</span>
+            <div class="pool-card-ident">
+              <div class="pool-card-name">{pool.name}</div>
+              <div class="pool-card-meta">
+                BTRFS · {pool.profile || 'single'} ·
+                {pool.devices?.length || 0} disco{pool.devices?.length === 1 ? '' : 's'}
+              </div>
+            </div>
+            <button class="btn-disabled" disabled title="Disponible en Beta 9">
+              + Snapshot
+            </button>
+          </div>
+
+          <div class="pool-card-body">
+            <EmptyState
+              icon="◌"
+              title="Sin snapshots"
+              hint="La gestión de snapshots desde la UI llegará en Beta 9. Mientras tanto, usa `btrfs subvolume snapshot` desde SSH."
+            />
+          </div>
+        </div>
+      {/each}
+    </div>
   {/if}
 </div>
 
 <style>
-  /* Los siguientes selectores son específicos de esta vista (no se usan en
-     otras), por eso van scoped aquí en vez de en views-styles.css. */
-  .snap-block {
+  .st-section {
+    padding: 0;
+  }
+
+  /* ─── Aviso superior · ámbar para indicar "no implementado todavía" ─── */
+  .beta9-notice {
     display: flex;
-    flex-direction: column;
-    gap: 8px;
+    align-items: flex-start;
+    gap: 12px;
+    background: rgba(251, 191, 36, 0.06);
+    border-left: 3px solid var(--warn);
+    border-radius: 4px;
+    padding: 12px 14px;
     margin-bottom: 16px;
   }
-
-  .snap-block-head {
+  .b9-icon {
+    font-size: 18px;
+    color: var(--warn);
+    line-height: 1;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  .b9-text {
     display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 8px 0;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .b9-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--warn);
+    font-family: var(--font-sans);
+  }
+  .b9-desc {
+    font-size: 11px;
+    color: var(--ink-dim);
+    line-height: 1.6;
+    font-family: var(--font-sans);
+  }
+  .b9-desc .mono {
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    background: var(--bg-inner);
+    padding: 1px 5px;
+    border-radius: 3px;
+    border: 1px solid var(--line);
   }
 
-  .pool-head-icon {
-    color: var(--accent);
+  /* ─── Lista de pools BTRFS ─── */
+  .pool-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .pool-card {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+
+  .pool-card-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .diamond {
+    color: var(--signal);
+    font-size: 14px;
+  }
+
+  .pool-card-ident {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .pool-card-name {
+    font-size: 13px;
+    color: var(--ink);
+    font-weight: 600;
+    font-family: var(--font-mono);
+    letter-spacing: 0.3px;
+  }
+  .pool-card-meta {
+    font-size: 10px;
+    color: var(--ink-mute);
+    font-family: var(--font-mono);
+    letter-spacing: 0.3px;
+  }
+
+  .pool-card-body {
+    padding: 20px 16px;
+  }
+
+  /* Botón "+ Snapshot" deshabilitado (placeholder Beta 9) */
+  .btn-disabled {
+    padding: 5px 12px;
+    border-radius: 5px;
+    border: 1px solid var(--line);
+    background: var(--bg-inner);
+    color: var(--ink-trace);
+    font-size: 10px;
+    font-weight: 500;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    cursor: not-allowed;
+    opacity: 0.6;
   }
 </style>
