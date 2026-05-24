@@ -2,21 +2,26 @@
   /**
    * AppStore · Entry point del módulo
    * ──────────────────────────────────
-   * Decide qué pantalla mostrar según las capabilities del sistema:
+   * Router de las cuatro pantallas del módulo:
    *
-   *   1. ¿No hay pool? → AppStoreSetup (mockup 1 "sin pool")
-   *   2. ¿No hay Docker? → AppStoreSetup (mockup 2 "sin docker")
-   *   3. ¿Todo OK? → AppStoreOverview (mockup 3 · catálogo grid)
-   *   4. Detalle de una app: Fase 4 (pendiente)
+   *   1. Sin pool        → AppStoreSetup (mockup 1)
+   *   2. Sin Docker      → AppStoreSetup (mockup 2)
+   *   3. Catálogo        → AppStoreOverview (mockup 3 · Fase 3 ✓)
+   *   4. Detalle de app  → AppStoreDetail (mockup 4 · Fase 4 ✓)
    *
-   * La lógica de decisión vive en api.js::getCapabilities() · esta vista
-   * es un router que reacciona al estado derivado.
+   * El estado de navegación dentro del módulo es muy simple:
+   *   - selectedAppId  · si null, muestra catálogo; si tiene valor, detalle.
+   *
+   * La transición catálogo ↔ detalle ocurre dentro de la misma ventana
+   * (modelo "una ventana por app" del desktop NimOS). El botón "Volver"
+   * del detalle limpia selectedAppId.
    */
 
   import { onMount } from 'svelte';
   import { getCapabilities } from './appstore/api.js';
   import AppStoreSetup from './appstore/AppStoreSetup.svelte';
   import AppStoreOverview from './appstore/AppStoreOverview.svelte';
+  import AppStoreDetail from './appstore/AppStoreDetail.svelte';
 
   /** @typedef {import('./appstore/types').AppStoreCapabilities} AppStoreCapabilities */
 
@@ -24,6 +29,9 @@
   let capabilities = null;
   let loading = true;
   let loadError = '';
+
+  /** ID de la app seleccionada · null = vista catálogo */
+  let selectedAppId = null;
 
   onMount(loadCapabilities);
 
@@ -40,23 +48,17 @@
     }
   }
 
-  /**
-   * Callback que AppStoreSetup invoca cuando termina · pedimos capabilities
-   * de nuevo para detectar el cambio (Docker recién instalado, etc.) y
-   * pasar al catálogo.
-   */
   async function handleSetupReady() {
     await loadCapabilities();
   }
 
-  /**
-   * Click en una card del catálogo · Fase 4 implementará vista detalle.
-   * Por ahora solo loggea para verificar que el evento llega.
-   *
-   * @param {CustomEvent<{appId: string}>} ev
-   */
+  /** @param {CustomEvent<{appId: string}>} ev */
   function handleSelectApp(ev) {
-    console.log('[appstore] select app · pendiente Fase 4 (detalle):', ev.detail.appId);
+    selectedAppId = ev.detail.appId;
+  }
+
+  function handleBackToCatalog() {
+    selectedAppId = null;
   }
 </script>
 
@@ -74,6 +76,9 @@
 {:else if !capabilities?.hasPool || !capabilities?.dockerInstalled}
   <!-- Setup · sin pool o sin Docker -->
   <AppStoreSetup {capabilities} onReady={handleSetupReady} />
+{:else if selectedAppId}
+  <!-- Detalle · Fase 4 ✓ -->
+  <AppStoreDetail appId={selectedAppId} on:back={handleBackToCatalog} />
 {:else}
   <!-- Catálogo · Fase 3 ✓ -->
   <AppStoreOverview on:select={handleSelectApp} />
@@ -106,7 +111,7 @@
   }
   .loading-text { letter-spacing: 0.5px; }
 
-  /* ═══ Error fatal · cuando getCapabilities falla del todo ═══ */
+  /* ═══ Error fatal ═══ */
   .appstore-error {
     height: 100%;
     display: flex;
