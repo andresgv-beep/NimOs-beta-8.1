@@ -133,9 +133,25 @@
   }
 
   async function handleInstallDone() {
-    // Tras instalar, recargamos para reflejar el nuevo estado y volvemos al detalle
+    // Tras instalar, NimHealth necesita unos instantes para que su observer
+    // detecte el nuevo container. ForceDockerCacheRefresh es async en el
+    // backend · damos un margen breve antes de recargar para que el primer
+    // intento ya vea la app como instalada.
+    //
+    // Si tras la primera recarga aún no aparece como instalada (race con el
+    // observer), reintentamos una vez más tras otro segundo. Suficiente para
+    // el 99% de los casos · más reintentos serían over-engineering.
     mode = 'detail';
+    await new Promise((r) => setTimeout(r, 600));
     await load();
+
+    // Si view.installed sigue siendo false después de la recarga, segundo
+    // intento. La app SÍ está instalada (el backend respondió OK) · solo
+    // NimHealth no la ve aún.
+    if (view && !view.installed) {
+      await new Promise((r) => setTimeout(r, 1000));
+      await load();
+    }
   }
 
   function handleInstallCancel() {

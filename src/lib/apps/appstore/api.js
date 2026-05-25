@@ -205,9 +205,23 @@ export async function getCapabilities() {
  *
  * @returns {Promise<InstalledApp[]>}
  */
+/**
+ * Devuelve los services registrados en NimHealth · usados por composeAppViews
+ * para detectar qué apps del catálogo están instaladas.
+ *
+ * SIN FILTRO: el shape del backend varía (services del sistema usan campos
+ * `appId/appName/owner/poolName`, runtime de Docker usa ServiceBase con
+ * campos `id/type/parent/name`). En lugar de depender de un campo específico
+ * que puede no existir en algún tipo, devolvemos TODO y dejamos que
+ * composeAppViews haga el cruce por `id`. Si el id no está en el catálogo
+ * del AppStore, no se mostrará como instalada · es el comportamiento correcto
+ * (los services del sistema como nfs/samba/ssh no aparecen en el catálogo).
+ *
+ * Esto evita falsos negativos cuando el backend devuelve un service Docker
+ * con shape distinto al esperado.
+ */
 export async function getInstalledApps() {
-  const services = await getServices();
-  return services.filter((s) => s?.type === 'docker-app');
+  return await getServices();
 }
 
 // ────────────────────────────────────────────────────────────────────────
