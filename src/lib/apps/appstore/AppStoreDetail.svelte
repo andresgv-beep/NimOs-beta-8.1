@@ -92,6 +92,8 @@
   let visibleShots = [1, 2, 3, 4, 5, 6];
   /** @type {Set<number>} */
   let failedShots = new Set();
+  /** @type {Set<number>} · solo las imágenes que se han cargado satisfactoriamente */
+  let loadedShots = new Set();
 
   // ── Lifecycle ──────────────────────────────────────────────────────
   onMount(load);
@@ -106,6 +108,7 @@
     copyFeedback = '';
     visibleShots = [1, 2, 3, 4, 5, 6];
     failedShots = new Set();
+    loadedShots = new Set();
 
     try {
       const [cat, installed] = await Promise.all([
@@ -247,8 +250,14 @@
     failedShots = failedShots; // forzar reactividad
   }
 
+  // Screenshots · marca un slot como cargado (para no mostrar antes de cargar)
+  function handleShotLoad(n) {
+    loadedShots.add(n);
+    loadedShots = loadedShots;
+  }
+
   // ¿Hay al menos un screenshot que ha cargado?
-  $: hasAnyScreenshot = visibleShots.some((n) => !failedShots.has(n));
+  $: hasAnyScreenshot = visibleShots.some((n) => loadedShots.has(n));
 </script>
 
 {#if loading}
@@ -346,19 +355,34 @@
       </section>
     {/if}
 
-    <!-- SCREENSHOTS -->
+    <!-- Preload silencioso · imágenes invisibles fuera del DOM visible para
+         disparar load/error sin parpadeo. Cuando una carga OK, se renderiza
+         en el carrusel visible de abajo. -->
+    <div class="shot-probes" aria-hidden="true">
+      {#each visibleShots as n (n)}
+        {#if !loadedShots.has(n) && !failedShots.has(n)}
+          <img
+            src="{screenshotBaseUrl}/{n}.png"
+            alt=""
+            on:load={() => handleShotLoad(n)}
+            on:error={() => handleShotError(n)}
+          />
+        {/if}
+      {/each}
+    </div>
+
+    <!-- SCREENSHOTS · carrusel horizontal con scroll snap -->
     {#if hasAnyScreenshot}
       <section class="section">
         <h2 class="section-title">Capturas</h2>
         <div class="screenshots">
           {#each visibleShots as n (n)}
-            {#if !failedShots.has(n)}
+            {#if loadedShots.has(n)}
               <div class="shot">
                 <img
                   src="{screenshotBaseUrl}/{n}.png"
                   alt="{view.name} captura {n}"
                   loading="lazy"
-                  on:error={() => handleShotError(n)}
                 />
               </div>
             {/if}
@@ -715,13 +739,45 @@
     padding: var(--sp-4);
   }
 
-  /* ═══ Screenshots ═══ */
+  /* ═══ Screenshots · carrusel horizontal con scroll snap ═══ */
+  .shot-probes {
+    position: absolute;
+    width: 0;
+    height: 0;
+    overflow: hidden;
+    pointer-events: none;
+    opacity: 0;
+  }
   .screenshots {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    display: flex;
     gap: var(--sp-3);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x mandatory;
+    scroll-behavior: smooth;
+    padding: 0 0 12px;
+    /* Permite "salir" del padding del scroll a izquierda/derecha al hacer scroll */
+    margin: 0 calc(var(--sp-5) * -1);
+    padding-left: var(--sp-5);
+    padding-right: var(--sp-5);
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-bright) transparent;
+  }
+  .screenshots::-webkit-scrollbar { height: 8px; }
+  .screenshots::-webkit-scrollbar-track {
+    background: transparent;
+    border-radius: 4px;
+  }
+  .screenshots::-webkit-scrollbar-thumb {
+    background: var(--line-bright);
+    border-radius: 4px;
+  }
+  .screenshots::-webkit-scrollbar-thumb:hover {
+    background: var(--ink-faint);
   }
   .shot {
+    flex: 0 0 auto;
+    width: 340px;
     aspect-ratio: 16 / 10;
     border-radius: var(--radius-md);
     overflow: hidden;
@@ -729,6 +785,7 @@
     border: 1px solid var(--line);
     cursor: zoom-in;
     transition: transform 0.15s, border-color 0.15s;
+    scroll-snap-align: start;
   }
   .shot:hover {
     transform: translateY(-2px);
@@ -739,6 +796,10 @@
     height: 100%;
     object-fit: cover;
     display: block;
+  }
+  /* Responsive · screenshots más pequeñas en móvil */
+  @media (max-width: 640px) {
+    .shot { width: 260px; }
   }
 
   /* ═══ Description ═══ */
