@@ -520,16 +520,15 @@
   </div>
 {/if}
 
-<!-- Confirm dialog uninstall -->
+<!-- Confirm dialog uninstall · botones simples sin teclear -->
 {#if view}
   <ConfirmDialog
     bind:open={confirmUninstallOpen}
     title="Desinstalar {view.name}"
-    message="Esta acción detendrá y eliminará el contenedor, los volúmenes asociados y la configuración guardada. Escribe el nombre de la app para confirmar."
-    confirmLabel="Desinstalar"
+    message="Esta acción detendrá y eliminará el contenedor, los volúmenes asociados y la configuración guardada."
+    confirmLabel="Desinstalar {view.name}"
     cancelLabel="Cancelar"
     variant="danger"
-    inputConfirm={view.id}
     processing={uninstallProcessing}
     on:confirm={handleUninstallConfirm}
     on:cancel={handleUninstallCancel}
