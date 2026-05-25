@@ -637,7 +637,7 @@
     align-items: center;
     gap: 5px;
     padding: 2px 9px;
-    background: var(--panel-deep);
+    background: var(--canvas);
     border: 1px solid var(--line);
     border-radius: 999px;
     font-size: var(--fs-10);
@@ -670,7 +670,7 @@
     align-items: center;
     gap: var(--sp-2);
     padding: 10px 14px;
-    background: var(--panel-deep);
+    background: var(--canvas);
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);
     color: var(--ink-dim);
@@ -709,7 +709,7 @@
 
   /* ═══ Install section (embedded) ═══ */
   .install-section {
-    background: var(--panel-deep);
+    background: var(--canvas);
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
     padding: var(--sp-4);
@@ -725,7 +725,7 @@
     aspect-ratio: 16 / 10;
     border-radius: var(--radius-md);
     overflow: hidden;
-    background: var(--panel-deep);
+    background: var(--canvas);
     border: 1px solid var(--line);
     cursor: zoom-in;
     transition: transform 0.15s, border-color 0.15s;
@@ -754,7 +754,7 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-    background: var(--panel-deep);
+    background: var(--canvas);
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
     padding: var(--sp-3);
@@ -772,7 +772,7 @@
   }
   .info-v {
     color: var(--ink);
-    background: var(--canvas);
+    background: var(--panel-deep);
     padding: 2px 8px;
     border-radius: 4px;
     font-family: var(--font-mono);
@@ -786,7 +786,7 @@
   }
   .service-chip {
     color: var(--ink-dim);
-    background: var(--canvas);
+    background: var(--panel-deep);
     padding: 2px 8px;
     border-radius: 4px;
     font-family: var(--font-mono);
@@ -795,7 +795,7 @@
 
   /* ═══ Credenciales ═══ */
   .creds-block {
-    background: var(--panel-deep);
+    background: var(--canvas);
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
     padding: var(--sp-3);
@@ -816,7 +816,7 @@
   }
   .cred-v {
     color: var(--ink);
-    background: var(--canvas);
+    background: var(--panel-deep);
     padding: 4px 10px;
     border-radius: 4px;
     font-family: var(--font-mono);
