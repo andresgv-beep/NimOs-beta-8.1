@@ -188,6 +188,9 @@
                   {#if item.badge !== undefined && item.badge !== null && item.badge !== 0}
                     <Badge size="sm" variant={item.badgeVariant || 'default'}>{item.badge}</Badge>
                   {/if}
+                  {#if item.iconAfter}
+                    <span class="sb-icon-after">{@html item.iconAfter}</span>
+                  {/if}
                   {#if item.keyHint}
                     <KeyBind key={item.keyHint} active={active === item.id} />
                   {/if}
@@ -502,6 +505,22 @@
     justify-content: center;
   }
   .sb-icon :global(svg) {
+    width: 100%;
+    height: 100%;
+  }
+  /* sprint Updates · icono renderizado DESPUÉS del badge (estado/indicador) */
+  .sb-icon-after {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: 6px;
+    /* Glow sutil · llama la atención sin ser agresivo */
+    filter: drop-shadow(0 0 4px var(--info-glow, rgba(77, 184, 255, 0.5)));
+  }
+  .sb-icon-after :global(svg) {
     width: 100%;
     height: 100%;
   }
