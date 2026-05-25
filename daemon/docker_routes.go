@@ -51,6 +51,8 @@ func handleDockerRoutes(w http.ResponseWriter, r *http.Request) {
 		dockerContainerCreate(w, r)
 	case urlPath == "/api/docker/stack" && method == "POST":
 		dockerStackDeploy(w, r)
+	case urlPath == "/api/docker/updates-summary" && method == "GET":
+		dockerUpdatesSummary(w, r)
 	case urlPath == "/api/permissions/matrix" && method == "GET":
 		permissionsMatrix(w, r)
 	case urlPath == "/api/firewall/add-rule" && method == "POST":
@@ -125,6 +127,20 @@ func handleDockerRegexRoutes(w http.ResponseWriter, r *http.Request) bool {
 	reStack := regexp.MustCompile(`^/api/docker/stack/([a-zA-Z0-9_-]+)$`)
 	if m := reStack.FindStringSubmatch(urlPath); m != nil && method == "DELETE" {
 		dockerStackDelete(w, r, m[1])
+		return true
+	}
+
+	// GET /api/docker/app/:id/update-check · sprint Updates 25/05/2026
+	reUpdateCheck := regexp.MustCompile(`^/api/docker/app/([a-zA-Z0-9_-]+)/update-check$`)
+	if m := reUpdateCheck.FindStringSubmatch(urlPath); m != nil && method == "GET" {
+		dockerUpdateCheck(w, r, m[1])
+		return true
+	}
+
+	// POST /api/docker/app/:id/update · sprint Updates 25/05/2026
+	reAppUpdate := regexp.MustCompile(`^/api/docker/app/([a-zA-Z0-9_-]+)/update$`)
+	if m := reAppUpdate.FindStringSubmatch(urlPath); m != nil && method == "POST" {
+		dockerAppUpdate(w, r, m[1])
 		return true
 	}
 

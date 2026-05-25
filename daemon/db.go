@@ -171,6 +171,19 @@ func createTables() error {
 		return fmt.Errorf("apps schema: %v", err)
 	}
 	appsRepo = NewAppsRepo(db)
+	// AppImagesRepo · sprint Updates (25/05/2026)
+	// Tracking de digests de imágenes Docker · detección de actualizaciones.
+	// Schema en apps_schema.sql · tabla docker_app_images.
+	appImagesRepo = NewAppImagesRepo(db)
+
+	// ── Operations module (Beta 8.1.x · APP-012) ─────────────
+	// Schema: nimos_operations · async ops tracking.
+	// Repo: OperationsRepo gestiona CRUD + state machine; vive en db_operations.go.
+	// Sin consumidores hasta Fase 2 Batch 3 (dockerInstall async, dockerPull async).
+	if err := initOperationsSchema(db); err != nil {
+		return fmt.Errorf("operations schema: %v", err)
+	}
+	operationsRepo = NewOperationsRepo(db)
 
 	// ── Schema migrations (versioned) ──
 	runSchemaMigrations()

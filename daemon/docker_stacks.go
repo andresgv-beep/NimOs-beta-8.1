@@ -179,6 +179,11 @@ func dockerStackDeploy(w http.ResponseWriter, r *http.Request) {
 		logMsg("docker: stack install register failed for %s: %v", id, err)
 	}
 
+	// Sprint Updates · poblar docker_app_images con los servicios del stack.
+	// No bloqueante: si falla, se logea pero el deploy se considera OK.
+	// Update-check posterior puede refrescar lo que falte.
+	go populateAppImagesAfterDeploy(context.Background(), id, composePath, stackPath)
+
 	// APP-034 · invalidación inmediata de cache de NimHealth (sync, ~150ms en Pi).
 	// Sin esto, la app no aparece en /api/services hasta el siguiente tick (≤30s).
 	ForceDockerCacheRefresh(r.Context())
@@ -274,6 +279,15 @@ func dockerStackDelete(w http.ResponseWriter, r *http.Request, id string) {
 		// DELETE final libera la row de BD (en ambos modos)
 		if err := appsRepo.DeleteDockerApp(context.Background(), idCapture); err != nil {
 			logMsg("docker: stack uninstall final DB delete failed for %s: %v", idCapture, err)
+		}
+		// Sprint Updates · limpiar también las imágenes tracked.
+		// Tanto modo soft como wipe: la app deja de aparecer instalada · sus
+		// imágenes no necesitan tracking. Si reinstala, populateAppImagesAfterDeploy
+		// las recreará con los digests actuales.
+		if appImagesRepo != nil {
+			if err := appImagesRepo.DeleteByApp(context.Background(), idCapture); err != nil {
+				logMsg("docker: app images cleanup failed for %s: %v", idCapture, err)
+			}
 		}
 		// APP-034 · refresh cache tras cleanup completo.
 		ForceDockerCacheRefresh(context.Background())

@@ -200,6 +200,9 @@ func dockerContainerCreate(w http.ResponseWriter, r *http.Request) {
 		logMsg("docker: install register failed for %s: %v", id, err)
 	}
 
+	// Sprint Updates · poblar docker_app_images (1 row · single container).
+	go populateAppImagesForContainer(context.Background(), id, image)
+
 	// APP-034 · invalidación inmediata de cache de NimHealth (sync, ~150ms en Pi).
 	ForceDockerCacheRefresh(r.Context())
 
@@ -299,6 +302,12 @@ func dockerContainerDelete(w http.ResponseWriter, r *http.Request, id string) {
 		// ya terminó y la operación debe completarse independientemente.
 		if err := appsRepo.DeleteDockerApp(context.Background(), idCapture); err != nil {
 			logMsg("docker: uninstall final DB delete failed for %s: %v", idCapture, err)
+		}
+		// Sprint Updates · limpiar también las imágenes tracked.
+		if appImagesRepo != nil {
+			if err := appImagesRepo.DeleteByApp(context.Background(), idCapture); err != nil {
+				logMsg("docker: app images cleanup failed for %s: %v", idCapture, err)
+			}
 		}
 		// APP-034 · refresh cache tras cleanup completo.
 		ForceDockerCacheRefresh(context.Background())
