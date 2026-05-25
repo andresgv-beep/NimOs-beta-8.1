@@ -391,15 +391,24 @@ export async function installContainer(request) {
  * El observer ya no la muestra como activa en cuanto este endpoint retorna OK.
  *
  * @param {string} id     App ID
+ * @param {string} id · app id (jellyfin, immich...)
  * @param {"stack"|"container"} type
+ * @param {Object} [opts]
+ * @param {boolean} [opts.wipe=false] · true = borrado completo (compose down -v +
+ *   borra stack files y CONFIG_PATH); false = desinstalación suave (datos preservados,
+ *   reinstalar más tarde recupera todo donde estaba). Default seguro: false.
  * @returns {Promise<Object>}
  */
-export async function uninstallApp(id, type) {
+export async function uninstallApp(id, type, opts = {}) {
   if (!id) throw new Error('uninstallApp: id required');
   if (type !== 'stack' && type !== 'container') {
     throw new Error(`uninstallApp: invalid type "${type}"`);
   }
-  const path = type === 'stack' ? `/api/docker/stack/${encodeURIComponent(id)}` : `/api/docker/container/${encodeURIComponent(id)}`;
+  const wipe = opts.wipe === true;
+  const base = type === 'stack'
+    ? `/api/docker/stack/${encodeURIComponent(id)}`
+    : `/api/docker/container/${encodeURIComponent(id)}`;
+  const path = wipe ? `${base}?wipe=true` : base;
   const res = await fetch(path, {
     method: 'DELETE',
     headers: hdrs(),

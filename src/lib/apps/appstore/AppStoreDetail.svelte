@@ -85,6 +85,8 @@
   let confirmUninstallOpen = false;
   let uninstallProcessing = false;
   let actionError = '';
+  /** Modo de desinstalación seleccionado · 'soft' (default · preserva datos) | 'wipe' (destructivo) */
+  let uninstallMode = 'soft';
 
   // Screenshots · intentamos cargar 1..6, oculta automáticamente las que fallan
   // El repo del catálogo guarda screenshots en /screenshots/{appId}/N.png
@@ -207,6 +209,7 @@
 
   function handleUninstallClick() {
     if (!view?.installed || uninstallProcessing) return;
+    uninstallMode = 'soft'; // siempre arrancar en modo seguro
     confirmUninstallOpen = true;
   }
 
@@ -215,7 +218,7 @@
     uninstallProcessing = true;
     actionError = '';
     try {
-      await uninstallApp(view.id, 'stack');
+      await uninstallApp(view.id, 'stack', { wipe: uninstallMode === 'wipe' });
       confirmUninstallOpen = false;
       dispatch('back');
     } catch (err) {
@@ -506,33 +509,61 @@
       </section>
     {/if}
 
-    <!-- DESINSTALAR · solo si instalada · sutil, abajo del todo -->
+    <!-- DESINSTALAR · solo si instalada · sutil al final -->
     {#if view.installed && mode === 'detail'}
       <section class="section uninstall-section">
         <button class="btn btn-danger-soft" on:click={handleUninstallClick} disabled={uninstallProcessing} type="button">
           Desinstalar {view.name}
         </button>
         <p class="uninstall-hint">
-          Esto detendrá el contenedor y borrará volúmenes y configuración.
+          Podrás elegir si conservar los datos o eliminarlos por completo.
         </p>
       </section>
     {/if}
   </div>
 {/if}
 
-<!-- Confirm dialog uninstall · botones simples sin teclear -->
+<!-- Confirm dialog uninstall · dos modos (soft/wipe) -->
 {#if view}
   <ConfirmDialog
     bind:open={confirmUninstallOpen}
     title="Desinstalar {view.name}"
-    message="Esta acción detendrá y eliminará el contenedor, los volúmenes asociados y la configuración guardada."
-    confirmLabel="Desinstalar {view.name}"
+    message="Elige cómo desinstalar:"
+    confirmLabel={uninstallMode === 'wipe' ? `Desinstalar y borrar` : `Desinstalar`}
     cancelLabel="Cancelar"
     variant="danger"
     processing={uninstallProcessing}
     on:confirm={handleUninstallConfirm}
     on:cancel={handleUninstallCancel}
-  />
+  >
+    <div class="uninstall-modes">
+      <label class="mode-option" class:selected={uninstallMode === 'soft'}>
+        <input type="radio" name="uninstall-mode" value="soft" bind:group={uninstallMode} />
+        <div class="mode-content">
+          <div class="mode-title">
+            Desinstalar <span class="mode-badge mode-badge-ok">recomendado</span>
+          </div>
+          <div class="mode-desc">
+            El contenedor se elimina. Los datos (configuración, biblioteca, BD)
+            se conservan. Si reinstalas más tarde, todo vuelve donde estaba.
+          </div>
+        </div>
+      </label>
+
+      <label class="mode-option" class:selected={uninstallMode === 'wipe'}>
+        <input type="radio" name="uninstall-mode" value="wipe" bind:group={uninstallMode} />
+        <div class="mode-content">
+          <div class="mode-title mode-title-danger">
+            Desinstalar y borrar todos los datos
+          </div>
+          <div class="mode-desc">
+            Eliminación completa · <strong>NO se puede deshacer</strong>.
+            Pierdes biblioteca, configuración y base de datos.
+          </div>
+        </div>
+      </label>
+    </div>
+  </ConfirmDialog>
 {/if}
 
 <style>
@@ -1027,5 +1058,76 @@
   }
   @keyframes spin {
     to { transform: rotate(360deg); }
+  }
+  /* ═══ Modal uninstall · opciones radio ═══ */
+  .uninstall-modes {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .mode-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 14px;
+    background: var(--canvas);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+  }
+  .mode-option:hover {
+    border-color: var(--line-bright);
+  }
+  .mode-option.selected {
+    border-color: var(--signal);
+    background: var(--canvas);
+    box-shadow: 0 0 0 1px var(--signal);
+  }
+  .mode-option input[type="radio"] {
+    accent-color: var(--signal);
+    margin-top: 4px;
+    flex-shrink: 0;
+    cursor: pointer;
+  }
+  .mode-content {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+    min-width: 0;
+  }
+  .mode-title {
+    color: var(--ink);
+    font-size: var(--fs-12);
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .mode-title-danger {
+    color: var(--crit);
+  }
+  .mode-badge {
+    font-size: var(--fs-10);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+  .mode-badge-ok {
+    background: var(--signal-dim, rgba(0, 255, 159, 0.12));
+    color: var(--signal);
+  }
+  .mode-desc {
+    color: var(--ink-dim);
+    font-size: var(--fs-11);
+    line-height: 1.5;
+  }
+  .mode-desc strong {
+    color: var(--crit);
+    font-weight: 600;
   }
 </style>
