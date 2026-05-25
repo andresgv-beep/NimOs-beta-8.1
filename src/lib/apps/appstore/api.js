@@ -206,22 +206,41 @@ export async function getCapabilities() {
  * @returns {Promise<InstalledApp[]>}
  */
 /**
- * Devuelve los services registrados en NimHealth · usados por composeAppViews
- * para detectar qué apps del catálogo están instaladas.
+ * Devuelve las apps Docker registradas en NimHealth, usadas por
+ * composeAppViews para detectar qué apps del catálogo están instaladas.
  *
- * SIN FILTRO: el shape del backend varía (services del sistema usan campos
- * `appId/appName/owner/poolName`, runtime de Docker usa ServiceBase con
- * campos `id/type/parent/name`). En lugar de depender de un campo específico
- * que puede no existir en algún tipo, devolvemos TODO y dejamos que
- * composeAppViews haga el cruce por `id`. Si el id no está en el catálogo
- * del AppStore, no se mostrará como instalada · es el comportamiento correcto
- * (los services del sistema como nfs/samba/ssh no aparecen en el catálogo).
+ * Estructura real del backend /api/services:
  *
- * Esto evita falsos negativos cuando el backend devuelve un service Docker
- * con shape distinto al esperado.
+ *   {
+ *     services: [
+ *       { appId: "nfs",        id: "nfs@system",     ... },         ← sistema
+ *       { appId: "samba",      id: "samba@system",   ... },         ← sistema
+ *       { appId: "containers", id: "docker@data3",   children: [    ← contenedor padre
+ *         { id: "jellyfin",    type: "docker-app", ... },           ← app Docker
+ *         { id: "immich",      type: "docker-app", ... },           ← app Docker
+ *         { id: "codeserver",  type: "docker-app", ... },           ← app Docker
+ *       ]},
+ *     ]
+ *   }
+ *
+ * Las apps Docker viven anidadas como `children` del service tipo "containers"
+ * (modelo Beta 8.1: Docker es un service del NAS que tiene apps como children).
+ * Hay que recorrerlas para poder cruzarlas con el catálogo del AppStore.
+ *
+ * Devolvemos solo los children de servicios containers, con ids planos como
+ * "jellyfin", "immich" · que es la dimensión que usa composeAppViews para
+ * hacer match contra los ids del catálogo.
  */
 export async function getInstalledApps() {
-  return await getServices();
+  const services = await getServices();
+  const out = [];
+  for (const svc of services || []) {
+    if (svc?.appId !== 'containers') continue;
+    for (const child of svc.children || []) {
+      out.push(child);
+    }
+  }
+  return out;
 }
 
 // ────────────────────────────────────────────────────────────────────────
