@@ -375,32 +375,32 @@
       </section>
     {/if}
 
-    <!-- INFO TÉCNICA · siempre visible -->
+    <!-- INFO TÉCNICA · cards grid 2 columnas estilo mockup -->
     <section class="section">
       <h2 class="section-title">Información técnica</h2>
       <div class="info-grid">
-        <div class="info-row">
-          <span class="info-k">Imagen Docker</span>
-          <code class="info-v">{view.catalog?.image || '—'}</code>
+        <div class="info-card">
+          <span class="info-card-k">Imagen Docker</span>
+          <code class="info-card-v">{view.catalog?.image || '—'}</code>
         </div>
         {#if view.catalog?.port}
-          <div class="info-row">
-            <span class="info-k">Puerto</span>
-            <code class="info-v">{formatPort(view.catalog.port)}</code>
+          <div class="info-card">
+            <span class="info-card-k">Puerto</span>
+            <code class="info-card-v">{formatPort(view.catalog.port)}</code>
           </div>
         {/if}
         {#if view.catalog?.openMode}
-          <div class="info-row">
-            <span class="info-k">Modo de apertura</span>
-            <code class="info-v">{view.catalog.openMode}</code>
+          <div class="info-card">
+            <span class="info-card-k">Modo de apertura</span>
+            <code class="info-card-v">{view.catalog.openMode}</code>
           </div>
         {/if}
         {#if services.length > 0}
-          <div class="info-row">
-            <span class="info-k">
+          <div class="info-card info-card-wide">
+            <span class="info-card-k">
               Servicios{services.length > 1 ? ` (${services.length})` : ''}
             </span>
-            <div class="info-v-chips">
+            <div class="info-card-chips">
               {#each services as svc}
                 <code class="service-chip">{svc}</code>
               {/each}
@@ -408,9 +408,9 @@
           </div>
         {/if}
         {#if view.installed && view.runtime?.containerName}
-          <div class="info-row">
-            <span class="info-k">Container</span>
-            <code class="info-v">{view.runtime.containerName}</code>
+          <div class="info-card">
+            <span class="info-card-k">Container</span>
+            <code class="info-card-v">{view.runtime.containerName}</code>
           </div>
         {/if}
       </div>
@@ -749,59 +749,67 @@
     margin: 0;
   }
 
-  /* ═══ Info técnica grid ═══ */
+  /* ═══ Info técnica · cards individuales en grid 2 columnas (mockup style) ═══ */
   .info-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--sp-2);
+    padding: var(--sp-2) 0;
+  }
+  .info-card {
     display: flex;
-    flex-direction: column;
-    gap: 6px;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
     background: var(--canvas);
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    padding: var(--sp-3);
+    padding: 12px 14px;
   }
-  .info-row {
-    display: flex;
-    align-items: baseline;
-    gap: var(--sp-3);
-    font-size: var(--fs-12);
+  .info-card-wide {
+    grid-column: 1 / -1;
+    align-items: flex-start;
+    flex-wrap: wrap;
   }
-  .info-k {
+  .info-card-k {
     color: var(--ink-mute);
-    min-width: 140px;
     font-size: var(--fs-11);
+    flex-shrink: 0;
   }
-  .info-v {
+  .info-card-v {
     color: var(--ink);
-    background: var(--panel-deep);
-    padding: 2px 8px;
-    border-radius: 4px;
     font-family: var(--font-mono);
     font-size: var(--fs-11);
     word-break: break-all;
+    text-align: right;
   }
-  .info-v-chips {
+  .info-card-chips {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
+    gap: 6px;
+    justify-content: flex-end;
   }
   .service-chip {
     color: var(--ink-dim);
     background: var(--panel-deep);
-    padding: 2px 8px;
+    padding: 3px 9px;
     border-radius: 4px;
     font-family: var(--font-mono);
     font-size: var(--fs-11);
   }
 
-  /* ═══ Credenciales ═══ */
+  /* Responsive · una columna en pantallas estrechas */
+  @media (max-width: 640px) {
+    .info-grid { grid-template-columns: 1fr; }
+    .info-card-wide { grid-column: 1; }
+  }
+
+  /* ═══ Credenciales · texto limpio sin card ═══ */
   .creds-block {
-    background: var(--canvas);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-md);
-    padding: var(--sp-3);
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 10px;
+    padding: var(--sp-2) 0;
   }
   .cred-row {
     display: flex;
@@ -855,7 +863,6 @@
     color: var(--ink-mute);
     font-size: var(--fs-11);
     padding-top: 4px;
-    border-top: 1px dashed var(--line);
     margin-top: 4px;
   }
   .copy-feedback {
