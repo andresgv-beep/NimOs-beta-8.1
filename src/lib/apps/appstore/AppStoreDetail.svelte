@@ -403,36 +403,43 @@
     <section class="section">
       <h2 class="section-title">Información técnica</h2>
       <div class="info-grid">
+        <!-- Fila 1: Imagen Docker | Puerto -->
         <div class="info-card">
           <span class="info-card-k">Imagen Docker</span>
           <code class="info-card-v">{view.catalog?.image || '—'}</code>
         </div>
-        {#if view.catalog?.port}
-          <div class="info-card">
-            <span class="info-card-k">Puerto</span>
-            <code class="info-card-v">{formatPort(view.catalog.port)}</code>
-          </div>
-        {/if}
+        <div class="info-card">
+          <span class="info-card-k">Puerto</span>
+          <code class="info-card-v">{view.catalog?.port ? formatPort(view.catalog.port) : '—'}</code>
+        </div>
+
+        <!-- Fila 2: Modo apertura | Servicios (si hay) o Container (si instalada) -->
         {#if view.catalog?.openMode}
           <div class="info-card">
             <span class="info-card-k">Modo de apertura</span>
             <code class="info-card-v">{view.catalog.openMode}</code>
           </div>
         {/if}
-        {#if services.length > 0}
+        {#if services.length > 1}
+          <!-- Servicios multi: ocupa ambas columnas en su propia fila para que los chips quepan -->
           <div class="info-card info-card-wide">
-            <span class="info-card-k">
-              Servicios{services.length > 1 ? ` (${services.length})` : ''}
-            </span>
+            <span class="info-card-k">Servicios ({services.length})</span>
             <div class="info-card-chips">
               {#each services as svc}
                 <code class="service-chip">{svc}</code>
               {/each}
             </div>
           </div>
-        {/if}
-        {#if view.installed && view.runtime?.containerName}
+        {:else if services.length === 1}
           <div class="info-card">
+            <span class="info-card-k">Servicio</span>
+            <code class="info-card-v">{services[0]}</code>
+          </div>
+        {/if}
+
+        <!-- Fila 3 (solo si instalada): Container name -->
+        {#if view.installed && view.runtime?.containerName}
+          <div class="info-card info-card-wide">
             <span class="info-card-k">Container</span>
             <code class="info-card-v">{view.runtime.containerName}</code>
           </div>
@@ -562,12 +569,21 @@
     height: 100%;
     overflow-y: auto;
     padding: var(--sp-4) var(--sp-5) var(--sp-6);
-    display: flex;
-    flex-direction: column;
-    gap: var(--sp-5);
-    max-width: 920px;
-    margin: 0 auto;
     width: 100%;
+  }
+  /* Wrapper interno que centra el contenido a max 920px sin sacar el scroll del marco */
+  .detail-scroll > * {
+    max-width: 920px;
+    margin-left: auto;
+    margin-right: auto;
+    width: 100%;
+  }
+  .detail-scroll {
+    display: block;
+  }
+  /* Separación entre secciones (sustituye el gap del flex) */
+  .detail-scroll > * + * {
+    margin-top: var(--sp-5);
   }
 
   /* ═══ Back button ═══ */
@@ -827,9 +843,10 @@
     border-radius: var(--radius-md);
     padding: 12px 14px;
   }
+  /* Servicios y otras filas que ocupan ambas columnas */
   .info-card-wide {
     grid-column: 1 / -1;
-    align-items: flex-start;
+    align-items: center;
     flex-wrap: wrap;
   }
   .info-card-k {
@@ -859,40 +876,42 @@
     font-size: var(--fs-11);
   }
 
-  /* Responsive · una columna en pantallas estrechas */
-  @media (max-width: 640px) {
-    .info-grid { grid-template-columns: 1fr; }
-    .info-card-wide { grid-column: 1; }
-  }
-
-  /* ═══ Credenciales · texto limpio sin card ═══ */
+  /* ═══ Credenciales · card sólida con filas separadas (estilo mockup) ═══ */
   .creds-block {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    padding: var(--sp-2) 0;
+    background: var(--canvas);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    overflow: hidden;
   }
   .cred-row {
     display: flex;
     align-items: center;
     gap: var(--sp-2);
+    padding: 16px 18px;
     font-size: var(--fs-12);
+    border-bottom: 1px solid var(--line);
+  }
+  .cred-row:last-of-type {
+    border-bottom: none;
   }
   .cred-k {
     color: var(--ink-mute);
     min-width: 100px;
-    font-size: var(--fs-11);
+    font-size: var(--fs-10);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
   }
   .cred-v {
     color: var(--ink);
-    background: var(--panel-deep);
-    padding: 4px 10px;
-    border-radius: 4px;
     font-family: var(--font-mono);
     font-size: var(--fs-12);
     flex: 1;
     min-width: 0;
     word-break: break-all;
+    background: transparent;
+    padding: 0;
   }
   .cred-v.masked {
     letter-spacing: 2px;
@@ -923,8 +942,8 @@
   .creds-hint {
     color: var(--ink-mute);
     font-size: var(--fs-11);
-    padding-top: 4px;
-    margin-top: 4px;
+    padding: 14px 18px;
+    border-top: 1px solid var(--line);
   }
   .copy-feedback {
     font-size: var(--fs-11);
