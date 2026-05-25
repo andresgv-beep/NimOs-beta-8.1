@@ -23,6 +23,12 @@ import (
 	"strings"
 )
 
+// dockerConfigFile · path del archivo de configuración del módulo Docker.
+// Almacena pool elegido, lista de containers, permissions, app_permissions.
+// Definida aquí (junto a los helpers que la leen/escriben) en lugar de en
+// docker.go (que ya no existe tras el sprint post-cierre).
+const dockerConfigFile = "/var/lib/nimos/config/docker.json"
+
 func getDockerConfigGo() map[string]interface{} {
 	data, err := os.ReadFile(dockerConfigFile)
 	if err != nil {
