@@ -14,7 +14,7 @@
    */
 
   import { createEventDispatcher } from 'svelte';
-  import { categoryDisplayName, statusTone } from './formatters.js';
+  import { categoryDisplayName } from './formatters.js';
 
   /** @typedef {import('./types').AppView} AppView */
 
@@ -23,6 +23,13 @@
   /** Display map opcional para resolver category slug → "Multimedia" */
   /** @type {Object<string,string>} */
   export let categoriesMap = {};
+  /** Sprint Updates · marca este card como "tiene actualización disponible".
+   * Solo se renderiza si app.installed === true. Cuando true, muestra:
+   *   - Badge azul "NUEVA" arriba izquierda
+   * Cuando app.installed === true (sin importar hasUpdate), muestra:
+   *   - Tic verde abajo derecha · "instalada · todo bien"
+   */
+  export let hasUpdate = false;
 
   const dispatch = createEventDispatcher();
 
@@ -32,15 +39,14 @@
     dispatch('select', { appId: app.id });
   }
 
-  $: tone = app.installed ? statusTone(app.status, app.health) : 'muted';
   $: categoryLabel = categoryDisplayName(app.category, categoriesMap);
 </script>
 
-<button class="app-card" on:click={handleClick} type="button" title={app.description || app.name}>
-  <div class="app-icon-wrap" class:installed={app.installed}>
-    {#if app.installed}
-      <span class="installed-dot" class:ok={tone === 'ok'} class:warn={tone === 'warn'} class:crit={tone === 'crit'} class:info={tone === 'info'}></span>
-    {/if}
+<button class="app-card" class:has-update={app.installed && hasUpdate} on:click={handleClick} type="button" title={app.description || app.name}>
+  {#if app.installed && hasUpdate}
+    <span class="update-badge" title="Actualización disponible">NUEVA</span>
+  {/if}
+  <div class="app-icon-wrap">
     {#if !iconError && app.icon}
       <img
         class="app-icon"
@@ -58,6 +64,14 @@
   </div>
   <div class="app-name">{app.name}</div>
   <div class="app-category">{categoryLabel}</div>
+  {#if app.installed}
+    <span class="installed-check" title="Instalada">
+      <!-- Tic SVG inline · color verde via currentColor -->
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="20 6 9 17 4 12"/>
+      </svg>
+    </span>
+  {/if}
 </button>
 
 <style>
@@ -118,29 +132,50 @@
     font-family: var(--font-mono);
   }
 
-  /* Indicador instalada · pill superior derecha */
-  .installed-dot {
+  /* ═══ Sprint Updates · indicadores de instalación + update ═══ */
+
+  /* App-card en modo "tiene update" · sutil border azul para llamar la atención */
+  .app-card.has-update {
+    border-color: var(--info-dim, rgba(77, 184, 255, 0.3));
+  }
+
+  /* Badge "NUEVA" · esquina superior izquierda · solo si app.installed && hasUpdate */
+  .update-badge {
     position: absolute;
-    top: 4px;
-    right: 4px;
-    width: 8px;
-    height: 8px;
+    top: 6px;
+    left: 6px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    padding: 3px 7px;
+    border-radius: 4px;
+    background: var(--info);
+    color: var(--canvas);
+    font-family: var(--font-mono);
+    z-index: 3;
+    box-shadow: 0 0 8px var(--info-glow, rgba(77, 184, 255, 0.4));
+    text-transform: uppercase;
+  }
+
+  /* Tic verde · esquina inferior derecha · siempre si app.installed */
+  .installed-check {
+    position: absolute;
+    bottom: 8px;
+    right: 8px;
+    width: 18px;
+    height: 18px;
     border-radius: 50%;
     background: var(--signal);
-    box-shadow: 0 0 5px var(--signal-glow);
+    color: var(--canvas);
+    display: flex;
+    align-items: center;
+    justify-content: center;
     z-index: 2;
+    box-shadow: 0 0 6px var(--signal-glow, rgba(0, 255, 159, 0.4));
   }
-  .installed-dot.warn {
-    background: var(--warn);
-    box-shadow: 0 0 5px var(--warn-glow);
-  }
-  .installed-dot.crit {
-    background: var(--crit);
-    box-shadow: 0 0 5px var(--crit-glow);
-  }
-  .installed-dot.info {
-    background: var(--info);
-    box-shadow: 0 0 5px var(--info-glow);
+  .installed-check svg {
+    width: 11px;
+    height: 11px;
   }
 
   .app-name {

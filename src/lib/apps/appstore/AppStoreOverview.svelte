@@ -36,7 +36,7 @@
   import AppShell from '$lib/components/AppShell.svelte';
   import AppCard from './AppCard.svelte';
   import { fetchCatalog, countByCategory, listCatalogApps } from './catalog.js';
-  import { getInstalledApps } from './api.js';
+  import { getInstalledApps, getUpdatesSummary } from './api.js';
   import { composeAppViews, buildSidebarSections, categoryDisplayName } from './formatters.js';
 
   /** @typedef {import('./types').Catalog} Catalog */
@@ -58,6 +58,12 @@
 
   // Búsqueda libre
   let search = '';
+
+  // Sprint Updates · IDs de apps que tienen update pendiente (en Set para
+  // lookup O(1) al pasar prop hasUpdate a cada AppCard).
+  /** @type {Set<string>} */
+  let appsWithUpdate = new Set();
+  let updatesCount = 0;
 
   // ── Derived ───────────────────────────────────────────────────────
 
@@ -81,7 +87,7 @@
   $: visibleViews = filterViews(allViews, active, search);
 
   // Sidebar dinámico
-  $: sidebarSections = buildSidebarSections(counts, categoriesMap, installed.length);
+  $: sidebarSections = buildSidebarSections(counts, categoriesMap, installed.length, updatesCount);
 
   // Header
   $: activeLabel = labelForActive(active, categoriesMap);
@@ -145,8 +151,8 @@
     loading = true;
     loadError = '';
     try {
-      // Lanzar en paralelo · ambas independientes
-      const [cat, inst] = await Promise.all([
+      // Lanzar en paralelo · todas independientes
+      const [cat, inst, ups] = await Promise.all([
         fetchCatalog(),
         getInstalledApps().catch((err) => {
           // Si /api/services falla, seguimos con catálogo aún · solo nos
@@ -154,13 +160,37 @@
           console.warn('[appstore/overview] getInstalledApps failed:', err);
           return [];
         }),
+        // Sprint Updates · sumario para badges "NUEVA" + icono sidebar.
+        // Si falla, no rompe la app · solo nos quedamos sin badges.
+        getUpdatesSummary().catch((err) => {
+          console.warn('[appstore/overview] getUpdatesSummary failed:', err);
+          return { count: 0, apps: [] };
+        }),
       ]);
       catalog = cat;
       installed = inst;
+      // Construir Set para lookup O(1) en cada AppCard
+      appsWithUpdate = new Set((ups.apps || []).map((a) => a.appId));
+      updatesCount = ups.count || 0;
     } catch (err) {
       loadError = err?.message || String(err);
     } finally {
       loading = false;
+    }
+  }
+
+  /**
+   * Refresca el sumario de updates sin recargar todo el catálogo.
+   * Útil tras hacer un update exitoso para que el sidebar y los badges
+   * reflejen el nuevo estado (esa app ya no necesita update).
+   */
+  async function refreshUpdates() {
+    try {
+      const ups = await getUpdatesSummary();
+      appsWithUpdate = new Set((ups.apps || []).map((a) => a.appId));
+      updatesCount = ups.count || 0;
+    } catch (err) {
+      console.warn('[appstore/overview] refreshUpdates failed:', err);
     }
   }
 
@@ -231,7 +261,12 @@
       {:else}
         <div class="apps-grid">
           {#each visibleViews as view (view.id)}
-            <AppCard app={view} {categoriesMap} on:select={onSelect} />
+            <AppCard
+              app={view}
+              {categoriesMap}
+              hasUpdate={view.installed && appsWithUpdate.has(view.id)}
+              on:select={onSelect}
+            />
           {/each}
         </div>
       {/if}

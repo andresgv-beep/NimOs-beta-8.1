@@ -551,3 +551,74 @@ export async function waitForOperation(
     });
   }
 }
+
+// ════════════════════════════════════════════════════════════════════
+// SPRINT UPDATES · 25/05/2026
+// ────────────────────────────────────────────────────────────────────
+// 3 endpoints nuevos del feature de actualizaciones de apps Docker.
+// Detección via comparación de digests local vs remoto · cache 6h en BD.
+// Ver backend: docker_updates_http.go
+// ════════════════════════════════════════════════════════════════════
+
+/**
+ * Devuelve el sumario de updates pendientes para sidebar y catálogo.
+ *
+ * Esta query NO llama al registry · solo lee BD (instantánea, <50ms).
+ * Llamar libremente desde sidebar / overview / al refrescar.
+ *
+ * @returns {Promise<{count: number, apps: Array<{appId: string, servicesTotal: number, servicesWithUpdate: number, oldestCheckAt: string}>}>}
+ */
+export async function getUpdatesSummary() {
+  const res = await fetch('/api/docker/updates-summary', {
+    headers: hdrs(),
+  });
+  const data = await unwrap(res, 'get updates summary');
+  return {
+    count: data.count || 0,
+    apps: Array.isArray(data.apps) ? data.apps : [],
+  };
+}
+
+/**
+ * Comprueba si una app tiene update disponible.
+ * Usa cache de BD si el último check fue < 6h. Pasa force=true para
+ * ignorar cache y llamar al registry obligatoriamente.
+ *
+ * Sin force: <100ms típico (solo BD).
+ * Con force: 1-5s según número de servicios (HTTPS al registry).
+ *
+ * @param {string} appId
+ * @param {{ force?: boolean }} [opts]
+ * @returns {Promise<{updateAvailable: boolean, services: Array<{name: string, image: string, updateAvailable: boolean, localDigest: string, remoteDigest: string, remoteCheckedAt: string, checkStatus: string}>}>}
+ */
+export async function checkAppUpdates(appId, opts = {}) {
+  if (!appId) throw new Error('checkAppUpdates: appId required');
+  const url = opts.force === true
+    ? `/api/docker/app/${encodeURIComponent(appId)}/update-check?force=true`
+    : `/api/docker/app/${encodeURIComponent(appId)}/update-check`;
+  const res = await fetch(url, { headers: hdrs() });
+  const data = await unwrap(res, 'check app updates');
+  return {
+    updateAvailable: data.updateAvailable === true,
+    services: Array.isArray(data.services) ? data.services : [],
+  };
+}
+
+/**
+ * Ejecuta el update de una app: `docker compose pull && up -d`.
+ * Síncrono · espera a que termine. Típicamente 30s-2min según red e imagen.
+ *
+ * Solo soporta apps de tipo 'stack' (apps con docker-compose.yml).
+ * Tras éxito, la BD se actualiza con los nuevos local_digest.
+ *
+ * @param {string} appId
+ * @returns {Promise<{ok: boolean, appId: string}>}
+ */
+export async function updateApp(appId) {
+  if (!appId) throw new Error('updateApp: appId required');
+  const res = await fetch(`/api/docker/app/${encodeURIComponent(appId)}/update`, {
+    method: 'POST',
+    headers: hdrs(),
+  });
+  return unwrap(res, 'update app');
+}
