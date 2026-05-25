@@ -63,6 +63,10 @@ func initAppsSchema(db *sql.DB) error {
 	// normal post-migration), el DROP-CREATE es no-op funcional. Si no existe
 	// (caso edge), evitamos referenciar una columna fantasma.
 	db.Exec(`DROP INDEX IF EXISTS idx_docker_apps_deleting`)
+	// Defensive cleanup para docker_app_images (tabla nueva sprint Updates · 25/05/2026).
+	// Si en algún momento futuro se añade una columna vía ALTER, el índice
+	// asociado debe re-crearse después · mismo patrón que docker_apps.deleting.
+	db.Exec(`DROP INDEX IF EXISTS idx_docker_app_images_app`)
 
 	// ── 2. Schema base ───────────────────────────────────────────────
 	if _, err := db.Exec(appsSchemaSQL); err != nil {
@@ -78,6 +82,8 @@ func initAppsSchema(db *sql.DB) error {
 	// ── 4. Re-creación de índices migrados ───────────────────────────
 	// El índice debe crearse DESPUÉS del ALTER que añade la columna.
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_docker_apps_deleting ON docker_apps(deleting)`)
+	// Re-crear índice de docker_app_images (limpiado defensivamente arriba).
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_docker_app_images_app ON docker_app_images(app_id)`)
 
 	// ── 5. Verificación post-migration ───────────────────────────────
 	//
@@ -89,6 +95,9 @@ func initAppsSchema(db *sql.DB) error {
 	// sola vez por arranque del daemon · justifica su existencia.
 	if err := verifyDockerAppsSchema(db); err != nil {
 		return fmt.Errorf("docker_apps schema verification: %w", err)
+	}
+	if err := verifyDockerAppImagesSchema(db); err != nil {
+		return fmt.Errorf("docker_app_images schema verification: %w", err)
 	}
 
 	return nil
@@ -104,31 +113,49 @@ func initAppsSchema(db *sql.DB) error {
 // en el step 2.
 func verifyDockerAppsSchema(db *sql.DB) error {
 	required := []string{"deleting", "ports_json"}
+	return verifyTableColumns(db, "docker_apps", required)
+}
+
+// verifyDockerAppImagesSchema confirma que la tabla docker_app_images existe
+// con sus columnas críticas. Mismo patrón que verifyDockerAppsSchema · falla
+// rápido con mensaje claro si algo no está bien.
+//
+// Las columnas verificadas son las del CREATE TABLE original. Si en futuras
+// versiones se añaden vía ALTER, añadirlas aquí.
+func verifyDockerAppImagesSchema(db *sql.DB) error {
+	required := []string{"app_id", "service_name", "image", "local_digest", "remote_digest", "remote_checked_at", "check_status"}
+	return verifyTableColumns(db, "docker_app_images", required)
+}
+
+// verifyTableColumns es el helper común usado por verifyDockerAppsSchema y
+// verifyDockerAppImagesSchema. Comprueba que todas las columnas pasadas existan
+// en la tabla dada vía PRAGMA table_info(). Devuelve error descriptivo si falta
+// alguna.
+func verifyTableColumns(db *sql.DB, table string, required []string) error {
+	// PRAGMA table_info devuelve una fila por columna. Cargamos todas en un
+	// set y luego comprobamos que todas las requeridas estén presentes. Más
+	// eficiente que abrir N queries (una por columna).
+	rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return fmt.Errorf("query table_info(%s): %w", table, err)
+	}
+	defer rows.Close()
+
+	existing := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return fmt.Errorf("scan table_info(%s): %w", table, err)
+		}
+		existing[name] = true
+	}
+
 	for _, col := range required {
-		var name string
-		// PRAGMA table_info devuelve una fila por columna. Buscamos la nuestra.
-		rows, err := db.Query(`PRAGMA table_info(docker_apps)`)
-		if err != nil {
-			return fmt.Errorf("query table_info: %w", err)
-		}
-		found := false
-		for rows.Next() {
-			var cid int
-			var dflt sql.NullString
-			var ctype string
-			var notnull, pk int
-			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-				rows.Close()
-				return fmt.Errorf("scan table_info: %w", err)
-			}
-			if name == col {
-				found = true
-				break
-			}
-		}
-		rows.Close()
-		if !found {
-			return fmt.Errorf("column %q missing after migration · BD en estado inconsistente, revisar logs previos del daemon", col)
+		if !existing[col] {
+			return fmt.Errorf("column %q missing in %s · BD en estado inconsistente, revisar logs previos del daemon", col, table)
 		}
 	}
 	return nil

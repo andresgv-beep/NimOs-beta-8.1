@@ -1307,3 +1307,253 @@ func TestVerifyDockerAppsSchema_PassesOnCompleteSchema(t *testing.T) {
 		t.Errorf("verifyDockerAppsSchema falsea positivo en schema completo: %v", err)
 	}
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// DOCKER APP IMAGES · schema + verify (sprint Updates · 25/05/2026)
+// ═══════════════════════════════════════════════════════════════════════
+
+// TestDockerAppImagesSchemaCreated verifica que la tabla docker_app_images
+// se crea correctamente con todas las columnas requeridas tras initAppsSchema.
+func TestDockerAppImagesSchemaCreated(t *testing.T) {
+	conn, _, cleanup := setupTestAppsDB(t)
+	defer cleanup()
+
+	// La verificación corre dentro de initAppsSchema, pero la llamamos aquí
+	// explícita para tener un test claro de "el schema crea bien la tabla".
+	if err := verifyDockerAppImagesSchema(conn); err != nil {
+		t.Errorf("verifyDockerAppImagesSchema falsea positivo en schema completo: %v", err)
+	}
+}
+
+// TestDockerAppImagesCRUDBasic prueba el flujo CRUD básico contra la tabla:
+// insert una imagen, leerla, marcar update disponible, leerla otra vez.
+//
+// No usa AppsRepo (todavía no tiene métodos para esta tabla) · SQL directo
+// para demostrar que la tabla es funcional desde el día 1.
+func TestDockerAppImagesCRUDBasic(t *testing.T) {
+	conn, _, cleanup := setupTestAppsDB(t)
+	defer cleanup()
+
+	// INSERT · simular tras compose up -d
+	_, err := conn.Exec(`
+		INSERT INTO docker_app_images
+			(app_id, service_name, image, local_digest, remote_digest, remote_checked_at)
+		VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+		"jellyfin", "jellyfin", "jellyfin/jellyfin:latest",
+		"sha256:abc123", "sha256:abc123")
+	if err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	// SELECT · leer lo insertado
+	var image, localDigest, remoteDigest string
+	err = conn.QueryRow(`
+		SELECT image, local_digest, remote_digest
+		FROM docker_app_images
+		WHERE app_id = ? AND service_name = ?`,
+		"jellyfin", "jellyfin").Scan(&image, &localDigest, &remoteDigest)
+	if err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	if image != "jellyfin/jellyfin:latest" {
+		t.Errorf("image: got %q, want %q", image, "jellyfin/jellyfin:latest")
+	}
+	if localDigest != "sha256:abc123" || remoteDigest != "sha256:abc123" {
+		t.Errorf("digests iguales esperados, got local=%q remote=%q", localDigest, remoteDigest)
+	}
+
+	// UPDATE · simular un check remoto que encontró nueva versión
+	_, err = conn.Exec(`
+		UPDATE docker_app_images
+		SET remote_digest = ?, remote_checked_at = datetime('now')
+		WHERE app_id = ? AND service_name = ?`,
+		"sha256:def456", "jellyfin", "jellyfin")
+	if err != nil {
+		t.Fatalf("UPDATE: %v", err)
+	}
+
+	// SELECT con detección de update
+	rows, err := conn.Query(`
+		SELECT app_id, service_name, local_digest, remote_digest
+		FROM docker_app_images
+		WHERE local_digest != remote_digest AND remote_digest != ''`)
+	if err != nil {
+		t.Fatalf("SELECT updates: %v", err)
+	}
+	defer rows.Close()
+
+	var found int
+	for rows.Next() {
+		var appId, svc, ld, rd string
+		if err := rows.Scan(&appId, &svc, &ld, &rd); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if appId != "jellyfin" || svc != "jellyfin" {
+			t.Errorf("unexpected row: app_id=%q service=%q", appId, svc)
+		}
+		if ld == rd {
+			t.Errorf("digests deberían diferir, got %q == %q", ld, rd)
+		}
+		found++
+	}
+	if found != 1 {
+		t.Errorf("esperaba 1 row con update, got %d", found)
+	}
+}
+
+// TestDockerAppImagesMultiService simula una app multi-stack (Immich con 4
+// servicios). Verifica que la PRIMARY KEY compuesta (app_id, service_name)
+// permite varios servicios bajo el mismo app_id sin conflicto.
+func TestDockerAppImagesMultiService(t *testing.T) {
+	conn, _, cleanup := setupTestAppsDB(t)
+	defer cleanup()
+
+	services := []struct {
+		name  string
+		image string
+	}{
+		{"immich-server", "ghcr.io/immich-app/immich-server:release"},
+		{"immich-machine-learning", "ghcr.io/immich-app/immich-machine-learning:release"},
+		{"redis", "docker.io/redis:6.2-alpine"},
+		{"database", "docker.io/tensorchord/pgvecto-rs:pg14-v0.2.0"},
+	}
+
+	for _, svc := range services {
+		_, err := conn.Exec(`
+			INSERT INTO docker_app_images
+				(app_id, service_name, image, local_digest, remote_digest, remote_checked_at)
+			VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+			"immich", svc.name, svc.image,
+			"sha256:local-"+svc.name, "sha256:local-"+svc.name)
+		if err != nil {
+			t.Fatalf("INSERT %s: %v", svc.name, err)
+		}
+	}
+
+	// COUNT · debería haber 4 rows para immich
+	var count int
+	err := conn.QueryRow(`SELECT COUNT(*) FROM docker_app_images WHERE app_id = ?`, "immich").Scan(&count)
+	if err != nil {
+		t.Fatalf("COUNT: %v", err)
+	}
+	if count != 4 {
+		t.Errorf("esperaba 4 servicios para immich, got %d", count)
+	}
+
+	// Simular que 2 de los 4 tienen update (server + ml, no redis/database)
+	_, err = conn.Exec(`
+		UPDATE docker_app_images
+		SET remote_digest = 'sha256:newer-server'
+		WHERE app_id = 'immich' AND service_name = 'immich-server'`)
+	if err != nil {
+		t.Fatalf("UPDATE server: %v", err)
+	}
+	_, err = conn.Exec(`
+		UPDATE docker_app_images
+		SET remote_digest = 'sha256:newer-ml'
+		WHERE app_id = 'immich' AND service_name = 'immich-machine-learning'`)
+	if err != nil {
+		t.Fatalf("UPDATE ml: %v", err)
+	}
+
+	// Query · ¿cuántos servicios de immich tienen update pendiente?
+	var withUpdate int
+	err = conn.QueryRow(`
+		SELECT COUNT(*) FROM docker_app_images
+		WHERE app_id = ? AND local_digest != remote_digest`,
+		"immich").Scan(&withUpdate)
+	if err != nil {
+		t.Fatalf("COUNT updates: %v", err)
+	}
+	if withUpdate != 2 {
+		t.Errorf("esperaba 2 servicios con update, got %d", withUpdate)
+	}
+}
+
+// TestDockerAppImagesPrimaryKeyEnforced verifica que la PRIMARY KEY compuesta
+// no permite duplicados (mismo app_id + service_name).
+func TestDockerAppImagesPrimaryKeyEnforced(t *testing.T) {
+	conn, _, cleanup := setupTestAppsDB(t)
+	defer cleanup()
+
+	_, err := conn.Exec(`
+		INSERT INTO docker_app_images
+			(app_id, service_name, image, local_digest)
+		VALUES (?, ?, ?, ?)`,
+		"jellyfin", "jellyfin", "jellyfin/jellyfin:latest", "sha256:abc")
+	if err != nil {
+		t.Fatalf("INSERT inicial: %v", err)
+	}
+
+	// Segundo INSERT con misma PK debe fallar
+	_, err = conn.Exec(`
+		INSERT INTO docker_app_images
+			(app_id, service_name, image, local_digest)
+		VALUES (?, ?, ?, ?)`,
+		"jellyfin", "jellyfin", "otra-imagen:tag", "sha256:def")
+	if err == nil {
+		t.Error("se esperaba error por PK duplicada, no falló")
+	}
+}
+
+// TestDockerAppImagesUpsertPattern verifica que INSERT OR REPLACE funciona
+// correctamente · el patrón que usará dockerStackDeploy tras compose up -d.
+func TestDockerAppImagesUpsertPattern(t *testing.T) {
+	conn, _, cleanup := setupTestAppsDB(t)
+	defer cleanup()
+
+	// Primer install · row nueva
+	_, err := conn.Exec(`
+		INSERT OR REPLACE INTO docker_app_images
+			(app_id, service_name, image, local_digest, remote_digest, remote_checked_at)
+		VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+		"jellyfin", "jellyfin", "jellyfin/jellyfin:latest",
+		"sha256:v1", "sha256:v1")
+	if err != nil {
+		t.Fatalf("INSERT inicial: %v", err)
+	}
+
+	// Reinstall o actualización · row existente se reemplaza con nuevo digest
+	_, err = conn.Exec(`
+		INSERT OR REPLACE INTO docker_app_images
+			(app_id, service_name, image, local_digest, remote_digest, remote_checked_at)
+		VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+		"jellyfin", "jellyfin", "jellyfin/jellyfin:latest",
+		"sha256:v2", "sha256:v2")
+	if err != nil {
+		t.Fatalf("UPSERT: %v", err)
+	}
+
+	// Verificar que ahora hay 1 row sola con el nuevo digest
+	var count int
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM docker_app_images WHERE app_id = ?`, "jellyfin").Scan(&count); err != nil {
+		t.Fatalf("COUNT: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("esperaba 1 row tras UPSERT, got %d", count)
+	}
+
+	var localDigest string
+	if err := conn.QueryRow(`SELECT local_digest FROM docker_app_images WHERE app_id = ?`, "jellyfin").Scan(&localDigest); err != nil {
+		t.Fatalf("SELECT digest: %v", err)
+	}
+	if localDigest != "sha256:v2" {
+		t.Errorf("esperaba digest v2 tras UPSERT, got %q", localDigest)
+	}
+}
+
+// TestDockerAppImagesIndexExists verifica que el índice idx_docker_app_images_app
+// existe tras initAppsSchema · permite que las queries por app_id sean eficientes
+// cuando haya 50+ apps × 4 servicios = 200+ rows.
+func TestDockerAppImagesIndexExists(t *testing.T) {
+	conn, _, cleanup := setupTestAppsDB(t)
+	defer cleanup()
+
+	var name string
+	err := conn.QueryRow(`
+		SELECT name FROM sqlite_master
+		WHERE type = 'index' AND name = 'idx_docker_app_images_app'`).Scan(&name)
+	if err != nil {
+		t.Errorf("índice idx_docker_app_images_app no encontrado: %v", err)
+	}
+}

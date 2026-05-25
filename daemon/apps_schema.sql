@@ -42,6 +42,42 @@ CREATE INDEX IF NOT EXISTS idx_docker_apps_installed_by ON docker_apps(installed
 -- ALTER TABLE que añade la columna. No puede ir aquí porque en upgrades
 -- desde Beta 8 pre-Batch-2 la columna aún no existe cuando se ejecuta este SQL.
 
+-- ─── Docker app images (digest tracking for updates) ─────────────────
+-- Tracking de imágenes Docker por servicio para detección de actualizaciones.
+--
+-- Una app Docker puede ser:
+--   - container single (Jellyfin)        → 1 row (service_name = app_id)
+--   - stack multi-container (Immich)     → N rows (1 por servicio: server, ml,
+--                                          redis, database, etc.)
+--
+-- Detección de update se reduce a una query:
+--   SELECT app_id, service_name FROM docker_app_images
+--   WHERE local_digest != remote_digest AND remote_digest != '';
+--
+-- Cada row guarda dos digests SHA256:
+--   - local_digest:  el que tienes instalado AHORA (de `docker image inspect`)
+--   - remote_digest: el último que viste en el registro remoto
+--                    (de `docker manifest inspect`)
+--
+-- Si difieren, hay update disponible.
+-- ─────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS docker_app_images (
+    app_id            TEXT NOT NULL,                       -- FK lógica a docker_apps.id
+    service_name      TEXT NOT NULL,                       -- nombre del servicio en compose
+                                                            -- ('immich-server', 'redis')
+                                                            -- = app_id para single containers
+    image             TEXT NOT NULL,                       -- 'ghcr.io/immich-app/immich-server:release'
+    local_digest      TEXT DEFAULT '',                     -- sha256:abc... (imagen instalada)
+    remote_digest     TEXT DEFAULT '',                     -- sha256:xyz... (último check remoto)
+    remote_checked_at TEXT DEFAULT '',                     -- ISO timestamp del último manifest inspect
+                                                            -- '' = nunca comprobado
+    check_status      TEXT DEFAULT 'ok',                   -- 'ok' | 'unsupported' | 'rate_limited'
+                                                            -- | 'unauthorized' | 'error'
+    PRIMARY KEY (app_id, service_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_docker_app_images_app ON docker_app_images(app_id);
+
 -- ─── Native apps ──────────────────────────────────────────────────────
 -- Apps nativas Linux instaladas (apt packages, systemd services).
 -- Pueden estar autodetectadas (CheckCommand pass) o registradas manualmente.
