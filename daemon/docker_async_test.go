@@ -15,6 +15,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -301,6 +302,252 @@ func TestWriteAsyncAccepted_ResponseShape(t *testing.T) {
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("body should contain %q, got %q", expected, body)
+		}
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// getStackHostIP · helper para inyección de HOST_IP en .env de stacks
+// ═══════════════════════════════════════════════════════════════════════
+
+// TestGetStackHostIP_ReturnsNonEmpty · siempre debe devolver algo (al menos
+// el fallback "127.0.0.1") · nunca cadena vacía. Esto es importante porque
+// si HOST_IP queda vacío, JELLYFIN_PublishedServerUrl = "" y la app crashea.
+func TestGetStackHostIP_ReturnsNonEmpty(t *testing.T) {
+	ip := getStackHostIP()
+	if ip == "" {
+		t.Error("getStackHostIP() returned empty string · debe haber al menos fallback")
+	}
+}
+
+// TestGetStackHostIP_ValidIPv4 · el resultado debe parsearse como IPv4 válida.
+// No verifica que sea la "correcta" IP del LAN (depende del entorno) · solo
+// que el formato es válido.
+func TestGetStackHostIP_ValidIPv4(t *testing.T) {
+	ip := getStackHostIP()
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		t.Errorf("getStackHostIP() = %q · no es IP válida", ip)
+	}
+	if parsed != nil && parsed.To4() == nil {
+		t.Errorf("getStackHostIP() = %q · debe ser IPv4 (To4() != nil)", ip)
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// getStackTimezone
+// ═══════════════════════════════════════════════════════════════════════
+
+// TestGetStackTimezone_ReturnsNonEmpty · siempre debe devolver algo (al menos
+// "UTC" como fallback final).
+func TestGetStackTimezone_ReturnsNonEmpty(t *testing.T) {
+	tz := getStackTimezone()
+	if tz == "" {
+		t.Error("getStackTimezone() returned empty string · debe haber fallback")
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// expandStackEnvRefs · resuelve referencias ${KEY} entre values del .env
+// ═══════════════════════════════════════════════════════════════════════
+
+func TestExpandStackEnvRefs_BasicSubstitution(t *testing.T) {
+	env := map[string]interface{}{
+		"CONFIG_PATH":   "/data/docker/containers/codeserver",
+		"PROJECTS_PATH": "${CONFIG_PATH}/projects",
+	}
+	result := expandStackEnvRefs(env, 4)
+	if got := result["PROJECTS_PATH"]; got != "/data/docker/containers/codeserver/projects" {
+		t.Errorf("PROJECTS_PATH = %v, want expanded", got)
+	}
+}
+
+func TestExpandStackEnvRefs_LeavesUnchangedWhenNoRefs(t *testing.T) {
+	env := map[string]interface{}{
+		"PASSWORD":    "nimbus",
+		"CONFIG_PATH": "/foo",
+	}
+	result := expandStackEnvRefs(env, 4)
+	if result["PASSWORD"] != "nimbus" {
+		t.Error("PASSWORD should not change without refs")
+	}
+}
+
+func TestExpandStackEnvRefs_UnknownRefStaysLiteral(t *testing.T) {
+	env := map[string]interface{}{
+		"MIXED": "${UNKNOWN_VAR}/suffix",
+	}
+	result := expandStackEnvRefs(env, 4)
+	// Referencia no resuelta · queda literal para que el error sea visible.
+	if got := result["MIXED"]; got != "${UNKNOWN_VAR}/suffix" {
+		t.Errorf("MIXED = %v, want literal", got)
+	}
+}
+
+func TestExpandStackEnvRefs_MultiLevelChain(t *testing.T) {
+	// A → B → C debe resolverse en pocas pasadas.
+	env := map[string]interface{}{
+		"A": "valueA",
+		"B": "${A}_with_B",
+		"C": "${B}_with_C",
+	}
+	result := expandStackEnvRefs(env, 4)
+	if got := result["C"]; got != "valueA_with_B_with_C" {
+		t.Errorf("C = %v, want fully resolved chain", got)
+	}
+}
+
+func TestExpandStackEnvRefs_CircularStopsAfterMaxPasses(t *testing.T) {
+	// Referencia circular · no debe colgar, ni panic. Después de maxPasses
+	// queda en un estado consistente (no resuelto del todo).
+	env := map[string]interface{}{
+		"A": "${B}",
+		"B": "${A}",
+	}
+	result := expandStackEnvRefs(env, 4)
+	// Solo nos importa que no se cuelgue · el valor final es indefinido.
+	if result == nil {
+		t.Error("expandStackEnvRefs returned nil on circular refs")
+	}
+}
+
+func TestExpandStackEnvRefs_NonStringValuesUntouched(t *testing.T) {
+	env := map[string]interface{}{
+		"PORT":         8080,
+		"PROJECTS_PATH": "${PORT}/projects", // ref a un value numérico
+	}
+	result := expandStackEnvRefs(env, 4)
+	if result["PORT"] != 8080 {
+		t.Errorf("PORT (int) should stay int, got %T %v", result["PORT"], result["PORT"])
+	}
+	// Cuando un value no-string se referencia, se serializa con %v
+	if got := result["PROJECTS_PATH"]; got != "8080/projects" {
+		t.Errorf("PROJECTS_PATH = %v, want 8080/projects", got)
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// resolveRandomPlaceholders · {RANDOM} con persistencia idempotente
+// ═══════════════════════════════════════════════════════════════════════
+
+// TestResolveRandomPlaceholders_FreshInstall · primera instalación, .env no
+// existe · debe generar una cadena random de 24 chars.
+func TestResolveRandomPlaceholders_FreshInstall(t *testing.T) {
+	tmpDir := t.TempDir()
+	envPath := tmpDir + "/.env"
+	// .env no existe · primera instalación
+
+	env := map[string]interface{}{
+		"DB_PASSWORD":  "{RANDOM}",
+		"OTHER_VAR":    "literal_value",
+		"CONFIG_PATH":  "/data/x",
+	}
+
+	result := resolveRandomPlaceholders(env, envPath)
+
+	password, ok := result["DB_PASSWORD"].(string)
+	if !ok {
+		t.Fatalf("DB_PASSWORD no es string: %T %v", result["DB_PASSWORD"], result["DB_PASSWORD"])
+	}
+	if password == "{RANDOM}" {
+		t.Error("DB_PASSWORD sigue siendo literal {RANDOM} · no se resolvió")
+	}
+	if len(password) != 24 {
+		t.Errorf("DB_PASSWORD length = %d · expected 24", len(password))
+	}
+	if result["OTHER_VAR"] != "literal_value" {
+		t.Error("OTHER_VAR debería quedar intacto (no era {RANDOM})")
+	}
+}
+
+// TestResolveRandomPlaceholders_ReinstallWithLiteral · reinstalación cuando
+// el .env previo tiene "{RANDOM}" literal (instalación pre-fix) · MANTIENE
+// el literal para no romper el container existente.
+//
+// Justificación: Postgres tiene en su data dir el hash de "{RANDOM}" como
+// password. Si cambiásemos a una random nueva, no podría autenticarse.
+func TestResolveRandomPlaceholders_ReinstallWithLiteral(t *testing.T) {
+	tmpDir := t.TempDir()
+	envPath := tmpDir + "/.env"
+	// .env previo con literal "{RANDOM}"
+	err := os.WriteFile(envPath, []byte("DB_PASSWORD={RANDOM}\nDB_USERNAME=postgres\n"), 0644)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	env := map[string]interface{}{
+		"DB_PASSWORD":  "{RANDOM}",
+		"DB_USERNAME":  "postgres",
+	}
+
+	result := resolveRandomPlaceholders(env, envPath)
+
+	if result["DB_PASSWORD"] != "{RANDOM}" {
+		t.Errorf("DB_PASSWORD = %v · expected literal '{RANDOM}' para preservar Postgres existente", result["DB_PASSWORD"])
+	}
+}
+
+// TestResolveRandomPlaceholders_ReinstallWithGenerated · reinstalación cuando
+// el .env previo ya tenía una pass random generada · MANTIENE esa pass.
+//
+// Este es el caso "feliz": Immich se instaló fresh con el fix activo,
+// generó pass random, y se reinstala/actualiza después · debe seguir
+// funcionando sin que se regenere otra pass distinta.
+func TestResolveRandomPlaceholders_ReinstallWithGenerated(t *testing.T) {
+	tmpDir := t.TempDir()
+	envPath := tmpDir + "/.env"
+	const previousPass = "Kj8mNq2pVx7wRyL4aBcD5eFg"
+	err := os.WriteFile(envPath, []byte("DB_PASSWORD="+previousPass+"\n"), 0644)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	env := map[string]interface{}{
+		"DB_PASSWORD": "{RANDOM}", // el catálogo siempre manda {RANDOM} literal
+	}
+
+	result := resolveRandomPlaceholders(env, envPath)
+
+	if result["DB_PASSWORD"] != previousPass {
+		t.Errorf("DB_PASSWORD = %v · expected %q para mantener Postgres existente", result["DB_PASSWORD"], previousPass)
+	}
+}
+
+// TestResolveRandomPlaceholders_NoRandomKeysUntouched · si ningún valor es
+// "{RANDOM}", el map sale igual sin tocar nada.
+func TestResolveRandomPlaceholders_NoRandomKeysUntouched(t *testing.T) {
+	tmpDir := t.TempDir()
+	envPath := tmpDir + "/.env"
+
+	env := map[string]interface{}{
+		"CONFIG_PATH": "/data/x",
+		"HOST_IP":     "192.168.1.131",
+		"PASSWORD":    "nimbus", // literal del catálogo, NO {RANDOM}
+	}
+
+	result := resolveRandomPlaceholders(env, envPath)
+
+	if result["PASSWORD"] != "nimbus" {
+		t.Errorf("PASSWORD debería quedar 'nimbus', got %v", result["PASSWORD"])
+	}
+}
+
+// TestGenerateRandomString_LengthAndCharset · 24 chars, todos del alphabet
+// alfanumérico, distintos entre llamadas (probabilidad de colisión
+// astronómicamente baja).
+func TestGenerateRandomString_LengthAndCharset(t *testing.T) {
+	a := generateRandomString(24)
+	b := generateRandomString(24)
+
+	if len(a) != 24 {
+		t.Errorf("len(a) = %d · expected 24", len(a))
+	}
+	if a == b {
+		t.Error("dos llamadas consecutivas devolvieron el mismo string · entropía rota")
+	}
+	for _, c := range a {
+		if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+			t.Errorf("char %q fuera del alphabet alfanumérico", c)
 		}
 	}
 }

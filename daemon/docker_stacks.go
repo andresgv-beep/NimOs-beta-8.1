@@ -113,11 +113,32 @@ func dockerStackDeploy(w http.ResponseWriter, r *http.Request) {
 	// loops infinitos en caso de referencia circular (raro, pero defensivo).
 	autoEnv = expandStackEnvRefs(autoEnv, 4)
 
+	// APP-066 · Resolver placeholders {RANDOM} con persistencia idempotente.
+	//
+	// Algunos catálogos declaran credenciales internas del stack como literal
+	// "{RANDOM}" (ejemplo: Immich · DB_PASSWORD entre immich-server y su
+	// Postgres interno). El user nunca ve esos valores · son comunicación
+	// máquina-a-máquina dentro de la red Docker del stack.
+	//
+	// Sin resolución, el valor llega literal a docker-compose y Postgres se
+	// inicializa con la cadena "{RANDOM}" como password · funcional pero
+	// inseguro (todos los Immich del mundo tendrían misma pass).
+	//
+	// La función es IDEMPOTENTE por construcción · lee el .env previo si
+	// existe y reusa valores ya generados. Esto significa:
+	//   · Primera instalación · genera 24 chars aleatorios
+	//   · Reinstalación con .env previo · mantiene valor previo (no rompe
+	//     Postgres data dir que tiene el hash del valor anterior)
+	//
+	// El user nunca tiene que tocar esto · totalmente transparente.
+	envFilePath := filepath.Join(stackPath, ".env")
+	autoEnv = resolveRandomPlaceholders(autoEnv, envFilePath)
+
 	var lines []string
 	for k, v := range autoEnv {
 		lines = append(lines, fmt.Sprintf("%s=%v", k, v))
 	}
-	os.WriteFile(filepath.Join(stackPath, ".env"), []byte(strings.Join(lines, "\n")+"\n"), 0644)
+	os.WriteFile(envFilePath, []byte(strings.Join(lines, "\n")+"\n"), 0644)
 
 	// Deploy
 	cmd := exec.Command("docker", "compose", "-f", composePath, "up", "-d")

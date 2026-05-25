@@ -27,6 +27,7 @@ package main
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -244,4 +245,100 @@ func expandStackEnvRefs(env map[string]interface{}, maxPasses int) map[string]in
 		}
 	}
 	return env
+}
+
+// resolveRandomPlaceholders sustituye values "{RANDOM}" por cadenas aleatorias
+// de 24 caracteres alfanuméricos. Idempotente por persistencia: si el archivo
+// .env del stack ya existe, lee los valores previos y los reusa.
+//
+// Por qué la idempotencia importa:
+//
+//	Postgres y otras bases de datos almacenan el hash de la password en su
+//	data dir al inicializarse. Si en una reinstalación generamos una pass
+//	aleatoria distinta, el container fallaría al autenticarse contra el
+//	data dir existente. Reusar el valor previo del .env preserva la data.
+//
+// Comportamiento:
+//
+//	Primera instalación        · .env no existe   · genera 24 chars random
+//	Reinstalación, .env existe · valor previo "{RANDOM}" literal · MANTIENE literal
+//	Reinstalación, .env existe · valor previo "abc123..." random · MANTIENE "abc123..."
+//
+// El segundo caso (mantener "{RANDOM}" literal) es deliberado: protege a
+// instalaciones existentes que ya estaban funcionando con el placeholder
+// sin resolver. Si quisieran obtener pass aleatoria real, harían una
+// desinstalación completa + nueva instalación.
+//
+// Caracteres usados para el random · [A-Za-z0-9] · 62 valores · 24 chars
+// dan 24*log2(62) ≈ 143 bits de entropía. Más que suficiente para uso de
+// credenciales internas de stacks Docker que no se exponen al exterior.
+func resolveRandomPlaceholders(env map[string]interface{}, existingEnvPath string) map[string]interface{} {
+	// Leer valores previos si .env existía
+	previousValues := readEnvFile(existingEnvPath)
+
+	for k, v := range env {
+		s, ok := v.(string)
+		if !ok || s != "{RANDOM}" {
+			continue
+		}
+		// Si en el .env previo había un valor para esta key, reusarlo
+		// (sea literal "{RANDOM}" o un random ya generado · ambos respetan
+		// la inicialización original del container).
+		if prev, exists := previousValues[k]; exists && prev != "" {
+			env[k] = prev
+			continue
+		}
+		// Primera vez · generar random nuevo
+		env[k] = generateRandomString(24)
+	}
+	return env
+}
+
+// readEnvFile parsea un archivo .env simple (líneas KEY=VALUE) y devuelve un
+// map. Líneas vacías y las que empiezan con # se ignoran. Si el archivo no
+// existe o no se puede leer, devuelve map vacío (caso primera instalación).
+//
+// No soporta escapes ni quotes complejos · suficiente para nuestros .env
+// generados por dockerStackDeploy que son siempre KEY=value literal.
+func readEnvFile(path string) map[string]string {
+	out := map[string]string{}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		idx := strings.Index(line, "=")
+		if idx == -1 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		val := strings.TrimSpace(line[idx+1:])
+		out[key] = val
+	}
+	return out
+}
+
+// generateRandomString devuelve una cadena alfanumérica de length caracteres
+// usando crypto/rand para entropía criptográficamente segura. Caracteres
+// del alfabeto [A-Za-z0-9] · 62 valores.
+func generateRandomString(length int) string {
+	const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, length)
+	randBytes := make([]byte, length)
+	if _, err := cryptorand.Read(randBytes); err != nil {
+		// Fallback extremo · timestamp + sequence. Casi imposible que falle
+		// crypto/rand en un sistema Linux moderno, pero defensive.
+		for i := range b {
+			b[i] = charset[(int(time.Now().UnixNano())+i)%len(charset)]
+		}
+		return string(b)
+	}
+	for i := range b {
+		b[i] = charset[int(randBytes[i])%len(charset)]
+	}
+	return string(b)
 }
