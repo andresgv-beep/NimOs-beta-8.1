@@ -31,8 +31,8 @@
    *   - installError: string · mensaje si install failed
    */
 
-  import { onMount } from 'svelte';
-  import { openWindow } from '$lib/stores/windows.js';
+  import { onMount, getContext } from 'svelte';
+  import { openWindow, closeWindow } from '$lib/stores/windows.js';
   import { getCapabilities, installDockerEngine } from './api.js';
 
   /** @typedef {import('./types').AppStoreCapabilities} AppStoreCapabilities */
@@ -42,6 +42,17 @@
   export let capabilities = null;
   /** @type {() => void} */
   export let onReady = () => {};
+
+  // WindowFrame expone setContext('windowControls') con close/minimize/maximize
+  // que delegan al store de windows. Lo capturamos para hacer funcional el
+  // botón de cerrar del titlebar custom de este setup.
+  const wc = getContext('windowControls');
+
+  function handleClose() {
+    if (wc && typeof wc.close === 'function') {
+      wc.close();
+    }
+  }
 
   // ── Estado interno ─────────────────────────────────────────────────
   let viewMode = 'no-pool'; // 'no-pool' | 'no-docker' | 'installing'
@@ -203,11 +214,15 @@
 </script>
 
 <div class="setup-window">
-  <!-- Titlebar de la ventana · LEDs cuadrados consistentes con AppShell -->
+  <!-- Titlebar de la ventana · solo botón cerrar funcional · los otros eran decorativos -->
   <div class="setup-titlebar">
-    <span class="ctl ctl-min" title="Minimizar"></span>
-    <span class="ctl ctl-max" title="Maximizar"></span>
-    <span class="ctl ctl-close" title="Cerrar"></span>
+    <button
+      type="button"
+      class="ctl ctl-close"
+      title="Cerrar"
+      aria-label="Cerrar"
+      on:click={handleClose}
+    ></button>
   </div>
 
   <div class="setup-content">
@@ -384,14 +399,21 @@
     z-index: 10;
   }
   .ctl {
-    width: 11px;
-    height: 11px;
+    width: 12px;
+    height: 12px;
     border-radius: 3px;
-    background: var(--ink-trace);
+    background: var(--crit);
     cursor: pointer;
+    border: none;
+    padding: 0;
+    transition: filter 0.12s, transform 0.08s;
   }
-  .ctl-min { background: var(--warn); }
-  .ctl-max { background: var(--signal); }
+  .ctl:hover {
+    filter: brightness(1.15);
+  }
+  .ctl:active {
+    transform: scale(0.92);
+  }
   .ctl-close { background: var(--crit); }
 
   /* Contenido centrado · padding generoso */
@@ -403,32 +425,32 @@
     padding: var(--sp-6) var(--sp-5);
   }
 
-  /* ═══ Card central ═══ */
+  /* ═══ Card central · dimensiones generosas para que no parezca perdido ═══ */
   .card {
     width: 100%;
-    max-width: 440px;
+    max-width: 560px;
     text-align: center;
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: var(--sp-3);
+    gap: var(--sp-4);
   }
   .card-wide {
-    max-width: 480px;
+    max-width: 620px;
   }
 
   .card-icon {
-    width: 56px;
-    height: 56px;
-    border-radius: 12px;
+    width: 88px;
+    height: 88px;
+    border-radius: 20px;
     display: flex;
     align-items: center;
     justify-content: center;
-    margin-bottom: var(--sp-1);
+    margin-bottom: var(--sp-2);
   }
   .card-icon svg {
-    width: 26px;
-    height: 26px;
+    width: 40px;
+    height: 40px;
   }
   .icon-accent {
     background: var(--signal-soft);
@@ -440,20 +462,20 @@
   }
 
   .card h1 {
-    font-size: var(--fs-14);
+    font-size: var(--fs-18);
     font-weight: 600;
     color: var(--ink);
-    letter-spacing: -0.2px;
+    letter-spacing: -0.3px;
     margin: 0;
   }
   .card h1.title-error {
     color: var(--crit);
   }
   .card p {
-    font-size: var(--fs-12);
+    font-size: var(--fs-13);
     color: var(--ink-dim);
-    line-height: 1.55;
-    max-width: 380px;
+    line-height: 1.6;
+    max-width: 480px;
     margin: 0;
   }
   .card p b {
