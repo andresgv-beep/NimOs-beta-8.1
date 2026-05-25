@@ -309,22 +309,18 @@ export function resolveEnvRef(value, env) {
  * @param {Object<string, string>} categoriesMap        slug → display name del catálogo
  * @param {number} installedCount
  * @param {number} [updatesCount=0] · sprint Updates · número de apps con update pendiente
- * @returns {Array<{ label: string, items: Array<{ id: string, label: string, badge?: number, icon?: string }> }>}
+ * @returns {Array<{ label: string, items: Array<{ id: string, label: string, badge?: number, iconAfter?: string }> }>}
  */
 export function buildSidebarSections(counts, categoriesMap, installedCount, updatesCount = 0) {
-  // SVG inline · color via currentColor para que sea controlable por CSS.
-  // Verde si todo al día, azul si hay updates pendientes.
-  // Tamaño 14px para encajar inline con el label "Instaladas".
-  const iconColor = updatesCount > 0 ? 'var(--info)' : 'var(--signal)';
-  const iconSVG = updatesCount > 0
-    // Azul · flecha refresh circular · hay updates
-    ? `<svg viewBox="0 0 1024 1024" fill="${iconColor}" width="14" height="14" style="vertical-align: middle; margin-right: 4px;">
+  // SVG inline · color via fill explícito. Solo aparece cuando hay updates
+  // pendientes (icono azul refresh). Si todo al día, no mostramos nada · más
+  // limpio que verde permanente al lado del contador.
+  // Tamaño 14px controlado por .sb-icon-after en AppShell.
+  const updateIcon = updatesCount > 0
+    ? `<svg viewBox="0 0 1024 1024" fill="var(--info)" xmlns="http://www.w3.org/2000/svg">
         <path d="M512 1024C229.23 1024 0 794.77 0 512S229.23 0 512 0s512 229.23 512 512-229.23 512-512 512zm95.731-219.947c62.403-20.276 114.032-58.693 150.859-107.357a15.793 15.793 0 004.801-13.823 15.302 15.302 0 00-.062-.473l-.008-.039a15.75 15.75 0 00-8.378-11.488l-44.709-32.893a15.837 15.837 0 00-13.75-4.587c-.124.014-.249.029-.373.046l-.058.014a15.88 15.88 0 00-11.478 8.236c-25.776 33.881-61.624 60.563-105.31 74.758-113.432 36.856-234.791-24.722-271.525-137.777s25.253-234.206 138.685-271.062c106.335-34.55 218.904 15.82 262.966 115.175l-71.623-.803c-7.187-1.066-14.189 2.885-16.982 9.581a15.743 15.743 0 004.748 18.601l120.91 126.41c2.999 3.135 7.161 4.899 11.51 4.879s8.502-1.823 11.485-4.986L890.37 448.206c5.265-4.193 7.303-11.242 5.082-17.573a20.516 20.516 0 00-.119-.318 15.889 15.889 0 00-.947-2.099l-.031-.073c-3.116-5.729-9.448-8.951-15.937-8.108l-71.678-.494-.892-2.744C753.5 255.685 579.61 167.45 417.952 219.976S167.478 446.095 219.826 607.207c52.348 161.112 226.238 249.347 387.896 196.821l.008.027z"/>
       </svg>`
-    // Verde · tic dentro de círculo · todo al día
-    : `<svg viewBox="0 0 1024 1024" fill="${iconColor}" width="14" height="14" style="vertical-align: middle; margin-right: 4px;">
-        <path d="M429.811 577.1l-80.485-86.309c-21.425-22.976-57.42-24.233-80.396-2.807s-24.233 57.42-2.807 80.396l81.839 87.762-.158.152 43.493 45.038c19.643 20.341 52.056 20.907 72.397 1.264l35.686-34.462 8.195-7.642-.133-.143 251.802-243.163c22.607-21.832 23.236-57.857 1.405-80.464s-57.857-23.236-80.464-1.405L429.812 577.1zM512 1024C229.23 1024 0 794.77 0 512S229.23 0 512 0s512 229.23 512 512-229.23 512-512 512z"/>
-      </svg>`;
+    : undefined;
 
   const sections = [
     {
@@ -334,9 +330,9 @@ export function buildSidebarSections(counts, categoriesMap, installedCount, upda
           id: 'installed',
           label: 'Instaladas',
           badge: installedCount,
-          // Solo mostramos icono si hay al menos una app instalada.
-          // En estado vacío no aporta información.
-          icon: installedCount > 0 ? iconSVG : undefined,
+          // iconAfter · sprint Updates · icono renderizado DESPUÉS del badge.
+          // Solo aparece si hay updates pendientes (sino, sidebar limpio).
+          iconAfter: updateIcon,
         },
       ],
     },

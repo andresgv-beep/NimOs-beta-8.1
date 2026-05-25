@@ -90,6 +90,8 @@
     font-family: inherit;
     color: var(--ink);
     width: 100%;
+    /* Contenedor para los absolutes .update-badge y .installed-check */
+    position: relative;
   }
   .app-card:hover {
     border-color: var(--line-bright);
