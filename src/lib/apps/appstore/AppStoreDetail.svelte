@@ -41,7 +41,7 @@
    * app, no de gestión.
    */
 
-  import { onMount, createEventDispatcher } from 'svelte';
+  import { onMount, onDestroy, createEventDispatcher } from 'svelte';
   import { openWindow } from '$lib/stores/windows.js';
   import ConfirmDialog from '$lib/ui/ConfirmDialog.svelte';
   import { fetchCatalog } from './catalog.js';
@@ -87,6 +87,17 @@
   let actionError = '';
   /** Modo de desinstalación seleccionado · 'soft' (default · preserva datos) | 'wipe' (destructivo) */
   let uninstallMode = 'soft';
+  /**
+   * Fase del flujo de desinstalación dentro del modal:
+   *   'choice'  · pantalla inicial con las dos opciones (default)
+   *   'running' · cleanup en progreso (poll a /api/services hasta que desaparezca)
+   *   'done'    · cleanup completado, mostrar "Cerrar"
+   *   'error'   · falló algo, mostrar mensaje
+   */
+  let uninstallPhase = 'choice';
+  let uninstallErr = '';
+  /** ID del setInterval del polling · permite cancelarlo si user cierra */
+  let uninstallPollId = null;
 
   // Screenshots · intentamos cargar 1..6, oculta automáticamente las que fallan
   // El repo del catálogo guarda screenshots en /screenshots/{appId}/N.png
@@ -99,6 +110,7 @@
 
   // ── Lifecycle ──────────────────────────────────────────────────────
   onMount(load);
+  onDestroy(stopUninstallPolling);
 
   $: if (appId) load();
 
@@ -210,28 +222,98 @@
   function handleUninstallClick() {
     if (!view?.installed || uninstallProcessing) return;
     uninstallMode = 'soft'; // siempre arrancar en modo seguro
+    uninstallPhase = 'choice';
+    uninstallErr = '';
     confirmUninstallOpen = true;
   }
 
   async function handleUninstallConfirm() {
     if (!view?.installed) return;
-    uninstallProcessing = true;
-    actionError = '';
-    try {
-      await uninstallApp(view.id, 'stack', { wipe: uninstallMode === 'wipe' });
+    if (uninstallPhase === 'done') {
+      // Si ya terminó · al pulsar "Cerrar" volvemos al catálogo
+      stopUninstallPolling();
       confirmUninstallOpen = false;
       dispatch('back');
-    } catch (err) {
-      actionError = err?.message || String(err);
+      return;
+    }
+    if (uninstallPhase === 'error') {
+      // Cerrar tras error · queda en el detail
+      stopUninstallPolling();
       confirmUninstallOpen = false;
-    } finally {
+      return;
+    }
+    if (uninstallPhase !== 'choice') return;
+
+    uninstallProcessing = true;
+    uninstallPhase = 'running';
+    uninstallErr = '';
+    try {
+      await uninstallApp(view.id, 'stack', { wipe: uninstallMode === 'wipe' });
+      // Backend respondió OK · el cleanup corre en background. Hacemos polling
+      // a getInstalledApps hasta que la app deje de aparecer (cleanup completado).
+      startUninstallPolling();
+    } catch (err) {
+      uninstallPhase = 'error';
+      uninstallErr = err?.message || String(err);
       uninstallProcessing = false;
     }
   }
 
   function handleUninstallCancel() {
-    if (uninstallProcessing) return;
+    if (uninstallProcessing && uninstallPhase === 'running') {
+      // Si ya está corriendo, no permitir cancelar · solo en choice/done/error
+      return;
+    }
+    stopUninstallPolling();
     confirmUninstallOpen = false;
+    // Si estaba en estado 'done' al cerrar, volvemos al catálogo (la app ya
+    // no existe, no tiene sentido seguir en el detail)
+    if (uninstallPhase === 'done') {
+      dispatch('back');
+    }
+  }
+
+  /**
+   * Polling a getInstalledApps cada segundo hasta que la app deje de aparecer.
+   * Cuando desaparece → cleanup completado → fase 'done'.
+   * Timeout de seguridad a los 30s · si la app sigue presente, mostramos error.
+   */
+  function startUninstallPolling() {
+    if (!view) return;
+    const targetId = view.id;
+    const startTime = Date.now();
+    const TIMEOUT_MS = 30000;
+
+    uninstallPollId = setInterval(async () => {
+      try {
+        const installed = await getInstalledApps();
+        const stillThere = installed.some((a) => a?.id === targetId);
+        if (!stillThere) {
+          // Desapareció · cleanup terminado
+          stopUninstallPolling();
+          uninstallPhase = 'done';
+          uninstallProcessing = false;
+          return;
+        }
+        // Sigue ahí · verificar timeout
+        if (Date.now() - startTime > TIMEOUT_MS) {
+          stopUninstallPolling();
+          uninstallPhase = 'error';
+          uninstallErr = 'El proceso está tardando más de lo esperado. Revisa los logs del daemon.';
+          uninstallProcessing = false;
+        }
+      } catch (err) {
+        // Error en el polling · no abortamos, reintentamos en el siguiente tick
+        // (los errores transitorios de red no deben romper el flujo)
+      }
+    }, 1000);
+  }
+
+  function stopUninstallPolling() {
+    if (uninstallPollId !== null) {
+      clearInterval(uninstallPollId);
+      uninstallPollId = null;
+    }
   }
 
   // Credentials · copiar al clipboard
@@ -523,46 +605,90 @@
   </div>
 {/if}
 
-<!-- Confirm dialog uninstall · dos modos (soft/wipe) -->
+<!-- Confirm dialog uninstall · multi-fase con feedback en tiempo real -->
 {#if view}
   <ConfirmDialog
     bind:open={confirmUninstallOpen}
     title="Desinstalar {view.name}"
-    message="Elige cómo desinstalar:"
-    confirmLabel={uninstallMode === 'wipe' ? `Desinstalar y borrar` : `Desinstalar`}
-    cancelLabel="Cancelar"
-    variant="danger"
-    processing={uninstallProcessing}
+    message={uninstallPhase === 'choice' ? 'Elige cómo desinstalar:' : ''}
+    confirmLabel={
+      uninstallPhase === 'choice'
+        ? (uninstallMode === 'wipe' ? 'Desinstalar y borrar' : 'Desinstalar')
+        : uninstallPhase === 'done'
+          ? 'Cerrar'
+          : uninstallPhase === 'error'
+            ? 'Cerrar'
+            : ''
+    }
+    cancelLabel={uninstallPhase === 'choice' ? 'Cancelar' : ''}
+    variant={uninstallPhase === 'error' ? 'danger' : (uninstallPhase === 'done' ? 'default' : 'danger')}
+    processing={uninstallPhase === 'running'}
     on:confirm={handleUninstallConfirm}
     on:cancel={handleUninstallCancel}
   >
-    <div class="uninstall-modes">
-      <label class="mode-option" class:selected={uninstallMode === 'soft'}>
-        <input type="radio" name="uninstall-mode" value="soft" bind:group={uninstallMode} />
-        <div class="mode-content">
-          <div class="mode-title">
-            Desinstalar <span class="mode-badge mode-badge-ok">recomendado</span>
+    {#if uninstallPhase === 'choice'}
+      <div class="uninstall-modes">
+        <label class="mode-option" class:selected={uninstallMode === 'soft'}>
+          <input type="radio" name="uninstall-mode" value="soft" bind:group={uninstallMode} />
+          <div class="mode-content">
+            <div class="mode-title">
+              Desinstalar <span class="mode-badge mode-badge-ok">recomendado</span>
+            </div>
+            <div class="mode-desc">
+              El contenedor se elimina. Los datos (configuración, biblioteca, BD)
+              se conservan. Si reinstalas más tarde, todo vuelve donde estaba.
+            </div>
           </div>
-          <div class="mode-desc">
-            El contenedor se elimina. Los datos (configuración, biblioteca, BD)
-            se conservan. Si reinstalas más tarde, todo vuelve donde estaba.
-          </div>
-        </div>
-      </label>
+        </label>
 
-      <label class="mode-option" class:selected={uninstallMode === 'wipe'}>
-        <input type="radio" name="uninstall-mode" value="wipe" bind:group={uninstallMode} />
-        <div class="mode-content">
-          <div class="mode-title mode-title-danger">
-            Desinstalar y borrar todos los datos
+        <label class="mode-option" class:selected={uninstallMode === 'wipe'}>
+          <input type="radio" name="uninstall-mode" value="wipe" bind:group={uninstallMode} />
+          <div class="mode-content">
+            <div class="mode-title mode-title-danger">
+              Desinstalar y borrar todos los datos
+            </div>
+            <div class="mode-desc">
+              Eliminación completa · <strong>NO se puede deshacer</strong>.
+              Pierdes biblioteca, configuración y base de datos.
+            </div>
           </div>
-          <div class="mode-desc">
-            Eliminación completa · <strong>NO se puede deshacer</strong>.
-            Pierdes biblioteca, configuración y base de datos.
-          </div>
+        </label>
+      </div>
+    {:else if uninstallPhase === 'running'}
+      <div class="uninstall-progress">
+        <div class="uninstall-step">
+          <span class="uninstall-led led-active"></span>
+          <span class="uninstall-step-label">
+            {uninstallMode === 'wipe' ? 'Eliminando contenedor y datos…' : 'Eliminando contenedor (datos preservados)…'}
+          </span>
         </div>
-      </label>
-    </div>
+        <div class="uninstall-hint-running">
+          Esto puede tardar unos segundos. No cierres el modal.
+        </div>
+      </div>
+    {:else if uninstallPhase === 'done'}
+      <div class="uninstall-progress">
+        <div class="uninstall-step">
+          <span class="uninstall-led led-ok"></span>
+          <span class="uninstall-step-label">
+            {view.name} desinstalada{uninstallMode === 'wipe' ? ' · datos borrados' : ' · datos preservados'}
+          </span>
+        </div>
+        {#if uninstallMode === 'soft'}
+          <div class="uninstall-hint-running">
+            Los datos siguen disponibles para una futura reinstalación.
+          </div>
+        {/if}
+      </div>
+    {:else if uninstallPhase === 'error'}
+      <div class="uninstall-progress">
+        <div class="uninstall-step">
+          <span class="uninstall-led led-crit"></span>
+          <span class="uninstall-step-label">No se pudo completar la desinstalación</span>
+        </div>
+        <div class="uninstall-err">{uninstallErr}</div>
+      </div>
+    {/if}
   </ConfirmDialog>
 {/if}
 
@@ -1129,5 +1255,68 @@
   .mode-desc strong {
     color: var(--crit);
     font-weight: 600;
+  }
+
+  /* ═══ Progreso de uninstall (running / done / error) ═══ */
+  .uninstall-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 8px 0;
+  }
+  .uninstall-step {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 16px;
+    background: var(--canvas);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+  }
+  .uninstall-step-label {
+    color: var(--ink);
+    font-size: var(--fs-12);
+    font-weight: 500;
+  }
+  .uninstall-led {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: var(--ink-faint);
+    transition: background 0.2s, box-shadow 0.2s;
+  }
+  .uninstall-led.led-active {
+    background: var(--info);
+    box-shadow: 0 0 8px var(--info-glow, rgba(77, 184, 255, 0.5));
+    animation: led-pulse 1.2s ease-in-out infinite;
+  }
+  .uninstall-led.led-ok {
+    background: var(--signal);
+    box-shadow: 0 0 8px var(--signal-glow, rgba(0, 255, 159, 0.5));
+  }
+  .uninstall-led.led-crit {
+    background: var(--crit);
+    box-shadow: 0 0 8px var(--crit-glow, rgba(255, 90, 90, 0.5));
+  }
+  @keyframes led-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: 0.55; transform: scale(0.88); }
+  }
+  .uninstall-hint-running {
+    color: var(--ink-mute);
+    font-size: var(--fs-11);
+    text-align: center;
+    padding-top: 4px;
+  }
+  .uninstall-err {
+    color: var(--crit);
+    font-size: var(--fs-11);
+    font-family: var(--font-mono);
+    padding: 10px 14px;
+    background: var(--crit-dim, rgba(255, 90, 90, 0.08));
+    border: 1px solid var(--crit-border, rgba(255, 90, 90, 0.3));
+    border-radius: var(--radius-sm);
+    word-break: break-word;
   }
 </style>
