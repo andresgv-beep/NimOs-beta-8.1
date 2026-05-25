@@ -403,7 +403,7 @@
     <section class="section">
       <h2 class="section-title">Información técnica</h2>
       <div class="info-grid">
-        <!-- Fila 1: Imagen Docker | Puerto -->
+        <!-- Items pequeños primero (llenan parejas naturales) -->
         <div class="info-card">
           <span class="info-card-k">Imagen Docker</span>
           <code class="info-card-v">{view.catalog?.image || '—'}</code>
@@ -412,16 +412,27 @@
           <span class="info-card-k">Puerto</span>
           <code class="info-card-v">{view.catalog?.port ? formatPort(view.catalog.port) : '—'}</code>
         </div>
-
-        <!-- Fila 2: Modo apertura | Servicios (si hay) o Container (si instalada) -->
         {#if view.catalog?.openMode}
           <div class="info-card">
             <span class="info-card-k">Modo de apertura</span>
             <code class="info-card-v">{view.catalog.openMode}</code>
           </div>
         {/if}
+        {#if services.length === 1}
+          <div class="info-card">
+            <span class="info-card-k">Servicio</span>
+            <code class="info-card-v">{services[0]}</code>
+          </div>
+        {/if}
+        {#if view.installed && view.runtime?.containerName}
+          <div class="info-card">
+            <span class="info-card-k">Container</span>
+            <code class="info-card-v">{view.runtime.containerName}</code>
+          </div>
+        {/if}
+
+        <!-- Items wide al final (ocupan ambas columnas) -->
         {#if services.length > 1}
-          <!-- Servicios multi: ocupa ambas columnas en su propia fila para que los chips quepan -->
           <div class="info-card info-card-wide">
             <span class="info-card-k">Servicios ({services.length})</span>
             <div class="info-card-chips">
@@ -429,19 +440,6 @@
                 <code class="service-chip">{svc}</code>
               {/each}
             </div>
-          </div>
-        {:else if services.length === 1}
-          <div class="info-card">
-            <span class="info-card-k">Servicio</span>
-            <code class="info-card-v">{services[0]}</code>
-          </div>
-        {/if}
-
-        <!-- Fila 3 (solo si instalada): Container name -->
-        {#if view.installed && view.runtime?.containerName}
-          <div class="info-card info-card-wide">
-            <span class="info-card-k">Container</span>
-            <code class="info-card-v">{view.runtime.containerName}</code>
           </div>
         {/if}
       </div>
@@ -570,25 +568,23 @@
     overflow-y: auto;
     padding: var(--sp-4) var(--sp-5) var(--sp-6);
     width: 100%;
+    display: block;
   }
-  /* Wrapper interno que centra el contenido a max 920px sin sacar el scroll del marco */
-  .detail-scroll > * {
+  /* Hijos del scroll: max 920px centrado · EXCEPTO el back-btn (que tiene su propio ancho natural) */
+  .detail-scroll > *:not(.back-btn) {
     max-width: 920px;
     margin-left: auto;
     margin-right: auto;
     width: 100%;
   }
-  .detail-scroll {
-    display: block;
-  }
-  /* Separación entre secciones (sustituye el gap del flex) */
+  /* Separación entre secciones */
   .detail-scroll > * + * {
     margin-top: var(--sp-5);
   }
 
-  /* ═══ Back button ═══ */
+  /* ═══ Back button · sticky para que no se pierda al hacer scroll ═══ */
   .back-btn {
-    background: transparent;
+    background: var(--panel-elev);
     border: 1px solid var(--line);
     color: var(--ink-dim);
     cursor: pointer;
@@ -597,10 +593,20 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 12px;
+    padding: 8px 14px;
     border-radius: var(--radius-sm);
     transition: background 0.12s, color 0.12s, border-color 0.12s;
     align-self: flex-start;
+    /* Sticky: queda pegado al top del scroll container */
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    /* margen negativo para "salir" del padding del container y pegarse al top */
+    margin-top: calc(var(--sp-4) * -1);
+    padding-top: 8px;
+    padding-bottom: 8px;
+    /* Glow sutil debajo para separarse del contenido que pasa por detrás */
+    box-shadow: 0 4px 12px rgba(0,0,0,0.25);
   }
   .back-btn:hover {
     color: var(--ink);
@@ -830,6 +836,7 @@
   .info-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
+    grid-auto-flow: row dense; /* rellena huecos automáticamente */
     gap: var(--sp-2);
     padding: var(--sp-2) 0;
   }
@@ -842,8 +849,9 @@
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
     padding: 12px 14px;
+    min-height: 48px;
   }
-  /* Servicios y otras filas que ocupan ambas columnas */
+  /* Servicios multi y Container: ocupan ambas columnas */
   .info-card-wide {
     grid-column: 1 / -1;
     align-items: center;
