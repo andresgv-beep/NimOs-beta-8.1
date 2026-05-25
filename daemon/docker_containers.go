@@ -236,6 +236,12 @@ func dockerContainerAction(w http.ResponseWriter, r *http.Request, id, action st
 	jsonOk(w, map[string]interface{}{"ok": true, "action": action, "containerId": safeId})
 }
 
+// dockerContainerDelete · DELETE /api/docker/container/<id>[?wipe=true]
+//
+// Para apps mono-container, el efecto práctico de wipe es menor que en stacks
+// (los containers individuales no suelen tener volúmenes nombrados asociados),
+// pero mantenemos el flag por consistencia API · permite que el frontend use
+// el mismo dialog para mono-container y stacks.
 func dockerContainerDelete(w http.ResponseWriter, r *http.Request, id string) {
 	session := requireAuth(w, r)
 	if session == nil {
@@ -250,6 +256,8 @@ func dockerContainerDelete(w http.ResponseWriter, r *http.Request, id string) {
 		jsonError(w, 400, "Invalid container ID")
 		return
 	}
+
+	wipe := r.URL.Query().Get("wipe") == "true"
 
 	// APP-031 · race-free uninstall:
 	//   1. MarkDockerAppDeleting · síncrono. Observer ya no la lista activa,
@@ -266,10 +274,26 @@ func dockerContainerDelete(w http.ResponseWriter, r *http.Request, id string) {
 
 	// Capturar id para la goroutine (Context del request muere al return).
 	idCapture := safeId
+	wipeCapture := wipe
 	go func() {
 		runSafe("docker", "stop", idCapture)
-		if _, ok := runSafe("docker", "rm", idCapture); !ok {
-			runSafe("docker", "rm", "-f", idCapture)
+		// En modo wipe usamos -v (borra volúmenes anónimos asociados).
+		// En modo soft, los volúmenes anónimos también se borran porque
+		// `docker rm` sin -v solo preserva volúmenes con nombre (named volumes)
+		// que en mono-container no se crean por defecto · efecto similar.
+		if wipeCapture {
+			if _, ok := runSafe("docker", "rm", "-v", idCapture); !ok {
+				runSafe("docker", "rm", "-f", "-v", idCapture)
+			}
+		} else {
+			if _, ok := runSafe("docker", "rm", idCapture); !ok {
+				runSafe("docker", "rm", "-f", idCapture)
+			}
+		}
+		if wipeCapture {
+			logMsg("docker: container %s uninstalled in WIPE mode", idCapture)
+		} else {
+			logMsg("docker: container %s uninstalled in SOFT mode", idCapture)
 		}
 		// DELETE final libera la row. Usamos Background ctx porque el request
 		// ya terminó y la operación debe completarse independientemente.
@@ -280,7 +304,7 @@ func dockerContainerDelete(w http.ResponseWriter, r *http.Request, id string) {
 		ForceDockerCacheRefresh(context.Background())
 	}()
 
-	jsonOk(w, map[string]interface{}{"ok": true, "containerId": safeId})
+	jsonOk(w, map[string]interface{}{"ok": true, "containerId": safeId, "wipe": wipe})
 }
 
 func dockerContainerMounts(w http.ResponseWriter, r *http.Request, id string) {

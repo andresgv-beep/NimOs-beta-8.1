@@ -185,6 +185,26 @@ func dockerStackDeploy(w http.ResponseWriter, r *http.Request) {
 
 	jsonOk(w, map[string]interface{}{"ok": true, "stack": id, "path": stackPath})
 }
+// dockerStackDelete · DELETE /api/docker/stack/<id>[?wipe=true]
+//
+// Dos modos de operación según query param `wipe`:
+//
+//   wipe=false (default · recomendado para el user) · "DESINSTALACIÓN SUAVE"
+//     · docker compose down --remove-orphans · containers fuera
+//     · NO se borran volúmenes Docker (-v) · datos en containers/{id} intactos
+//     · NO se borra stackPath ni containers/{id} · compose YAML, .env y datos
+//       de la app se conservan
+//     · Resultado: si reinstalas la app más tarde, todo vuelve donde estaba.
+//       Postgres encuentra su data dir, Immich su BD, Jellyfin su biblioteca.
+//
+//   wipe=true · "DESINSTALACIÓN COMPLETA · DESTRUCTIVA"
+//     · docker compose down -v --remove-orphans · containers + volúmenes Docker
+//     · Borra stackPath (docker-compose.yml + .env)
+//     · Borra containers/{id} (uploads, postgres data, configs de la app)
+//     · NO se puede deshacer.
+//
+// En ambos casos: la row en docker_apps se elimina · la app deja de aparecer
+// como instalada en el AppStore.
 func dockerStackDelete(w http.ResponseWriter, r *http.Request, id string) {
 	session := requireAuth(w, r)
 	if session == nil {
@@ -199,6 +219,9 @@ func dockerStackDelete(w http.ResponseWriter, r *http.Request, id string) {
 		jsonError(w, 400, "Invalid stack ID")
 		return
 	}
+
+	// Detectar modo · default es suave (preservar datos)
+	wipe := r.URL.Query().Get("wipe") == "true"
 
 	// APP-031 · race-free uninstall (mismo flujo que dockerContainerDelete).
 	if err := appsRepo.MarkDockerAppDeleting(r.Context(), safeId); err != nil {
@@ -224,16 +247,31 @@ func dockerStackDelete(w http.ResponseWriter, r *http.Request, id string) {
 
 	// Cleanup en background + DELETE final tras compose down.
 	idCapture := safeId
+	wipeCapture := wipe
+	dockerPathCapture := dockerPath
 	go func() {
 		if _, err := os.Stat(composePath); err == nil {
-			cmd := exec.Command("docker", "compose", "-f", composePath, "down", "-v", "--remove-orphans")
+			// Argumentos de compose down · siempre --remove-orphans, solo añade -v
+			// en modo wipe (destruir volúmenes Docker)
+			downArgs := []string{"compose", "-f", composePath, "down", "--remove-orphans"}
+			if wipeCapture {
+				downArgs = append(downArgs[:len(downArgs)-1], "-v", "--remove-orphans")
+			}
+			cmd := exec.Command("docker", downArgs...)
 			cmd.Dir = stackPath
 			cmd.Run()
 		}
-		os.RemoveAll(stackPath)
-		os.RemoveAll(filepath.Join(dockerPath, "containers", idCapture))
 
-		// DELETE final libera la row.
+		// En modo wipe · borrar stack path (compose YAML + .env) y datos
+		if wipeCapture {
+			os.RemoveAll(stackPath)
+			os.RemoveAll(filepath.Join(dockerPathCapture, "containers", idCapture))
+			logMsg("docker: stack %s uninstalled in WIPE mode · all data removed", idCapture)
+		} else {
+			logMsg("docker: stack %s uninstalled in SOFT mode · data preserved at %s/containers/%s", idCapture, dockerPathCapture, idCapture)
+		}
+
+		// DELETE final libera la row de BD (en ambos modos)
 		if err := appsRepo.DeleteDockerApp(context.Background(), idCapture); err != nil {
 			logMsg("docker: stack uninstall final DB delete failed for %s: %v", idCapture, err)
 		}
@@ -241,7 +279,7 @@ func dockerStackDelete(w http.ResponseWriter, r *http.Request, id string) {
 		ForceDockerCacheRefresh(context.Background())
 	}()
 
-	jsonOk(w, map[string]interface{}{"ok": true})
+	jsonOk(w, map[string]interface{}{"ok": true, "wipe": wipe})
 }
 
 // dockerPull · GET /api/docker/pull/{image}
