@@ -173,7 +173,14 @@ func validatePathWithinShare(sharePath, subPath string) (string, error) {
 		shareResolved = evalShare
 	}
 
-	if !strings.HasPrefix(resolved, shareResolved) {
+	// HARD-003: prefix check must enforce a directory boundary. Without the
+	// separator, a sibling path with a prefix-matching name (e.g. share
+	// "/srv/media-secret" vs share "/srv/media") would be considered "inside"
+	// the share — strings.HasPrefix("/srv/media-secret/x", "/srv/media") is
+	// true. We require either an exact match (root of the share) or the next
+	// character after the share path to be a separator.
+	sep := string(filepath.Separator)
+	if resolved != shareResolved && !strings.HasPrefix(resolved, shareResolved+sep) {
 		return "", fmt.Errorf("invalid path: access denied")
 	}
 	return resolved, nil
