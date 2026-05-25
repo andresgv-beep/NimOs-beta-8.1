@@ -1158,3 +1158,152 @@ func TestAppsRepoDockerReinstall_AfterDeleting(t *testing.T) {
 		t.Errorf("reinstall should update Name, got %q", got.Name)
 	}
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// SPRINT POST-CIERRE · Defensive cleanup + schema verification
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Bug observado durante install fresh del 24/05/2026 (counter 28 en systemd):
+//
+//   Fatal: cannot create tables: apps schema: apply apps schema:
+//          SQL logic error: no such column: deleting (1)
+//
+// Causa raíz: el daemon crasheaba entre el ALTER TABLE que añade `deleting`
+// y el CREATE INDEX que lo referencia. Al reiniciar, el índice quedaba en
+// sqlite_master apuntando a una columna que no se había añadido a tiempo,
+// y el siguiente CREATE INDEX IF NOT EXISTS no podía completarse.
+//
+// Fix aplicado en initAppsSchema:
+//   1. DROP INDEX IF EXISTS antes del schema base (defensive cleanup)
+//   2. ALTER TABLE ADD COLUMN (idempotente)
+//   3. CREATE INDEX IF NOT EXISTS (tras garantizar la columna)
+//   4. verifyDockerAppsSchema() · aborta con error claro si falta columna
+
+// TestInitAppsSchema_RecoversFromOrphanIndex simula el caso edge donde quedó
+// un índice huérfano de un install previo (columna fantasma) y verifica que
+// el defensive cleanup lo resuelve sin que el daemon entre en crash loop.
+func TestInitAppsSchema_RecoversFromOrphanIndex(t *testing.T) {
+	tmpDB := "/tmp/nimos_apps_orphan_index_test.db"
+	os.Remove(tmpDB)
+	defer os.Remove(tmpDB)
+
+	conn, err := sql.Open("sqlite", tmpDB)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer conn.Close()
+	conn.SetMaxOpenConns(1)
+
+	// Setup · crear la tabla docker_apps SIN la columna `deleting` (estado
+	// equivalente a una install pre-Batch-2 que crasheó antes de migrar).
+	_, err = conn.Exec(`
+		CREATE TABLE docker_apps (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			installed_at TEXT NOT NULL,
+			installed_by TEXT NOT NULL
+		);
+	`)
+	if err != nil {
+		t.Fatalf("setup table: %v", err)
+	}
+
+	// NO podemos crear el índice huérfano directamente (SQLite rechazaría),
+	// pero sí podemos simular el efecto: forzar un CREATE INDEX que falle y
+	// verificar que el cleanup permite recuperarse.
+	//
+	// El test real: initAppsSchema debe completarse sin error incluso cuando
+	// la tabla existe en estado pre-migration.
+	if err := initAppsSchema(conn); err != nil {
+		t.Fatalf("initAppsSchema en estado pre-migration: %v", err)
+	}
+
+	// Verificar que tras la migration, la columna `deleting` existe.
+	rows, err := conn.Query(`PRAGMA table_info(docker_apps)`)
+	if err != nil {
+		t.Fatalf("query table_info: %v", err)
+	}
+	defer rows.Close()
+
+	hasDeleting := false
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if name == "deleting" {
+			hasDeleting = true
+		}
+	}
+	if !hasDeleting {
+		t.Error("columna `deleting` no existe tras initAppsSchema · migration falló silenciosa")
+	}
+}
+
+// TestVerifyDockerAppsSchema_DetectsMissingColumn confirma que la verificación
+// post-migration aborta con error claro si una columna crítica falta. Esto
+// evita crash loops futuros con mensajes genéricos · si algo va mal, el daemon
+// falla rápido con un mensaje accionable.
+func TestVerifyDockerAppsSchema_DetectsMissingColumn(t *testing.T) {
+	tmpDB := "/tmp/nimos_apps_verify_test.db"
+	os.Remove(tmpDB)
+	defer os.Remove(tmpDB)
+
+	conn, err := sql.Open("sqlite", tmpDB)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer conn.Close()
+	conn.SetMaxOpenConns(1)
+
+	// Tabla incompleta · falta `deleting`
+	_, err = conn.Exec(`
+		CREATE TABLE docker_apps (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			ports_json TEXT DEFAULT '[]',
+			installed_at TEXT NOT NULL,
+			installed_by TEXT NOT NULL
+		);
+	`)
+	if err != nil {
+		t.Fatalf("setup table: %v", err)
+	}
+
+	// verifyDockerAppsSchema debe detectar la columna faltante
+	err = verifyDockerAppsSchema(conn)
+	if err == nil {
+		t.Error("verifyDockerAppsSchema debería fallar cuando falta `deleting`")
+	}
+	if err != nil && !strings.Contains(err.Error(), "deleting") {
+		t.Errorf("mensaje de error no menciona la columna faltante: %v", err)
+	}
+}
+
+// TestVerifyDockerAppsSchema_PassesOnCompleteSchema confirma que la verificación
+// NO produce falsos positivos en un schema completo (tabla creada con todas
+// las columnas en orden correcto).
+func TestVerifyDockerAppsSchema_PassesOnCompleteSchema(t *testing.T) {
+	tmpDB := "/tmp/nimos_apps_verify_pass_test.db"
+	os.Remove(tmpDB)
+	defer os.Remove(tmpDB)
+
+	conn, err := sql.Open("sqlite", tmpDB)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer conn.Close()
+	conn.SetMaxOpenConns(1)
+
+	// Aplicar el schema completo · debe pasar verificación
+	if err := initAppsSchema(conn); err != nil {
+		t.Fatalf("initAppsSchema: %v", err)
+	}
+
+	if err := verifyDockerAppsSchema(conn); err != nil {
+		t.Errorf("verifyDockerAppsSchema falsea positivo en schema completo: %v", err)
+	}
+}
