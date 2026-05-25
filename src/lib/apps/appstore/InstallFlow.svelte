@@ -35,6 +35,13 @@
   /** @type {AppView} */
   export let view;
 
+  /**
+   * Modo embedded: cuando InstallFlow se renderiza dentro de AppStoreDetail,
+   * el hero ya está visible arriba (en el detail). Ocultamos el nuestro para
+   * evitar duplicación visual y mantenemos solo los steps + barra + acciones.
+   */
+  export let embedded = false;
+
   const dispatch = createEventDispatcher();
 
   // ── Estado del flow ────────────────────────────────────────────────
@@ -143,16 +150,17 @@
   }
 </script>
 
-<div class="install-flow">
-  <!-- Hero compacto -->
-  <div class="hero">
-    {#if view.icon}
-      <img class="hero-icon" src={view.icon} alt={view.name} />
-    {:else}
-      <div class="hero-icon-fallback">{view.name.charAt(0)}</div>
-    {/if}
-    <div class="hero-text">
-      <h1 class="hero-title">
+<div class="install-flow" class:embedded={embedded}>
+  {#if !embedded}
+    <!-- Hero compacto (solo en modo standalone · evita duplicar el del detail) -->
+    <div class="hero">
+      {#if view.icon}
+        <img class="hero-icon" src={view.icon} alt={view.name} />
+      {:else}
+        <div class="hero-icon-fallback">{view.name.charAt(0)}</div>
+      {/if}
+      <div class="hero-text">
+        <h1 class="hero-title">
         {#if installError}
           Instalación interrumpida
         {:else if phase === 'done'}
@@ -166,6 +174,7 @@
       </div>
     </div>
   </div>
+  {/if}
 
   {#if installError}
     <div class="error-box">{installError}</div>
@@ -224,6 +233,18 @@
     gap: var(--sp-4);
     max-width: 640px;
     margin: 0 auto;
+  }
+
+  /* Modo embedded · cuando se renderiza dentro de AppStoreDetail.
+     El detail ya hace el layout (padding, scroll, max-width), nosotros solo
+     aportamos los steps + barra + acciones sin chrome propio. */
+  .install-flow.embedded {
+    height: auto;
+    overflow: visible;
+    padding: 0;
+    max-width: none;
+    margin: 0;
+    gap: var(--sp-3);
   }
 
   /* ═══ Hero ═══ */

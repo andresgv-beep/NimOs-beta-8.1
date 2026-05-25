@@ -1,32 +1,51 @@
 <script>
   /**
-   * AppStoreDetail · Vista detalle de una app del catálogo
-   * ────────────────────────────────────────────────────────
-   * Muestra info completa de una app:
-   *   · Hero: icono grande + nombre + categoría + puerto
-   *   · Descripción
-   *   · Credenciales por defecto (si aplica)
-   *   · Información técnica (imagen Docker + servicios del compose)
-   *   · Botones de acción:
-   *       - No instalada: "Instalar" (placeholder · Fase 5)
-   *       - Instalada:    "Abrir" + "Detener/Iniciar" + "Desinstalar"
-   *                       (placeholders · Fase 5/6)
-   *   · Botón "← Volver" emite evento `back` al padre
+   * AppStoreDetail · Vista detalle de una app del catálogo · Fase 7
+   * ─────────────────────────────────────────────────────────────────
+   * Diseño tipo "store profesional" inspirado en Apple AppStore:
    *
-   * El componente recibe appId como prop y se reconstruye internamente
-   * pidiendo catalog + installed apps. Catalog tiene caché 5min así que
-   * la mayoría de veces será instantáneo.
+   *   ┌─────────────────────────────────────────────────────────┐
+   *   │ ← Volver al catálogo                                    │
+   *   ├─────────────────────────────────────────────────────────┤
+   *   │  ┌────┐                                                 │
+   *   │  │icon│   Jellyfin                  [Instalar/Abrir]   │
+   *   │  │    │   Multimedia                                   │
+   *   │  └────┘   :8096 · Docker · Multi-servicio              │
+   *   ├─────────────────────────────────────────────────────────┤
+   *   │  [InstallFlow embedded · solo durante install]          │
+   *   ├─────────────────────────────────────────────────────────┤
+   *   │  Capturas                                               │
+   *   │  [screenshot1] [screenshot2] [screenshot3]              │
+   *   ├─────────────────────────────────────────────────────────┤
+   *   │  Acerca de                                              │
+   *   │  Servidor multimedia gratuito y open source...          │
+   *   ├─────────────────────────────────────────────────────────┤
+   *   │  Información técnica                                    │
+   *   │  Imagen Docker:  jellyfin/jellyfin:latest               │
+   *   │  Puerto:         :8096                                  │
+   *   │  Servicios:      jellyfin (1)                           │
+   *   ├─────────────────────────────────────────────────────────┤
+   *   │  Credenciales por defecto (si aplica)                   │
+   *   │  Usuario:  admin        [copiar]                        │
+   *   │  Pass:     ••••••••     [ojo] [copiar]                  │
+   *   ├─────────────────────────────────────────────────────────┤
+   *   │  [Desinstalar] (solo si instalada · sutil, abajo)       │
+   *   └─────────────────────────────────────────────────────────┘
    *
-   * Para los botones de acción reales, esta fase deja stubs que loggean.
-   * Fase 5 implementa el install (pull async + stack sync). Fase 6 hace
-   * desinstalar/start/stop con confirmación.
+   * Arquitectura de responsabilidades:
+   *   AppStore Detail   · descubrir, instalar, desinstalar, credenciales
+   *   NimHealth Task Mgr · ciclo de vida runtime (start/stop/logs/métricas)
+   *
+   * Por eso NO incluye botones Detener/Iniciar. El user gestiona el runtime
+   * en NimHealth. AppStore mantiene "Abrir" porque es acto de consumo del
+   * app, no de gestión.
    */
 
   import { onMount, createEventDispatcher } from 'svelte';
   import { openWindow } from '$lib/stores/windows.js';
   import ConfirmDialog from '$lib/ui/ConfirmDialog.svelte';
   import { fetchCatalog } from './catalog.js';
-  import { getInstalledApps, appAction, uninstallApp } from './api.js';
+  import { getInstalledApps, uninstallApp } from './api.js';
   import InstallFlow from './InstallFlow.svelte';
   import {
     composeAppViews,
@@ -54,33 +73,40 @@
   let loading = true;
   let loadError = '';
   let iconError = false;
-  let showTech = false;
 
-  /** Modo de vista interno · 'detail' | 'installing' */
+  /** Modo: 'detail' (normal) | 'installing' (con InstallFlow inline activo) */
   let mode = 'detail';
 
-  // Acciones en curso · evitan double-click y muestran feedback
-  let actionBusy = false;
-  /** "start" | "stop" | null · qué acción se está ejecutando */
-  let busyKind = null;
-  let actionError = '';
+  // Credenciales · UI state
+  let passwordVisible = false;
+  let copyFeedback = ''; // mensaje breve tras copiar
 
   // Confirm dialog · uninstall
   let confirmUninstallOpen = false;
   let uninstallProcessing = false;
+  let actionError = '';
+
+  // Screenshots · intentamos cargar 1..6, oculta automáticamente las que fallan
+  // El repo del catálogo guarda screenshots en /screenshots/{appId}/N.png
+  /** @type {number[]} */
+  let visibleShots = [1, 2, 3, 4, 5, 6];
+  /** @type {Set<number>} */
+  let failedShots = new Set();
 
   // ── Lifecycle ──────────────────────────────────────────────────────
   onMount(load);
 
-  // Si appId cambia (e.g. el user navega de una app a otra sin cerrar)
-  // recargamos. Svelte 5 con $: reaccionará.
   $: if (appId) load();
 
   async function load() {
     loading = true;
     loadError = '';
     iconError = false;
-    showTech = false;
+    passwordVisible = false;
+    copyFeedback = '';
+    visibleShots = [1, 2, 3, 4, 5, 6];
+    failedShots = new Set();
+
     try {
       const [cat, installed] = await Promise.all([
         fetchCatalog(),
@@ -104,9 +130,10 @@
   // ── Derived ────────────────────────────────────────────────────────
   $: tone = view ? statusTone(view.status, view.health) : 'muted';
   $: services = view?.catalog?.compose ? extractComposeServices(view.catalog.compose) : [];
+  $: isMultiService = services.length > 1;
   $: categoryLabel = view ? categoryDisplayName(view.category, catalog?.categories || {}) : '';
 
-  // Resolver credentials con env si la app usa passwordKey
+  // Credentials con resolveEnvRef
   $: credentials = (() => {
     const c = view?.catalog?.credentials;
     if (!c) return null;
@@ -122,6 +149,14 @@
     };
   })();
 
+  // URL base de screenshots · catálogo público
+  $: screenshotBaseUrl = `https://raw.githubusercontent.com/andresgv-beep/NimOs-appstore/main/screenshots/${appId}`;
+
+  // Hay app instalada Y corriendo (para botón "Abrir" funcional)
+  $: canOpen = view?.installed && view.status === 'running';
+  // Hay app instalada pero parada (botón "Abrir" deshabilitado + nota)
+  $: isStopped = view?.installed && view.status !== 'running';
+
   // ── Acciones ───────────────────────────────────────────────────────
   function handleBack() {
     dispatch('back');
@@ -133,21 +168,9 @@
   }
 
   async function handleInstallDone() {
-    // Tras instalar, NimHealth necesita unos instantes para que su observer
-    // detecte el nuevo container. ForceDockerCacheRefresh es async en el
-    // backend · damos un margen breve antes de recargar para que el primer
-    // intento ya vea la app como instalada.
-    //
-    // Si tras la primera recarga aún no aparece como instalada (race con el
-    // observer), reintentamos una vez más tras otro segundo. Suficiente para
-    // el 99% de los casos · más reintentos serían over-engineering.
     mode = 'detail';
     await new Promise((r) => setTimeout(r, 600));
     await load();
-
-    // Si view.installed sigue siendo false después de la recarga, segundo
-    // intento. La app SÍ está instalada (el backend respondió OK) · solo
-    // NimHealth no la ve aún.
     if (view && !view.installed) {
       await new Promise((r) => setTimeout(r, 1000));
       await load();
@@ -167,48 +190,20 @@
     }
     const isExternal = view.catalog?.openMode === 'external';
     if (isExternal) {
-      // External · pestaña nueva directa
       const host = window.location.hostname;
       const proto = window.location.protocol;
       window.open(`${proto}//${host}:${port}`, '_blank');
       return;
     }
-    // Internal · ventana webapp dentro del desktop NimOS.
-    // WebApp.svelte ya provee botón ↗ "Abrir en pestaña nueva" en su titlebar,
-    // por lo que el user puede saltar a external si lo prefiere.
     openWindow(
       view.id,
       { width: 1100, height: 700 },
-      {
-        isWebApp: true,
-        port,
-        appName: view.name,
-      }
+      { isWebApp: true, port, appName: view.name }
     );
   }
 
-  async function handleStartStop() {
-    if (!view?.installed || actionBusy) return;
-    const action = view.status === 'running' ? 'stop' : 'start';
-    actionBusy = true;
-    busyKind = action;
-    actionError = '';
-    try {
-      await appAction(view.id, action);
-      // Esperar a que el observer detecte el cambio · ~1-2s tras start/stop
-      await new Promise((r) => setTimeout(r, 1500));
-      await load();
-    } catch (err) {
-      actionError = err?.message || String(err);
-      console.error(`[appstore/detail] ${action} failed:`, err);
-    } finally {
-      actionBusy = false;
-      busyKind = null;
-    }
-  }
-
   function handleUninstallClick() {
-    if (!view?.installed || actionBusy) return;
+    if (!view?.installed || uninstallProcessing) return;
     confirmUninstallOpen = true;
   }
 
@@ -217,16 +212,11 @@
     uninstallProcessing = true;
     actionError = '';
     try {
-      // El catálogo NimOS usa stacks (campo compose) · type='stack'.
-      // Container individual queda para futuro · todas las apps del
-      // catálogo oficial vienen con compose YAML.
       await uninstallApp(view.id, 'stack');
       confirmUninstallOpen = false;
-      // Tras desinstalar volvemos al catálogo · la app ya no existe aquí.
       dispatch('back');
     } catch (err) {
       actionError = err?.message || String(err);
-      console.error('[appstore/detail] uninstall failed:', err);
       confirmUninstallOpen = false;
     } finally {
       uninstallProcessing = false;
@@ -234,9 +224,31 @@
   }
 
   function handleUninstallCancel() {
-    if (uninstallProcessing) return; // no cancelar si está en marcha
+    if (uninstallProcessing) return;
     confirmUninstallOpen = false;
   }
+
+  // Credentials · copiar al clipboard
+  async function copyToClipboard(value, label) {
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      copyFeedback = `${label} copiado`;
+      setTimeout(() => { copyFeedback = ''; }, 1500);
+    } catch (err) {
+      copyFeedback = 'Error al copiar';
+      setTimeout(() => { copyFeedback = ''; }, 2000);
+    }
+  }
+
+  // Screenshots · marca un slot como fallido
+  function handleShotError(n) {
+    failedShots.add(n);
+    failedShots = failedShots; // forzar reactividad
+  }
+
+  // ¿Hay al menos un screenshot que ha cargado?
+  $: hasAnyScreenshot = visibleShots.some((n) => !failedShots.has(n));
 </script>
 
 {#if loading}
@@ -250,185 +262,236 @@
     <div class="err-body">{loadError}</div>
     <button class="btn btn-secondary" on:click={handleBack}>← Volver</button>
   </div>
-{:else if mode === 'installing' && view}
-  <InstallFlow {view} on:done={handleInstallDone} on:cancel={handleInstallCancel} />
 {:else if view}
-  <div class="detail">
-    <!-- Barra superior con botón Volver -->
-    <div class="detail-toolbar">
-      <button class="back-btn" on:click={handleBack} type="button">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-          <path d="M19 12H5" />
-          <path d="M12 19l-7-7 7-7" />
-        </svg>
-        Volver al catálogo
-      </button>
+  <div class="detail-scroll">
+    <!-- Back -->
+    <button class="back-btn" on:click={handleBack} type="button">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="15 18 9 12 15 6" />
+      </svg>
+      Volver al catálogo
+    </button>
 
-      {#if view.installed}
-        <div class="status-pill" class:ok={tone === 'ok'} class:warn={tone === 'warn'} class:crit={tone === 'crit'} class:info={tone === 'info'}>
-          <span class="status-dot"></span>
-          {formatStatus(view.status)}
-          {#if view.health && view.health !== 'unknown'}
-            · {formatHealth(view.health)}
-          {/if}
-        </div>
-      {/if}
-    </div>
-
-    <!-- Hero -->
-    <div class="hero">
-      <div class="hero-icon">
+    <!-- HERO horizontal -->
+    <section class="hero">
+      <div class="hero-icon" style={view.color ? `background: ${view.color}; box-shadow: 0 0 32px ${view.color}33` : ''}>
         {#if !iconError && view.icon}
           <img src={view.icon} alt={view.name} on:error={() => (iconError = true)} />
         {:else}
-          <div class="hero-icon-fallback" style={view.color ? `background: ${view.color}` : ''}>
-            {view.name.charAt(0).toUpperCase()}
-          </div>
+          <span class="hero-icon-fallback">{view.name.charAt(0).toUpperCase()}</span>
         {/if}
       </div>
-      <div class="hero-text">
+
+      <div class="hero-info">
         <h1 class="hero-name">{view.name}</h1>
-        <div class="hero-meta">
-          <span>{categoryLabel}</span>
+        <div class="hero-cat">
+          {categoryLabel}
+          {#if view.catalog?.official} · <span class="badge-official">Oficial</span>{/if}
+        </div>
+        <div class="hero-tags">
           {#if view.catalog?.port}
-            <span class="dot-sep">·</span>
-            <span class="port">{formatPort(view.catalog.port)}</span>
+            <span class="tag tag-port">{formatPort(view.catalog.port)}</span>
           {/if}
-          {#if view.catalog?.official}
-            <span class="dot-sep">·</span>
-            <span class="badge-official">Oficial</span>
+          <span class="tag">Docker</span>
+          {#if isMultiService}
+            <span class="tag">Multi-servicio</span>
+          {/if}
+          {#if view.installed}
+            <span class="tag tag-status" class:ok={tone === 'ok'} class:warn={tone === 'warn'} class:crit={tone === 'crit'}>
+              <span class="status-dot"></span>
+              {formatStatus(view.status)}
+              {#if view.health && view.health !== 'unknown'} · {formatHealth(view.health)}{/if}
+            </span>
           {/if}
         </div>
       </div>
-    </div>
 
-    <!-- Descripción -->
-    {#if view.description}
-      <p class="description">{view.description}</p>
-    {/if}
-
-    <!-- Botones de acción -->
-    <div class="actions">
-      {#if !view.installed}
-        <button class="btn btn-primary" on:click={handleInstall}>
-          Instalar {view.name}
-        </button>
-      {:else}
-        {#if view.status === 'running'}
+      <div class="hero-action">
+        {#if mode === 'installing'}
+          <button class="btn btn-primary" disabled>
+            <span class="spinner"></span>
+            Instalando…
+          </button>
+        {:else if !view.installed}
+          <button class="btn btn-primary" on:click={handleInstall}>
+            Instalar {view.name}
+          </button>
+        {:else if canOpen}
           <button class="btn btn-primary" on:click={handleOpen}>
             Abrir {view.name}
           </button>
-          <button
-            class="btn btn-secondary"
-            on:click={handleStartStop}
-            disabled={actionBusy}
-          >
-            {busyKind === 'stop' ? 'Deteniendo…' : 'Detener'}
-          </button>
-        {:else}
-          <button
-            class="btn btn-primary"
-            on:click={handleStartStop}
-            disabled={actionBusy}
-          >
-            {busyKind === 'start' ? 'Iniciando…' : 'Iniciar'}
+        {:else if isStopped}
+          <button class="btn btn-primary" disabled title="Inicia el contenedor desde NimHealth">
+            Abrir {view.name}
           </button>
         {/if}
-        <button
-          class="btn btn-danger-soft"
-          on:click={handleUninstallClick}
-          disabled={actionBusy || uninstallProcessing}
-        >
-          Desinstalar
-        </button>
-      {/if}
-    </div>
+      </div>
+    </section>
 
-    {#if actionError}
-      <div class="action-error">{actionError}</div>
+    {#if isStopped}
+      <div class="hint-row">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        La app está detenida. Inicia el contenedor desde <strong>NimHealth → Task Manager</strong>.
+      </div>
     {/if}
 
-    <!-- Credenciales por defecto -->
-    {#if credentials && (credentials.username || credentials.password)}
-      <section class="info-block">
-        <h2 class="info-title">Credenciales por defecto</h2>
-        <p class="info-hint">
-          Cámbialas tras el primer acceso por seguridad.
-        </p>
-        <div class="cred-list">
-          {#if credentials.username}
-            <div class="cred-row">
-              <span class="cred-label">Usuario</span>
-              <code class="cred-value">{credentials.username}</code>
-            </div>
-          {/if}
-          {#if credentials.password}
-            <div class="cred-row">
-              <span class="cred-label">Contraseña</span>
-              <code class="cred-value">{credentials.password}</code>
-              {#if credentials.passwordIsTemplate}
-                <span class="cred-note">se generará al instalar</span>
-              {/if}
-            </div>
-          {/if}
+    {#if actionError}
+      <div class="error-row">{actionError}</div>
+    {/if}
+
+    <!-- INSTALL FLOW (embedded inline · NO sustituye el hero) -->
+    {#if mode === 'installing'}
+      <section class="install-section">
+        <InstallFlow view={view} on:done={handleInstallDone} on:cancel={handleInstallCancel} embedded={true} />
+      </section>
+    {/if}
+
+    <!-- SCREENSHOTS -->
+    {#if hasAnyScreenshot}
+      <section class="section">
+        <h2 class="section-title">Capturas</h2>
+        <div class="screenshots">
+          {#each visibleShots as n (n)}
+            {#if !failedShots.has(n)}
+              <div class="shot">
+                <img
+                  src="{screenshotBaseUrl}/{n}.png"
+                  alt="{view.name} captura {n}"
+                  loading="lazy"
+                  on:error={() => handleShotError(n)}
+                />
+              </div>
+            {/if}
+          {/each}
         </div>
       </section>
     {/if}
 
-    <!-- Información técnica (plegable) -->
-    <section class="info-block">
-      <button class="info-toggle" on:click={() => (showTech = !showTech)} type="button">
-        <svg
-          class="chev"
-          class:open={showTech}
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-        >
-          <polyline points="9 6 15 12 9 18" />
-        </svg>
-        Información técnica
-      </button>
+    <!-- DESCRIPCIÓN -->
+    {#if view.description}
+      <section class="section">
+        <h2 class="section-title">Acerca de</h2>
+        <p class="description">{view.description}</p>
+      </section>
+    {/if}
 
-      {#if showTech}
-        <div class="tech-body">
-          <div class="tech-row">
-            <span class="tech-label">Imagen Docker</span>
-            <code class="tech-value">{view.catalog?.image || '—'}</code>
-          </div>
-          {#if view.catalog?.openMode}
-            <div class="tech-row">
-              <span class="tech-label">Modo de apertura</span>
-              <code class="tech-value">{view.catalog.openMode}</code>
-            </div>
-          {/if}
-          {#if services.length > 0}
-            <div class="tech-row">
-              <span class="tech-label">
-                Servicios{services.length > 1 ? ` (${services.length})` : ''}
-              </span>
-              <div class="services">
-                {#each services as svc}
-                  <code class="service-chip">{svc}</code>
-                {/each}
-              </div>
-            </div>
-          {/if}
-          {#if view.installed && view.runtime?.containerName}
-            <div class="tech-row">
-              <span class="tech-label">Container</span>
-              <code class="tech-value">{view.runtime.containerName}</code>
-            </div>
-          {/if}
+    <!-- INFO TÉCNICA · siempre visible -->
+    <section class="section">
+      <h2 class="section-title">Información técnica</h2>
+      <div class="info-grid">
+        <div class="info-row">
+          <span class="info-k">Imagen Docker</span>
+          <code class="info-v">{view.catalog?.image || '—'}</code>
         </div>
-      {/if}
+        {#if view.catalog?.port}
+          <div class="info-row">
+            <span class="info-k">Puerto</span>
+            <code class="info-v">{formatPort(view.catalog.port)}</code>
+          </div>
+        {/if}
+        {#if view.catalog?.openMode}
+          <div class="info-row">
+            <span class="info-k">Modo de apertura</span>
+            <code class="info-v">{view.catalog.openMode}</code>
+          </div>
+        {/if}
+        {#if services.length > 0}
+          <div class="info-row">
+            <span class="info-k">
+              Servicios{services.length > 1 ? ` (${services.length})` : ''}
+            </span>
+            <div class="info-v-chips">
+              {#each services as svc}
+                <code class="service-chip">{svc}</code>
+              {/each}
+            </div>
+          </div>
+        {/if}
+        {#if view.installed && view.runtime?.containerName}
+          <div class="info-row">
+            <span class="info-k">Container</span>
+            <code class="info-v">{view.runtime.containerName}</code>
+          </div>
+        {/if}
+      </div>
     </section>
+
+    <!-- CREDENCIALES por defecto · siempre visibles (instalada o no) -->
+    {#if credentials && (credentials.username || credentials.password)}
+      <section class="section">
+        <h2 class="section-title">Credenciales por defecto</h2>
+        <div class="creds-block">
+          {#if credentials.username}
+            <div class="cred-row">
+              <span class="cred-k">Usuario</span>
+              <code class="cred-v">{credentials.username}</code>
+              <button class="cred-btn" on:click={() => copyToClipboard(credentials.username, 'Usuario')} title="Copiar usuario" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                </svg>
+              </button>
+            </div>
+          {/if}
+          {#if credentials.password}
+            <div class="cred-row">
+              <span class="cred-k">Contraseña</span>
+              <code class="cred-v" class:masked={!passwordVisible}>
+                {#if passwordVisible}
+                  {credentials.password}
+                {:else}
+                  {'•'.repeat(Math.min(credentials.password.length, 12))}
+                {/if}
+              </code>
+              <button class="cred-btn" on:click={() => passwordVisible = !passwordVisible} title={passwordVisible ? 'Ocultar' : 'Mostrar'} type="button">
+                {#if passwordVisible}
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                    <line x1="1" y1="1" x2="23" y2="23"/>
+                  </svg>
+                {:else}
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                    <circle cx="12" cy="12" r="3"/>
+                  </svg>
+                {/if}
+              </button>
+              <button class="cred-btn" on:click={() => copyToClipboard(credentials.password, 'Contraseña')} title="Copiar contraseña" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                </svg>
+              </button>
+              {#if credentials.passwordIsTemplate}
+                <span class="cred-note">se genera al instalar</span>
+              {/if}
+            </div>
+          {/if}
+          <div class="creds-hint">
+            Cambia la contraseña tras el primer inicio de sesión por seguridad.
+          </div>
+        </div>
+        {#if copyFeedback}
+          <div class="copy-feedback">{copyFeedback}</div>
+        {/if}
+      </section>
+    {/if}
+
+    <!-- DESINSTALAR · solo si instalada · sutil, abajo del todo -->
+    {#if view.installed && mode === 'detail'}
+      <section class="section uninstall-section">
+        <button class="btn btn-danger-soft" on:click={handleUninstallClick} disabled={uninstallProcessing} type="button">
+          Desinstalar {view.name}
+        </button>
+        <p class="uninstall-hint">
+          Esto detendrá el contenedor y borrará volúmenes y configuración.
+        </p>
+      </section>
+    {/if}
   </div>
 {/if}
 
-<!-- Confirm dialog · uninstall con typed confirmation -->
+<!-- Confirm dialog uninstall -->
 {#if view}
   <ConfirmDialog
     bind:open={confirmUninstallOpen}
@@ -445,7 +508,7 @@
 {/if}
 
 <style>
-  /* ═══ Estados (loading/error) ═══ */
+  /* ═══ Estados loading/error ═══ */
   .detail-state {
     height: 100%;
     display: flex;
@@ -457,8 +520,7 @@
     text-align: center;
   }
   .loading-dot {
-    width: 8px;
-    height: 8px;
+    width: 8px; height: 8px;
     border-radius: 50%;
     background: var(--signal);
     animation: pulse 1.4s ease-in-out infinite;
@@ -467,43 +529,27 @@
     0%, 100% { opacity: 0.3; transform: scale(0.9); }
     50%      { opacity: 1;   transform: scale(1.1); }
   }
-  .state-text {
-    color: var(--ink-mute);
-    font-family: var(--font-mono);
-    font-size: var(--fs-11);
-  }
-  .err-title {
-    color: var(--crit);
-    font-weight: 600;
-    font-size: var(--fs-13);
-  }
-  .err-body {
-    color: var(--ink-dim);
-    font-family: var(--font-mono);
-    font-size: var(--fs-11);
-    max-width: 420px;
-    word-break: break-word;
-  }
+  .state-text { color: var(--ink-mute); font-family: var(--font-mono); font-size: var(--fs-11); }
+  .err-title { color: var(--crit); font-weight: 600; font-size: var(--fs-13); }
+  .err-body { color: var(--ink-dim); font-family: var(--font-mono); font-size: var(--fs-11); max-width: 420px; word-break: break-word; }
 
-  /* ═══ Layout detalle ═══ */
-  .detail {
+  /* ═══ Scroll container ═══ */
+  .detail-scroll {
     height: 100%;
     overflow-y: auto;
-    padding: var(--sp-4) var(--sp-5) var(--sp-5);
+    padding: var(--sp-4) var(--sp-5) var(--sp-6);
     display: flex;
     flex-direction: column;
-    gap: var(--sp-4);
+    gap: var(--sp-5);
+    max-width: 920px;
+    margin: 0 auto;
+    width: 100%;
   }
 
-  .detail-toolbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--sp-3);
-  }
+  /* ═══ Back button ═══ */
   .back-btn {
-    background: none;
-    border: none;
+    background: transparent;
+    border: 1px solid var(--line);
     color: var(--ink-dim);
     cursor: pointer;
     font-size: var(--fs-12);
@@ -511,44 +557,19 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 4px 8px;
+    padding: 6px 12px;
     border-radius: var(--radius-sm);
-    transition: background 0.12s, color 0.12s;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+    align-self: flex-start;
   }
   .back-btn:hover {
     color: var(--ink);
     background: var(--line);
+    border-color: var(--line-bright);
   }
-  .back-btn svg {
-    width: 14px;
-    height: 14px;
-  }
+  .back-btn svg { width: 13px; height: 13px; }
 
-  /* Status pill (cuando instalada) */
-  .status-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 10px;
-    border-radius: 999px;
-    background: var(--panel-deep);
-    border: 1px solid var(--line);
-    font-size: var(--fs-11);
-    font-family: var(--font-mono);
-    color: var(--ink-dim);
-  }
-  .status-pill .status-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--ink-faint);
-  }
-  .status-pill.ok .status-dot { background: var(--signal); box-shadow: 0 0 4px var(--signal-glow); }
-  .status-pill.warn .status-dot { background: var(--warn); box-shadow: 0 0 4px var(--warn-glow); }
-  .status-pill.crit .status-dot { background: var(--crit); box-shadow: 0 0 4px var(--crit-glow); }
-  .status-pill.info .status-dot { background: var(--info); box-shadow: 0 0 4px var(--info-glow); }
-
-  /* ═══ Hero ═══ */
+  /* ═══ HERO horizontal ═══ */
   .hero {
     display: flex;
     align-items: center;
@@ -556,88 +577,110 @@
     padding: var(--sp-3) 0;
   }
   .hero-icon {
-    width: 80px;
-    height: 80px;
-    border-radius: 16px;
+    width: 96px;
+    height: 96px;
+    border-radius: 22px;
     background: var(--canvas);
     display: flex;
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
     overflow: hidden;
+    position: relative;
+    transition: box-shadow 0.3s;
   }
   .hero-icon img {
-    width: 52px;
-    height: 52px;
+    width: 64px;
+    height: 64px;
     object-fit: contain;
   }
   .hero-icon-fallback {
-    width: 100%;
-    height: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--canvas-soft);
-    color: var(--ink-dim);
-    font-size: 32px;
-    font-weight: 600;
+    color: var(--ink);
+    font-size: 40px;
+    font-weight: 700;
     font-family: var(--font-mono);
   }
-  .hero-text {
+  .hero-info {
     flex: 1;
     min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
   }
   .hero-name {
     font-size: var(--fs-22);
     font-weight: 600;
     color: var(--ink);
-    margin: 0 0 6px;
+    margin: 0;
     letter-spacing: -0.4px;
+    line-height: 1.1;
   }
-  .hero-meta {
-    display: flex;
-    align-items: center;
-    gap: 6px;
+  .hero-cat {
     font-size: var(--fs-12);
     color: var(--ink-mute);
-    flex-wrap: wrap;
-  }
-  .dot-sep {
-    color: var(--ink-trace);
-  }
-  .port {
-    font-family: var(--font-mono);
-    color: var(--info);
   }
   .badge-official {
-    font-size: var(--fs-10);
-    padding: 1px 6px;
-    border-radius: 3px;
-    background: var(--signal-soft);
     color: var(--signal);
     font-family: var(--font-mono);
-    text-transform: uppercase;
+    font-size: var(--fs-10);
     letter-spacing: 0.5px;
+    text-transform: uppercase;
   }
-
-  /* ═══ Descripción ═══ */
-  .description {
-    color: var(--ink-dim);
-    font-size: var(--fs-13);
-    line-height: 1.6;
-    max-width: 720px;
-    margin: 0;
-  }
-
-  /* ═══ Acciones ═══ */
-  .actions {
+  .hero-tags {
     display: flex;
-    gap: var(--sp-2);
     flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 4px;
+  }
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 9px;
+    background: var(--panel-deep);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font-size: var(--fs-10);
+    color: var(--ink-dim);
+    font-family: var(--font-mono);
+    line-height: 1.5;
+  }
+  .tag-port {
+    color: var(--info);
+    border-color: var(--info);
+    background: var(--info-dim, var(--panel-deep));
+  }
+  .tag-status .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ink-faint);
+  }
+  .tag-status.ok .status-dot { background: var(--signal); box-shadow: 0 0 4px var(--signal-glow); }
+  .tag-status.warn .status-dot { background: var(--warn); box-shadow: 0 0 4px var(--warn-glow); }
+  .tag-status.crit .status-dot { background: var(--crit); box-shadow: 0 0 4px var(--crit-glow); }
+
+  .hero-action {
+    flex-shrink: 0;
   }
 
-  /* Error inline tras acción (start/stop) */
-  .action-error {
+  /* ═══ Hint stop · NimHealth para gestionar ═══ */
+  .hint-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: 10px 14px;
+    background: var(--panel-deep);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    color: var(--ink-dim);
+    font-size: var(--fs-12);
+  }
+  .hint-row svg { width: 16px; height: 16px; color: var(--warn); flex-shrink: 0; }
+  .hint-row strong { color: var(--ink); font-weight: 600; }
+
+  /* ═══ Error row inline ═══ */
+  .error-row {
     padding: 8px 12px;
     background: var(--crit-dim);
     border: 1px solid var(--crit-border);
@@ -647,145 +690,87 @@
     font-family: var(--font-mono);
     word-break: break-word;
   }
-  .btn {
-    padding: 9px 18px;
-    border-radius: var(--radius-sm);
-    border: 1px solid transparent;
-    font-size: var(--fs-12);
-    font-weight: 600;
-    font-family: inherit;
-    cursor: pointer;
-    transition: filter 0.12s, background 0.12s, color 0.12s, border-color 0.12s;
-  }
-  .btn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-    filter: none;
-  }
-  .btn-primary {
-    background: var(--signal);
-    color: var(--canvas);
-  }
-  .btn-primary:not(:disabled):hover {
-    filter: brightness(1.08);
-  }
-  .btn-secondary {
-    background: transparent;
-    color: var(--ink-dim);
-    border: 1px solid var(--line);
-  }
-  .btn-secondary:not(:disabled):hover {
-    color: var(--ink);
-    background: var(--line);
-  }
-  .btn-danger-soft {
-    background: transparent;
-    color: var(--crit);
-    border: 1px solid var(--crit-border);
-  }
-  .btn-danger-soft:not(:disabled):hover {
-    background: var(--crit-dim);
-  }
 
-  /* ═══ Info blocks ═══ */
-  .info-block {
-    border-top: 1px solid var(--line);
-    padding-top: var(--sp-4);
-    margin-top: var(--sp-2);
+  /* ═══ Section common ═══ */
+  .section {
     display: flex;
     flex-direction: column;
-    gap: var(--sp-2);
+    gap: var(--sp-3);
   }
-  .info-title {
+  .section-title {
     font-size: var(--fs-13);
     font-weight: 600;
     color: var(--ink);
     margin: 0;
-  }
-  .info-hint {
-    font-size: var(--fs-11);
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
     color: var(--ink-mute);
+  }
+
+  /* ═══ Install section (embedded) ═══ */
+  .install-section {
+    background: var(--panel-deep);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    padding: var(--sp-4);
+  }
+
+  /* ═══ Screenshots ═══ */
+  .screenshots {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: var(--sp-3);
+  }
+  .shot {
+    aspect-ratio: 16 / 10;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background: var(--panel-deep);
+    border: 1px solid var(--line);
+    cursor: zoom-in;
+    transition: transform 0.15s, border-color 0.15s;
+  }
+  .shot:hover {
+    transform: translateY(-2px);
+    border-color: var(--line-bright);
+  }
+  .shot img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  /* ═══ Description ═══ */
+  .description {
+    color: var(--ink-dim);
+    font-size: var(--fs-13);
+    line-height: 1.65;
     margin: 0;
   }
 
-  /* Credenciales */
-  .cred-list {
+  /* ═══ Info técnica grid ═══ */
+  .info-grid {
     display: flex;
     flex-direction: column;
     gap: 6px;
     background: var(--panel-deep);
     border: 1px solid var(--line);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-md);
     padding: var(--sp-3);
   }
-  .cred-row {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-3);
-    font-size: var(--fs-12);
-  }
-  .cred-label {
-    color: var(--ink-mute);
-    min-width: 100px;
-    font-size: var(--fs-11);
-  }
-  .cred-value {
-    color: var(--ink);
-    background: var(--canvas);
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-family: var(--font-mono);
-    font-size: var(--fs-12);
-  }
-  .cred-note {
-    color: var(--info);
-    font-size: var(--fs-10);
-    font-style: italic;
-  }
-
-  /* Toggle de info técnica */
-  .info-toggle {
-    background: none;
-    border: none;
-    color: var(--ink);
-    font-size: var(--fs-13);
-    font-weight: 600;
-    font-family: inherit;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 0;
-    text-align: left;
-  }
-  .info-toggle:hover { color: var(--info); }
-  .chev {
-    width: 12px;
-    height: 12px;
-    transition: transform 0.15s;
-    color: var(--ink-faint);
-  }
-  .chev.open {
-    transform: rotate(90deg);
-  }
-  .tech-body {
-    display: flex;
-    flex-direction: column;
-    gap: var(--sp-2);
-    padding: var(--sp-2) 0 0;
-  }
-  .tech-row {
+  .info-row {
     display: flex;
     align-items: baseline;
     gap: var(--sp-3);
     font-size: var(--fs-12);
   }
-  .tech-label {
+  .info-k {
     color: var(--ink-mute);
     min-width: 140px;
     font-size: var(--fs-11);
   }
-  .tech-value {
+  .info-v {
     color: var(--ink);
     background: var(--canvas);
     padding: 2px 8px;
@@ -794,7 +779,7 @@
     font-size: var(--fs-11);
     word-break: break-all;
   }
-  .services {
+  .info-v-chips {
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
@@ -806,5 +791,147 @@
     border-radius: 4px;
     font-family: var(--font-mono);
     font-size: var(--fs-11);
+  }
+
+  /* ═══ Credenciales ═══ */
+  .creds-block {
+    background: var(--panel-deep);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    padding: var(--sp-3);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .cred-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    font-size: var(--fs-12);
+  }
+  .cred-k {
+    color: var(--ink-mute);
+    min-width: 100px;
+    font-size: var(--fs-11);
+  }
+  .cred-v {
+    color: var(--ink);
+    background: var(--canvas);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: var(--fs-12);
+    flex: 1;
+    min-width: 0;
+    word-break: break-all;
+  }
+  .cred-v.masked {
+    letter-spacing: 2px;
+  }
+  .cred-btn {
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--ink-mute);
+    border-radius: 4px;
+    padding: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.12s, background 0.12s, border-color 0.12s;
+  }
+  .cred-btn:hover {
+    color: var(--ink);
+    background: var(--line);
+    border-color: var(--line-bright);
+  }
+  .cred-btn svg { width: 12px; height: 12px; }
+  .cred-note {
+    color: var(--info);
+    font-size: var(--fs-10);
+    font-style: italic;
+  }
+  .creds-hint {
+    color: var(--ink-mute);
+    font-size: var(--fs-11);
+    padding-top: 4px;
+    border-top: 1px dashed var(--line);
+    margin-top: 4px;
+  }
+  .copy-feedback {
+    font-size: var(--fs-11);
+    color: var(--signal);
+    padding: 4px 0;
+    text-align: right;
+    font-family: var(--font-mono);
+  }
+
+  /* ═══ Uninstall section · sutil al final ═══ */
+  .uninstall-section {
+    margin-top: var(--sp-3);
+    padding-top: var(--sp-4);
+    border-top: 1px solid var(--line);
+    align-items: flex-start;
+  }
+  .uninstall-hint {
+    color: var(--ink-mute);
+    font-size: var(--fs-11);
+    margin: 0;
+  }
+
+  /* ═══ Botones ═══ */
+  .btn {
+    padding: 10px 22px;
+    border-radius: var(--radius-sm);
+    border: 1px solid transparent;
+    font-size: var(--fs-12);
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: filter 0.12s, background 0.12s, color 0.12s, border-color 0.12s;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .btn-primary {
+    background: var(--signal);
+    color: var(--canvas);
+  }
+  .btn-primary:not(:disabled):hover { filter: brightness(1.08); }
+  .btn-secondary {
+    background: transparent;
+    color: var(--ink-dim);
+    border-color: var(--line);
+  }
+  .btn-secondary:not(:disabled):hover {
+    color: var(--ink);
+    background: var(--line);
+  }
+  .btn-danger-soft {
+    background: transparent;
+    color: var(--crit);
+    border-color: var(--crit-border);
+    padding: 8px 16px;
+    font-size: var(--fs-12);
+  }
+  .btn-danger-soft:not(:disabled):hover {
+    background: var(--crit-dim);
+  }
+
+  /* Spinner inline para botón "Instalando..." */
+  .spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
   }
 </style>
