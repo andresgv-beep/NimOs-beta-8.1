@@ -144,192 +144,202 @@
 {/if}
 
 <style>
+  /* ═══════════════════════════════════════════════════════════════════════
+     ConfirmDialog · UI v3 (mayo 2026)
+     Migrado de Beta 7 a tokens v3: --canvas, --panel-elev, --line, --ink,
+     --signal, --warn, --crit. API exacta preservada.
+     ═══════════════════════════════════════════════════════════════════════ */
+
   .cd-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.6);
-    backdrop-filter: blur(2px);
-    -webkit-backdrop-filter: blur(2px);
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
     z-index: 9999;
     display: flex;
     align-items: center;
     justify-content: center;
     animation: cd-fade-in 0.15s ease-out;
   }
-  @keyframes cd-fade-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes cd-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
 
   .cd {
-    width: 480px;
+    width: 460px;
     max-width: calc(100% - 40px);
-    background: var(--border-bright);
-    padding: 1px;
-    font-family: var(--font-mono);
-    clip-path: polygon(
-      0 0, 100% 0,
-      100% calc(100% - 14px),
-      calc(100% - 14px) 100%,
-      0 100%
-    );
-    box-shadow: 0 0 32px rgba(0, 0, 0, 0.6), 0 0 12px var(--accent-glow, rgba(0,255,159,0.08));
-    animation: cd-slide-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+    background: var(--panel-elev);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg, 12px);
+    overflow: hidden;
+    box-shadow:
+      0 20px 60px rgba(0, 0, 0, 0.5),
+      0 0 0 1px rgba(255, 255, 255, 0.02);
+    animation: cd-scale-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
   }
-  @keyframes cd-slide-in {
-    from { opacity: 0; transform: translateY(-10px) scale(0.98); }
-    to   { opacity: 1; transform: translateY(0) scale(1); }
+  @keyframes cd-scale-in {
+    from { opacity: 0; transform: scale(0.96) translateY(8px); }
+    to   { opacity: 1; transform: scale(1) translateY(0); }
   }
 
   .cd-inner {
-    background: var(--bg-1);
-    clip-path: polygon(
-      0 0, 100% 0,
-      100% calc(100% - 13px),
-      calc(100% - 13px) 100%,
-      0 100%
-    );
     display: flex;
     flex-direction: column;
   }
 
-  /* HEAD */
+  /* ─── Header ─── */
   .cd-head {
-    padding: 14px 18px 12px;
-    border-bottom: 1px solid var(--border);
     display: flex;
     align-items: center;
-    gap: 12px;
+    justify-content: space-between;
+    padding: var(--sp-3, 14px) var(--sp-4, 18px);
+    border-bottom: 1px solid var(--line);
+    background: var(--canvas);
   }
   .cd-title {
-    font-size: 11px;
-    letter-spacing: 1.2px;
-    text-transform: uppercase;
+    font-size: var(--fs-13, 13px);
     font-weight: 600;
-    color: var(--fg);
+    color: var(--ink);
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+    font-family: var(--font-mono);
   }
   .cd-title.variant-warn   { color: var(--warn); }
   .cd-title.variant-danger { color: var(--crit); }
 
   .cd-close {
-    margin-left: auto;
-    width: 20px;
-    height: 20px;
-    border: 1px solid var(--border-bright);
     background: transparent;
-    color: var(--fg-mute);
-    font-size: 12px;
+    border: none;
+    color: var(--ink-mute);
     cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.12s;
+    font-size: 18px;
+    line-height: 1;
+    padding: 4px 8px;
+    border-radius: 4px;
     font-family: inherit;
+    transition: color 0.12s, background 0.12s;
   }
   .cd-close:hover {
-    border-color: var(--crit);
-    color: var(--crit);
+    color: var(--ink);
+    background: var(--line);
   }
 
-  /* BODY */
+  /* ─── Body ─── */
   .cd-body {
-    padding: 18px 20px;
-    min-height: 60px;
+    padding: var(--sp-4, 18px);
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: var(--sp-3, 14px);
   }
   .cd-message {
-    font-size: 12px;
-    color: var(--fg-dim);
-    line-height: 1.6;
-    font-family: var(--font-sans, inherit);
+    color: var(--ink-dim);
+    font-size: var(--fs-12, 12px);
+    line-height: 1.55;
   }
 
-  /* Input para confirmación literal */
   .cd-confirm-label {
-    font-size: 10px;
-    color: var(--fg-dim);
-    letter-spacing: 1px;
+    color: var(--ink-mute);
+    font-size: var(--fs-11, 11px);
     text-transform: uppercase;
-    margin-top: 4px;
+    letter-spacing: 0.5px;
+    font-family: var(--font-mono);
   }
-  .cd-confirm-label :global(b) {
+  .cd-confirm-label b {
     color: var(--crit);
-    font-weight: 700;
-    font-size: 11px;
+    font-weight: 600;
   }
+
   .cd-confirm-input {
     width: 100%;
+    background: var(--canvas);
+    border: 1px solid var(--line);
+    color: var(--ink);
     padding: 10px 14px;
-    background: var(--bg);
-    border: 1px solid var(--border-bright);
-    color: var(--fg);
+    border-radius: var(--radius-sm, 6px);
+    font-size: var(--fs-12, 12px);
     font-family: var(--font-mono);
-    font-size: 13px;
-    letter-spacing: 2px;
     outline: none;
-    transition: border-color 0.15s, color 0.15s;
+    transition: border-color 0.12s, box-shadow 0.12s;
   }
-  .cd-confirm-input:focus { border-color: var(--accent); }
-  .cd-confirm-input.ok    { border-color: var(--ok, #00d97e); color: var(--ok, #00d97e); }
+  .cd-confirm-input::placeholder {
+    color: var(--ink-faint);
+  }
+  .cd-confirm-input:focus {
+    border-color: var(--line-bright);
+  }
+  .cd-confirm-input.ok {
+    border-color: var(--signal);
+    box-shadow: 0 0 0 2px var(--signal-dim, rgba(0, 255, 159, 0.1));
+  }
 
-  /* FOOT */
+  /* ─── Footer ─── */
   .cd-foot {
-    padding: 12px 18px;
-    border-top: 1px solid var(--border);
-    background: var(--bg);
     display: flex;
     align-items: center;
-    gap: 8px;
+    padding: var(--sp-3, 14px) var(--sp-4, 18px);
+    border-top: 1px solid var(--line);
+    background: var(--canvas);
+    gap: var(--sp-2, 10px);
   }
-  .cd-spacer { flex: 1; }
+  .cd-spacer {
+    flex: 1;
+  }
 
   .cd-btn {
-    padding: 8px 16px;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-    background: var(--bg-2);
-    border: 1px solid var(--border-bright);
-    color: var(--fg-dim);
+    padding: 8px 18px;
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--ink-dim);
+    font-size: var(--fs-12, 12px);
+    font-weight: 600;
+    font-family: inherit;
+    border-radius: var(--radius-sm, 6px);
     cursor: pointer;
-    transition: all 0.12s;
-    clip-path: polygon(
-      0 0, calc(100% - 5px) 0, 100% 5px,
-      100% 100%, 5px 100%, 0 calc(100% - 5px)
-    );
+    transition: background 0.12s, color 0.12s, border-color 0.12s, filter 0.12s;
   }
-  .cd-btn:hover:not(:disabled) {
-    border-color: var(--accent);
-    color: var(--accent);
-    background: var(--bg-1);
+  .cd-btn:not(:disabled):hover {
+    color: var(--ink);
+    background: var(--line);
+    border-color: var(--line-bright);
   }
   .cd-btn:disabled {
-    opacity: 0.35;
+    opacity: 0.4;
     cursor: not-allowed;
   }
 
+  /* Variantes del botón confirmar */
   .cd-btn.btn-default {
-    border-color: var(--accent);
-    color: var(--accent);
-    background: var(--accent-dim, rgba(255,145,68,0.05));
+    background: var(--signal);
+    color: var(--canvas);
+    border-color: var(--signal);
   }
-  .cd-btn.btn-default:hover:not(:disabled) {
-    background: rgba(255, 145, 68, 0.12);
+  .cd-btn.btn-default:not(:disabled):hover {
+    filter: brightness(1.08);
+    background: var(--signal);
+    color: var(--canvas);
   }
+
   .cd-btn.btn-warn {
+    background: var(--warn);
+    color: var(--canvas);
     border-color: var(--warn);
-    color: var(--warn);
-    background: rgba(255, 184, 0, 0.05);
   }
-  .cd-btn.btn-warn:hover:not(:disabled) {
-    background: rgba(255, 184, 0, 0.12);
+  .cd-btn.btn-warn:not(:disabled):hover {
+    filter: brightness(1.08);
+    background: var(--warn);
+    color: var(--canvas);
   }
+
   .cd-btn.btn-danger {
+    background: var(--crit);
+    color: #fff;
     border-color: var(--crit);
-    color: var(--crit);
-    background: rgba(255, 90, 90, 0.05);
   }
-  .cd-btn.btn-danger:hover:not(:disabled) {
-    background: rgba(255, 90, 90, 0.12);
+  .cd-btn.btn-danger:not(:disabled):hover {
+    filter: brightness(1.08);
+    background: var(--crit);
+    color: #fff;
   }
 </style>
