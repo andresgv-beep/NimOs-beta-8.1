@@ -45,7 +45,7 @@
   import { openWindow } from '$lib/stores/windows.js';
   import ConfirmDialog from '$lib/ui/ConfirmDialog.svelte';
   import { fetchCatalog } from './catalog.js';
-  import { getInstalledApps, uninstallApp } from './api.js';
+  import { getInstalledApps, uninstallApp, checkAppUpdates, updateApp } from './api.js';
   import InstallFlow from './InstallFlow.svelte';
   import {
     composeAppViews,
@@ -99,6 +99,23 @@
   /** ID del setInterval del polling · permite cancelarlo si user cierra */
   let uninstallPollId = null;
 
+  // ─── Sprint Updates · estado del update ──────────────────────────
+  /** ¿La app tiene update disponible? Se calcula al cargar el detail. */
+  let hasUpdate = false;
+  /** Detalles por servicio · solo informativo, lo recogemos por si añadimos UI granular. */
+  /** @type {Array<{name: string, image: string, updateAvailable: boolean}>} */
+  let updateServices = [];
+  /** Modal de update · fases similar a uninstall */
+  let updateDialogOpen = false;
+  /**
+   * 'confirm'  · pantalla inicial con explicación + botón Actualizar
+   * 'running'  · compose pull + up -d corriendo (típicamente 30s-2min)
+   * 'done'     · update OK · botón Cerrar
+   * 'error'    · falló · mensaje + botón Cerrar
+   */
+  let updatePhase = 'confirm';
+  let updateErr = '';
+
   // Screenshots · intentamos cargar 1..6, oculta automáticamente las que fallan
   // El repo del catálogo guarda screenshots en /screenshots/{appId}/N.png
   /** @type {number[]} */
@@ -123,6 +140,9 @@
     visibleShots = [1, 2, 3, 4, 5, 6];
     failedShots = new Set();
     loadedShots = new Set();
+    // Sprint Updates · reset
+    hasUpdate = false;
+    updateServices = [];
 
     try {
       const [cat, installed] = await Promise.all([
@@ -136,6 +156,20 @@
       }
       const views = composeAppViews([{ id: appId, app: entry }], installed);
       view = views[0];
+
+      // Sprint Updates · si la app está instalada y es un stack, comprobar
+      // si tiene update disponible. Solo lee BD (cache 6h), no llama al
+      // registry · es muy rápido (<100ms). El user no nota nada.
+      if (view?.installed) {
+        try {
+          const res = await checkAppUpdates(appId);
+          hasUpdate = res.updateAvailable;
+          updateServices = res.services;
+        } catch (err) {
+          // Si falla, no rompe el detail · solo no aparece el botón Actualizar
+          console.warn('[appstore/detail] checkAppUpdates failed:', err);
+        }
+      }
     } catch (err) {
       loadError = err?.message || String(err);
       view = null;
@@ -316,6 +350,59 @@
     }
   }
 
+  // ─── Sprint Updates · flujo de actualización ────────────────────
+
+  function handleUpdateClick() {
+    if (!view?.installed || !hasUpdate) return;
+    updatePhase = 'confirm';
+    updateErr = '';
+    updateDialogOpen = true;
+  }
+
+  /**
+   * Confirma el update · llama al endpoint POST /api/docker/app/<id>/update
+   * que ejecuta `docker compose pull && up -d`. Síncrono (típicamente 30s-2min).
+   *
+   * Tras éxito:
+   *   - Recargamos el detail (load) para refrescar el estado · digests locales
+   *     ahora coinciden con remotos, hasUpdate vuelve a false.
+   *   - El botón "Actualizar" desaparece del hero, el badge sidebar también.
+   */
+  async function handleUpdateConfirm() {
+    if (!view?.installed) return;
+    if (updatePhase === 'done') {
+      // Botón "Cerrar" tras éxito · refresh + cerrar modal
+      updateDialogOpen = false;
+      // Recargar el detail para que el estado refleje "ya actualizada"
+      await load();
+      return;
+    }
+    if (updatePhase === 'error') {
+      updateDialogOpen = false;
+      return;
+    }
+    if (updatePhase !== 'confirm') return;
+
+    updatePhase = 'running';
+    updateErr = '';
+    try {
+      await updateApp(view.id);
+      updatePhase = 'done';
+    } catch (err) {
+      updatePhase = 'error';
+      updateErr = err?.message || String(err);
+    }
+  }
+
+  function handleUpdateCancel() {
+    if (updatePhase === 'running') return; // no cancelable mid-update
+    updateDialogOpen = false;
+    if (updatePhase === 'done') {
+      // Si cierra por X tras done · igual recargamos para reflejar estado
+      load();
+    }
+  }
+
   // Credentials · copiar al clipboard
   async function copyToClipboard(value, label) {
     if (!value) return;
@@ -410,14 +497,25 @@
           <button class="btn btn-primary" on:click={handleInstall}>
             Instalar {view.name}
           </button>
-        {:else if canOpen}
-          <button class="btn btn-primary" on:click={handleOpen}>
-            Abrir {view.name}
-          </button>
-        {:else if isStopped}
-          <button class="btn btn-primary" disabled title="Inicia el contenedor desde NimHealth">
-            Abrir {view.name}
-          </button>
+        {:else}
+          <!-- Instalada · botón "Actualizar" si hay update + botón Abrir -->
+          {#if hasUpdate}
+            <button class="btn btn-update" on:click={handleUpdateClick} title="Actualizar a la última versión">
+              <svg viewBox="0 0 1024 1024" fill="currentColor" width="14" height="14" aria-hidden="true">
+                <path d="M512 1024C229.23 1024 0 794.77 0 512S229.23 0 512 0s512 229.23 512 512-229.23 512-512 512zm95.731-219.947c62.403-20.276 114.032-58.693 150.859-107.357a15.793 15.793 0 004.801-13.823 15.302 15.302 0 00-.062-.473l-.008-.039a15.75 15.75 0 00-8.378-11.488l-44.709-32.893a15.837 15.837 0 00-13.75-4.587c-.124.014-.249.029-.373.046l-.058.014a15.88 15.88 0 00-11.478 8.236c-25.776 33.881-61.624 60.563-105.31 74.758-113.432 36.856-234.791-24.722-271.525-137.777s25.253-234.206 138.685-271.062c106.335-34.55 218.904 15.82 262.966 115.175l-71.623-.803c-7.187-1.066-14.189 2.885-16.982 9.581a15.743 15.743 0 004.748 18.601l120.91 126.41c2.999 3.135 7.161 4.899 11.51 4.879s8.502-1.823 11.485-4.986L890.37 448.206c5.265-4.193 7.303-11.242 5.082-17.573a20.516 20.516 0 00-.119-.318 15.889 15.889 0 00-.947-2.099l-.031-.073c-3.116-5.729-9.448-8.951-15.937-8.108l-71.678-.494-.892-2.744C753.5 255.685 579.61 167.45 417.952 219.976S167.478 446.095 219.826 607.207c52.348 161.112 226.238 249.347 387.896 196.821l.008.027z"/>
+              </svg>
+              Actualizar
+            </button>
+          {/if}
+          {#if canOpen}
+            <button class="btn btn-primary" on:click={handleOpen}>
+              Abrir {view.name}
+            </button>
+          {:else if isStopped}
+            <button class="btn btn-primary" disabled title="Inicia el contenedor desde NimHealth">
+              Abrir {view.name}
+            </button>
+          {/if}
         {/if}
       </div>
     </section>
@@ -692,6 +790,76 @@
   </ConfirmDialog>
 {/if}
 
+<!-- Sprint Updates · modal de actualización · choice/running/done/error -->
+{#if view}
+  <ConfirmDialog
+    bind:open={updateDialogOpen}
+    title="Actualizar {view.name}"
+    message={updatePhase === 'confirm' ? '' : ''}
+    confirmLabel={
+      updatePhase === 'confirm' ? 'Actualizar ahora'
+      : updatePhase === 'done' ? 'Cerrar'
+      : updatePhase === 'error' ? 'Cerrar'
+      : ''
+    }
+    cancelLabel={updatePhase === 'confirm' ? 'Cancelar' : ''}
+    variant={updatePhase === 'error' ? 'danger' : 'default'}
+    processing={updatePhase === 'running'}
+    on:confirm={handleUpdateConfirm}
+    on:cancel={handleUpdateCancel}
+  >
+    {#if updatePhase === 'confirm'}
+      <div class="update-confirm">
+        <div class="update-confirm-row">
+          <span class="update-confirm-k">App</span>
+          <span class="update-confirm-v">{view.name}</span>
+        </div>
+        <div class="update-confirm-row">
+          <span class="update-confirm-k">Servicios con update</span>
+          <span class="update-confirm-v">
+            {updateServices.filter((s) => s.updateAvailable).length} de {updateServices.length}
+          </span>
+        </div>
+        <p class="update-confirm-hint">
+          NimOS ejecutará <code>docker compose pull</code> y <code>up -d</code>.
+          Los datos se conservan · solo se reemplazan los contenedores.
+          Puede tardar de 30 segundos a 2 minutos.
+        </p>
+      </div>
+    {:else if updatePhase === 'running'}
+      <div class="uninstall-progress">
+        <div class="uninstall-step">
+          <span class="uninstall-led led-active"></span>
+          <span class="uninstall-step-label">Descargando nueva versión y reiniciando…</span>
+        </div>
+        <div class="uninstall-hint-running">
+          Esto puede tardar unos minutos. No cierres el modal.
+        </div>
+      </div>
+    {:else if updatePhase === 'done'}
+      <div class="uninstall-progress">
+        <div class="uninstall-step">
+          <span class="uninstall-led led-ok"></span>
+          <span class="uninstall-step-label">
+            {view.name} actualizada correctamente
+          </span>
+        </div>
+        <div class="uninstall-hint-running">
+          La app está corriendo con la última versión disponible.
+        </div>
+      </div>
+    {:else if updatePhase === 'error'}
+      <div class="uninstall-progress">
+        <div class="uninstall-step">
+          <span class="uninstall-led led-crit"></span>
+          <span class="uninstall-step-label">No se pudo completar la actualización</span>
+        </div>
+        <div class="uninstall-err">{updateErr}</div>
+      </div>
+    {/if}
+  </ConfirmDialog>
+{/if}
+
 <style>
   /* ═══ Estados loading/error ═══ */
   .detail-state {
@@ -863,6 +1031,36 @@
   .tag-status.crit .status-dot { background: var(--crit); box-shadow: 0 0 4px var(--crit-glow); }
 
   .hero-action {
+    flex-shrink: 0;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  /* sprint Updates · botón "Actualizar" en azul · llama la atención sin gritar */
+  .btn-update {
+    background: var(--info);
+    color: var(--canvas);
+    border: 1px solid var(--info);
+    padding: 9px 16px;
+    border-radius: var(--radius-sm);
+    font-size: var(--fs-12);
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: filter 0.12s, transform 0.08s;
+    box-shadow: 0 0 12px var(--info-glow, rgba(77, 184, 255, 0.3));
+  }
+  .btn-update:hover {
+    filter: brightness(1.1);
+  }
+  .btn-update:active {
+    transform: scale(0.97);
+  }
+  .btn-update svg {
     flex-shrink: 0;
   }
 
@@ -1318,5 +1516,46 @@
     border: 1px solid var(--crit-border, rgba(255, 90, 90, 0.3));
     border-radius: var(--radius-sm);
     word-break: break-word;
+  }
+  /* ═══ Sprint Updates · modal de update · vista 'confirm' ═══ */
+  .update-confirm {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .update-confirm-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+    padding: 12px 14px;
+    background: var(--canvas);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+  }
+  .update-confirm-k {
+    color: var(--ink-mute);
+    font-size: var(--fs-11);
+  }
+  .update-confirm-v {
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: var(--fs-12);
+    font-weight: 600;
+  }
+  .update-confirm-hint {
+    color: var(--ink-dim);
+    font-size: var(--fs-11);
+    line-height: 1.55;
+    padding: 0 2px;
+    margin: 4px 0 0;
+  }
+  .update-confirm-hint code {
+    background: var(--panel-deep);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: var(--fs-10);
+    color: var(--info);
   }
 </style>
