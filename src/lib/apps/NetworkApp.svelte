@@ -1,18 +1,19 @@
 <script>
   /**
-   * NetworkApp · Remote Access (v3 · según mockups oficiales)
+   * NetworkApp · Remote Access (orquestador de tabs)
    * ────────────────────────────────────────────────────────────
    * Sub-tabs horizontales: Ports · Router · DDNS · Proxy · Certs
    *
-   * Flujo DDNS correcto según mockup:
-   *   empty state → select provider (grid 4 cards) → form del proveedor → estado activo
+   * Estado de migración a Network v4:
+   *   - DDNS  : delegado a NetworkDDNS.svelte → consume /api/v4/network/ddns
+   *   - Ports : pendiente migrar a /api/v4/network/ports
+   *   - Router: pendiente migrar a /api/v4/network/router
+   *   - Certs : pendiente migrar a /api/v4/network/certs
+   *   - Proxy : pendiente revisar (probablemente fuera, va al AppStore)
    *
    * Puerto 5009 es HTTPS nativo del daemon Go (no 443 + proxy).
    *
-   * Backend endpoints (idénticos a Beta 7, no tocar):
-   *   GET    /api/ddns/status
-   *   POST   /api/ddns/config
-   *   POST   /api/ddns/test
+   * Endpoints aún consumidos por este archivo (pendiente migrar):
    *   GET    /api/remote-access/status
    *   POST   /api/remote-access/request-ssl
    *   POST   /api/remote-access/enable-https
@@ -22,6 +23,8 @@
    *   DELETE /api/router/port
    *   POST   /api/router/test
    *   GET    /api/proxy/status
+   *   GET    /api/certs/status
+   *   POST   /api/certs/renew
    */
   import { onMount, onDestroy } from 'svelte';
   import { token, hdrs } from '$lib/stores/auth.js';
@@ -30,6 +33,7 @@
     KPICard, SectionHead, BevelButton, IconButton, TextInput,
     Tab, Badge, LED, EmptyState, Spinner, DenseTable
   } from '$lib/ui';
+  import NetworkDDNS from './network/NetworkDDNS.svelte';
 
   // ─── State ───
   let activeTab = 'ports'; // 'ports' | 'router' | 'ddns' | 'proxy' | 'certs'
@@ -61,15 +65,7 @@
     { label: 'SSH',         port: 22,    proto: 'TCP', desc: 'SSH' },
   ];
 
-  // DDNS
-  let ddnsData = {};
-  let ddnsPhase = 'loading'; // 'loading' | 'empty' | 'select-provider' | 'form' | 'active'
-  let ddnsForm = { provider: '', domain: '', token: '', username: '', password: '' };
-  let ddnsSaving = false;
-  let ddnsTesting = false;
-  let ddnsMsg = '';
-  let ddnsMsgError = false;
-  let tokenVisible = false;
+  // DDNS — gestionado por NetworkDDNS.svelte (subcomponente)
 
   // Cert
   let certData = {};
@@ -86,8 +82,12 @@
   let loading = true;
 
   // ─── Derived ───
-  $: certDomain = ddnsData.config?.domain || certData.config?.ddns?.domain || '';
-  $: externalIp = certData.ddns?.externalIp || ddnsData.externalIp || '';
+  // certDomain / externalIp ahora se derivan del cert sólo (DDNS lo
+  // gestiona NetworkDDNS internamente). Si el usuario quiere ver el cert
+  // emparejado con su dominio DDNS, lo veremos en el tab Certs cuando
+  // lo migremos a v4.
+  $: certDomain = certData.config?.ddns?.domain || '';
+  $: externalIp = certData.ddns?.externalIp || '';
   $: localIp = certData.localIp || routerStatus.internalIp || '';
 
   // Detección de cert con dos fuentes:
@@ -106,40 +106,18 @@
     parseInt(p.externalPort || p.port) === HTTPS_PORT
   );
 
-  $: autoUpdate = ddnsData.config?.autoUpdate !== false;
-  $: ddnsActive = ddnsData.config?.enabled && ddnsData.config?.domain;
-
-  // Derivar fase de DDNS según estado
-  $: if (ddnsData && Object.keys(ddnsData).length > 0) {
-    if (ddnsActive) {
-      ddnsPhase = 'active';
-    } else if (ddnsPhase === 'loading') {
-      ddnsPhase = 'empty';
-    }
-  }
-
-  // Proveedores disponibles
-  const PROVIDERS = [
-    { id: 'duckdns', name: 'DuckDNS',  desc: 'Gratuito · Subdominio + Token', fields: 'dominio, token' },
-    { id: 'noip',    name: 'No-IP',    desc: 'Gratuito/Premium · Email + Pass', fields: 'hostname, email, contraseña' },
-    { id: 'dynu',    name: 'Dynu',     desc: 'Gratuito · Hostname + Password', fields: 'hostname, password' },
-    { id: 'freedns', name: 'FreeDNS',  desc: 'Gratuito · Solo Update Key',     fields: 'update key' },
-  ];
-
   // ─── API ───
   let certsFromCertbot = []; // Lista bruta de /api/certs/status (más fiable)
 
   async function loadAll() {
     try {
-      const [ddns, certs, routerS, routerP, proxy, certsList] = await Promise.all([
-        fetch('/api/ddns/status',           { headers: hdrs() }).then(r => r.json()).catch(() => ({})),
+      const [certs, routerS, routerP, proxy, certsList] = await Promise.all([
         fetch('/api/remote-access/status',  { headers: hdrs() }).then(r => r.json()).catch(() => ({})),
         fetch('/api/router/status',         { headers: hdrs() }).then(r => r.json()).catch(() => ({})),
         fetch('/api/router/ports',          { headers: hdrs() }).then(r => r.json()).catch(() => ({ ports: [] })),
         fetch('/api/proxy/status',          { headers: hdrs() }).then(r => r.json()).catch(() => ({ rules: [] })),
         fetch('/api/certs/status',          { headers: hdrs() }).then(r => r.json()).catch(() => ({ certificates: [] })),
       ]);
-      ddnsData     = ddns || {};
       certData     = certs || {};
       routerStatus = routerS || {};
       routerPorts  = routerP?.ports || [];
@@ -167,128 +145,8 @@
   }
 
   // ─── DDNS ───
-  function selectProvider(pid) {
-    ddnsForm = { provider: pid, domain: '', token: '', username: '', password: '' };
-    ddnsMsg = '';
-    ddnsMsgError = false;
-    ddnsPhase = 'form';
-  }
-
-  function goToSelectProvider() {
-    ddnsPhase = 'select-provider';
-    ddnsMsg = '';
-  }
-
-  function cancelDdnsForm() {
-    ddnsMsg = '';
-    if (ddnsActive) {
-      ddnsPhase = 'active';
-    } else {
-      ddnsPhase = 'empty';
-    }
-  }
-
-  async function saveDdns() {
-    const p = ddnsForm.provider;
-    if (!p) { ddnsMsg = 'Selecciona un proveedor'; ddnsMsgError = true; return; }
-    if (p === 'freedns' && !ddnsForm.token) {
-      ddnsMsg = 'Introduce el update key'; ddnsMsgError = true; return;
-    }
-    if (p !== 'freedns' && !ddnsForm.domain) {
-      ddnsMsg = 'Introduce el dominio'; ddnsMsgError = true; return;
-    }
-    if (p === 'noip' && (!ddnsForm.username || !ddnsForm.password)) {
-      ddnsMsg = 'Introduce email y contraseña'; ddnsMsgError = true; return;
-    }
-    if ((p === 'duckdns' || p === 'dynu') && !ddnsForm.token) {
-      ddnsMsg = 'Introduce el token'; ddnsMsgError = true; return;
-    }
-    ddnsSaving = true;
-    ddnsMsg = '';
-    try {
-      const res = await fetch('/api/ddns/config', {
-        method: 'POST',
-        headers: { ...hdrs(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...ddnsForm, enabled: true }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        ddnsMsg = 'Guardado correctamente';
-        ddnsMsgError = false;
-        await loadAll();
-        ddnsPhase = 'active';
-      } else {
-        ddnsMsg = data.error || 'Error al guardar';
-        ddnsMsgError = true;
-      }
-    } catch {
-      ddnsMsg = 'Error de conexión';
-      ddnsMsgError = true;
-    }
-    ddnsSaving = false;
-  }
-
-  async function testDdns() {
-    ddnsTesting = true;
-    ddnsMsg = '';
-    try {
-      const res = await fetch('/api/ddns/test', {
-        method: 'POST',
-        headers: { ...hdrs(), 'Content-Type': 'application/json' },
-        body: JSON.stringify(ddnsForm),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        ddnsMsg = 'Conexión exitosa' + (data.result ? ': ' + data.result : '');
-        ddnsMsgError = false;
-      } else {
-        ddnsMsg = data.error || 'Falló la prueba';
-        ddnsMsgError = true;
-      }
-    } catch {
-      ddnsMsg = 'Error de conexión';
-      ddnsMsgError = true;
-    }
-    ddnsTesting = false;
-  }
-
-  async function disableDdns() {
-    if (!confirm('¿Desactivar DDNS? El dominio dejará de actualizarse.')) return;
-    try {
-      await fetch('/api/ddns/config', {
-        method: 'POST',
-        headers: { ...hdrs(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: false }),
-      });
-      await loadAll();
-      ddnsPhase = 'empty';
-    } catch {
-      ddnsMsg = 'Error al desactivar'; ddnsMsgError = true;
-    }
-  }
-
-  async function toggleAutoUpdate() {
-    const current = ddnsData.config?.autoUpdate !== false;
-    try {
-      await fetch('/api/ddns/config', {
-        method: 'POST',
-        headers: { ...hdrs(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...ddnsData.config, autoUpdate: !current }),
-      });
-      await loadAll();
-    } catch (e) { console.error('Toggle auto-update failed', e); }
-  }
-
-  function editDdns() {
-    ddnsForm = {
-      provider: ddnsData.config?.provider || '',
-      domain:   ddnsData.config?.domain   || '',
-      token:    ddnsData.config?.token    || '',
-      username: ddnsData.config?.username || '',
-      password: '',
-    };
-    ddnsPhase = 'form';
-  }
+  // ─── DDNS ───
+  // Gestión DDNS movida a NetworkDDNS.svelte (consume /api/v4/network/ddns).
 
   // ─── Router / UPnP ───
   async function addPort() {
@@ -353,7 +211,12 @@
   }
 
   // ─── Cert ───
-  // Emite un cert nuevo cuando no existe ninguno para este dominio
+  // Emite un cert nuevo cuando no existe ninguno para este dominio.
+  // NOTA: este tab sigue siendo legacy (consume /api/remote-access/request-ssl).
+  // Cuando se migre a /api/v4/network/certs, esta función desaparece y
+  // pasa a NetworkCerts.svelte. Mientras tanto, NO podemos leer el token
+  // DDNS desde aquí (lo gestiona NetworkDDNS internamente), así que
+  // forzamos método standalone.
   async function requestCert() {
     const domain = certDomain;
     if (!domain) {
@@ -364,17 +227,12 @@
     }
     certRequesting = true; certMsg = '';
     try {
-      const provider = ddnsData.config?.provider || '';
-      const dnsToken = ddnsData.config?.token || '';
-      const useDns = provider === 'duckdns' && dnsToken;
       const res = await fetch('/api/remote-access/request-ssl', {
         method: 'POST',
         headers: { ...hdrs(), 'Content-Type': 'application/json' },
         body: JSON.stringify({
           domain, email: certEmail,
-          method: useDns ? 'dns' : 'standalone',
-          provider: useDns ? 'duckdns' : '',
-          dnsToken: useDns ? dnsToken : '',
+          method: 'standalone',
         }),
       });
       const data = await res.json();
@@ -479,7 +337,6 @@
     </Tab>
     <Tab active={activeTab === 'ddns'}   onClick={() => activeTab = 'ddns'}>
       DDNS
-      {#if ddnsActive}<Badge size="sm" variant="accent">on</Badge>{/if}
     </Tab>
     <Tab active={activeTab === 'proxy'}  onClick={() => activeTab = 'proxy'}>
       Proxy
@@ -690,175 +547,7 @@
 
     <!-- ═══ DDNS ═══ -->
     {#if activeTab === 'ddns'}
-
-      <!-- Fase: Active (estado actual) -->
-      {#if ddnsPhase === 'active' && ddnsActive}
-        <div class="section">
-          <SectionHead count="· activo">Dynamic DNS</SectionHead>
-
-          <div class="status-bar cols-3">
-            <div class="status-cell">
-              <div class="sc-label">Proveedor</div>
-              <div class="sc-value">{ddnsData.config.provider}</div>
-            </div>
-            <div class="status-cell">
-              <div class="sc-label">Dominio</div>
-              <div class="sc-value mono tc-accent" style="font-size:12px">{ddnsData.config.domain}</div>
-            </div>
-            <div class="status-cell">
-              <div class="sc-label">Estado</div>
-              <div class="sc-value">
-                <LED size={7} variant="ok" />
-                <span>Activo</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="toggle-row">
-            <div class="toggle" class:on={autoUpdate} on:click={toggleAutoUpdate} role="button" tabindex="0"
-                 on:keydown={(e) => e.key === 'Enter' && toggleAutoUpdate()}>
-              <div class="toggle-track"><div class="toggle-thumb"></div></div>
-            </div>
-            <span class="toggle-label">Auto-actualización {autoUpdate ? 'activada' : 'desactivada'}</span>
-          </div>
-
-          <div class="detail-rows">
-            <div class="detail-row">
-              <div class="dr-label">IP externa</div>
-              <div class="dr-value"><code>{externalIp || '—'}</code></div>
-            </div>
-            <div class="detail-row">
-              <div class="dr-label">Última act.</div>
-              <div class="dr-value tc-mute">{fmtRelative(ddnsData.lastUpdate)}{ddnsData.lastLog ? ' · ' + ddnsData.lastLog : ''}</div>
-            </div>
-          </div>
-
-          <div class="actions-row">
-            <BevelButton size="sm" onClick={editDdns}>✎ Editar</BevelButton>
-            <div style="flex:1"></div>
-            <BevelButton variant="danger" size="sm" onClick={disableDdns}>
-              Desactivar DDNS
-            </BevelButton>
-          </div>
-        </div>
-      {/if}
-
-      <!-- Fase: Empty state -->
-      {#if ddnsPhase === 'empty'}
-        <div class="empty-box">
-          <div class="empty-icon">⇄</div>
-          <div class="empty-title">Sin dominios DDNS configurados</div>
-          <div class="empty-desc">Configura un dominio dinámico para acceder a NimOS desde fuera de tu red local.</div>
-          <BevelButton variant="primary" size="sm" onClick={goToSelectProvider}>
-            ▸ Añadir dominio
-          </BevelButton>
-        </div>
-      {/if}
-
-      <!-- Fase: Seleccionar proveedor -->
-      {#if ddnsPhase === 'select-provider'}
-        <div class="section">
-          <SectionHead>Selecciona proveedor DDNS</SectionHead>
-
-          <div class="provider-grid">
-            {#each PROVIDERS as prov}
-              <button
-                class="provider-card"
-                class:selected={ddnsForm.provider === prov.id}
-                on:click={() => selectProvider(prov.id)}
-              >
-                <div class="pc-name">
-                  <span class="pc-dot"></span>
-                  {prov.name}
-                </div>
-                <div class="pc-desc">{prov.desc}</div>
-                <div class="pc-fields">campos: {prov.fields}</div>
-              </button>
-            {/each}
-          </div>
-
-          <div class="actions-row" style="margin-top:14px">
-            <BevelButton size="sm" onClick={() => ddnsPhase = 'empty'}>Cancelar</BevelButton>
-          </div>
-        </div>
-      {/if}
-
-      <!-- Fase: Formulario -->
-      {#if ddnsPhase === 'form'}
-        <div class="section">
-          <SectionHead>Configurar {ddnsForm.provider}</SectionHead>
-
-          {#if ddnsForm.provider === 'duckdns'}
-            <div class="form-group">
-              <label class="form-label">Subdominio</label>
-              <TextInput bind:value={ddnsForm.domain} placeholder="nimosbarraca.duckdns.org" size="sm" />
-              <div class="form-hint">Tu subdominio completo de DuckDNS</div>
-            </div>
-            <div class="form-group">
-              <label class="form-label">Token</label>
-              <div class="input-with-eye">
-                <TextInput
-                  bind:value={ddnsForm.token}
-                  type={tokenVisible ? 'text' : 'password'}
-                  placeholder="Token de DuckDNS"
-                  size="sm"
-                />
-                <IconButton size="sm" title={tokenVisible ? 'Ocultar' : 'Mostrar'} onClick={() => tokenVisible = !tokenVisible}>
-                  {tokenVisible ? '◉' : '○'}
-                </IconButton>
-              </div>
-              <div class="form-hint">Token de tu cuenta DuckDNS · duckdns.org/domains</div>
-            </div>
-
-          {:else if ddnsForm.provider === 'noip'}
-            <div class="form-group">
-              <label class="form-label">Hostname</label>
-              <TextInput bind:value={ddnsForm.domain} placeholder="midominio.ddns.net" size="sm" />
-              <div class="form-hint">Tu hostname registrado en No-IP</div>
-            </div>
-            <div class="form-group">
-              <label class="form-label">Email</label>
-              <TextInput bind:value={ddnsForm.username} placeholder="tu@email.com" size="sm" />
-            </div>
-            <div class="form-group">
-              <label class="form-label">Contraseña</label>
-              <TextInput bind:value={ddnsForm.password} type="password" size="sm" />
-            </div>
-
-          {:else if ddnsForm.provider === 'dynu'}
-            <div class="form-group">
-              <label class="form-label">Hostname</label>
-              <TextInput bind:value={ddnsForm.domain} placeholder="midominio.dynu.net" size="sm" />
-            </div>
-            <div class="form-group">
-              <label class="form-label">Password</label>
-              <TextInput bind:value={ddnsForm.token} type="password" size="sm" />
-            </div>
-
-          {:else if ddnsForm.provider === 'freedns'}
-            <div class="form-group">
-              <label class="form-label">Update Key</label>
-              <TextInput bind:value={ddnsForm.token} placeholder="Update key de FreeDNS" size="sm" />
-              <div class="form-hint">Obtén tu update key desde freedns.afraid.org</div>
-            </div>
-          {/if}
-
-          <div class="actions-row">
-            <BevelButton size="sm" onClick={testDdns} disabled={ddnsTesting}>
-              {ddnsTesting ? 'Probando...' : 'Probar conexión'}
-            </BevelButton>
-            <BevelButton variant="primary" size="sm" onClick={saveDdns} disabled={ddnsSaving}>
-              {ddnsSaving ? '▸ Guardando...' : '▸ Guardar'}
-            </BevelButton>
-            <BevelButton size="sm" onClick={cancelDdnsForm}>Cancelar</BevelButton>
-          </div>
-
-          {#if ddnsMsg}
-            <div class="msg" class:ok={!ddnsMsgError} class:error={ddnsMsgError}>{ddnsMsg}</div>
-          {/if}
-        </div>
-      {/if}
-
+      <NetworkDDNS />
     {/if}
 
     <!-- ═══ PROXY ═══ -->
@@ -987,8 +676,6 @@
     <span><span class="k">ip</span> <span class="v">{localIp || '—'}</span></span>
     <span class="sep">·</span>
     <span><span class="k">ssl</span> <span class="v" class:tc-accent={sslValid}>{sslValid ? 'valid' : 'none'}</span></span>
-    <span class="sep">·</span>
-    <span><span class="k">ddns</span> <span class="v" class:tc-accent={ddnsActive}>{ddnsActive ? 'active' : 'off'}</span></span>
   </svelte:fragment>
 
   <svelte:fragment slot="footer-right">
