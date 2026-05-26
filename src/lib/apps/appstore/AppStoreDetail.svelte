@@ -833,7 +833,7 @@
           <span class="uninstall-step-label">Descargando nueva versión y reiniciando…</span>
         </div>
         <div class="uninstall-hint-running">
-          Esto puede tardar unos minutos. No cierres el modal.
+          Apps grandes (Immich, Nextcloud) pueden tardar 5-15 min. No cierres el modal.
         </div>
       </div>
     {:else if updatePhase === 'done'}
