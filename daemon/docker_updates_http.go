@@ -238,8 +238,11 @@ func dockerAppUpdate(w http.ResponseWriter, r *http.Request, appID string) {
 	stackPath := filepath.Join(dockerPath, "stacks", safeID)
 	composePath := filepath.Join(stackPath, "docker-compose.yml")
 
-	// 1. compose pull · descarga las imágenes nuevas (NO toca containers vivos)
-	pullCtx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	// 1. compose pull · descarga las imágenes nuevas (NO toca containers vivos).
+	// Timeout 15 min · stacks pesados como Immich tienen 4+ imágenes (varios GB
+	// total) y en Pi 4 con red doméstica pueden tardar fácil 5-10 min. Mejor
+	// pasarse de tiempo que matar el pull a medias y dejar imágenes corruptas.
+	pullCtx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
 	defer cancel()
 	pullCmd := exec.CommandContext(pullCtx, "docker", "compose", "-f", composePath, "pull")
 	pullCmd.Dir = stackPath
@@ -249,10 +252,16 @@ func dockerAppUpdate(w http.ResponseWriter, r *http.Request, appID string) {
 		return
 	}
 
-	// 2. compose up -d · recrea containers con las nuevas imágenes
-	upCtx, cancel2 := context.WithTimeout(r.Context(), 5*time.Minute)
+	// 2. compose up -d --force-recreate · IMPORTANTE: sin --force-recreate
+	// docker compose considera que el container actual sigue siendo válido
+	// (mismo tag) aunque el digest haya cambiado, y no lo reinicia. Necesitamos
+	// forzar el reemplazo para que la nueva imagen entre en vivo.
+	//
+	// Timeout 10 min · recreación + restart de 4 containers Immich con
+	// healthchecks puede tardar varios minutos.
+	upCtx, cancel2 := context.WithTimeout(r.Context(), 10*time.Minute)
 	defer cancel2()
-	upCmd := exec.CommandContext(upCtx, "docker", "compose", "-f", composePath, "up", "-d")
+	upCmd := exec.CommandContext(upCtx, "docker", "compose", "-f", composePath, "up", "-d", "--force-recreate")
 	upCmd.Dir = stackPath
 	if out, err := upCmd.CombinedOutput(); err != nil {
 		logMsg("docker: app update up -d failed for %s: %v (output: %s)", safeID, err, string(out))
