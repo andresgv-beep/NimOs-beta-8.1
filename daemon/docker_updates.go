@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -125,6 +126,24 @@ type RemoteCheckOutcome struct {
 	Err    error  // detalles del fallo · útil para logs
 }
 
+// runtimeArch devuelve la arquitectura Docker (no Go) que corresponde al
+// runtime actual · 'amd64' en x86_64, 'arm64' en Raspberry Pi 4/5, etc.
+// Se mapea desde runtime.GOARCH a la nomenclatura Docker.
+func runtimeArch() string {
+	switch runtime.GOARCH {
+	case "amd64", "x86_64":
+		return "amd64"
+	case "arm64", "aarch64":
+		return "arm64"
+	case "arm":
+		return "arm"
+	case "386":
+		return "386"
+	default:
+		return runtime.GOARCH
+	}
+}
+
 // getRemoteImageDigest consulta el registry remoto para obtener el digest
 // actual del tag. NO descarga la imagen · solo metadatos.
 //
@@ -135,6 +154,17 @@ type RemoteCheckOutcome struct {
 //
 // El comando es:
 //   docker manifest inspect <image>
+//
+// IMPORTANTE · multi-arch: muchas imágenes (Jellyfin, Immich, Postgres) son
+// multi-arch · el manifest inspect devuelve un INDEX con manifests por
+// arquitectura. Necesitamos el digest de la arquitectura del runtime actual
+// (en Pi 4 = arm64), NO el primer manifest que devuelve (que suele ser amd64).
+//
+// Sin este filtro, en Pi 4 comparamos:
+//   local (arm64)  = sha256:abc...
+//   remote (amd64) = sha256:xyz...
+// Y aunque la imagen sea la misma, los digests NUNCA coinciden · falsamente
+// detectamos update permanente.
 //
 // Necesita que el daemon Docker esté corriendo y que `experimental` esté
 // habilitado en config (en Docker moderno está por defecto).
@@ -176,21 +206,30 @@ func getRemoteImageDigest(ctx context.Context, image string) RemoteCheckOutcome 
 		return RemoteCheckOutcome{Status: "error", Err: fmt.Errorf("parse manifest JSON: %w", err)}
 	}
 
-	// Caso 1 · single-arch manifest · digest en config.digest
-	if result.Config.Digest != "" {
+	myArch := runtimeArch()
+
+	// Caso 1 · single-arch manifest · digest en config.digest.
+	// Este caso es raro hoy día · casi todas las imágenes públicas son multi-arch.
+	if result.Config.Digest != "" && len(result.Manifests) == 0 {
 		return RemoteCheckOutcome{Digest: result.Config.Digest, Status: "ok"}
 	}
 
-	// Caso 2 · multi-arch · cogemos el primer manifest (cualquier arch sirve
-	// como huella · si cambia el manifest list, cambia el digest representativo).
-	if len(result.Manifests) > 0 {
-		// Preferimos el manifest de la arch actual si lo podemos identificar.
-		// Si no hay match exacto, usamos el primero.
-		for _, m := range result.Manifests {
-			if m.Platform.Architecture == "arm64" || m.Platform.Architecture == "amd64" {
-				return RemoteCheckOutcome{Digest: m.Digest, Status: "ok"}
-			}
+	// Caso 2 · multi-arch · buscar el manifest que coincide con la arch
+	// del runtime actual. Esto es CRÍTICO en Pi (arm64) porque la imagen
+	// instalada localmente es la del manifest arm64, no amd64.
+	for _, m := range result.Manifests {
+		if m.Platform.Architecture == myArch && m.Platform.OS == "linux" {
+			return RemoteCheckOutcome{Digest: m.Digest, Status: "ok"}
 		}
+	}
+
+	// Caso 3 · fallback · ninguna arch coincide pero hay manifests.
+	// Esto pasa si la imagen no tiene build para nuestra arquitectura
+	// (típicamente apps que solo publican amd64 y nosotros estamos en arm64,
+	// el usuario habría tenido un fallo de instalación previo, pero por si
+	// acaso devolvemos el primero como mejor esfuerzo).
+	if len(result.Manifests) > 0 {
+		logMsg("docker: image %s sin manifest para arch %s (manifests disponibles: %d) · usando el primero como fallback", image, myArch, len(result.Manifests))
 		return RemoteCheckOutcome{Digest: result.Manifests[0].Digest, Status: "ok"}
 	}
 
