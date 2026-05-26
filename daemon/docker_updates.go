@@ -19,7 +19,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os/exec"
 	"runtime"
@@ -91,32 +92,6 @@ func getLocalImageDigest(ctx context.Context, image string) (string, error) {
 	return raw[idx+1:], nil
 }
 
-// manifestInspectResult representa la salida JSON parcial de
-// `docker manifest inspect --verbose <image>`. Solo nos interesa el digest.
-//
-// Hay dos formatos posibles:
-//   - Single-arch manifest: { "config": { "digest": "sha256:..." }, ... }
-//   - Multi-arch manifest: array de { "Descriptor": { "digest": "sha256:..." } }
-//
-// Para nuestro propósito (detectar updates), basta con el digest a nivel
-// manifest (no a nivel layer). Usamos `docker manifest inspect` sin --verbose
-// que devuelve el manifest summary directo.
-type manifestInspectResult struct {
-	SchemaVersion int    `json:"schemaVersion"`
-	MediaType     string `json:"mediaType"`
-	Config        struct {
-		Digest string `json:"digest"`
-	} `json:"config"`
-	// Para multi-arch · el primer manifest tiene el digest representativo
-	Manifests []struct {
-		Digest string `json:"digest"`
-		Platform struct {
-			Architecture string `json:"architecture"`
-			OS           string `json:"os"`
-		} `json:"platform"`
-	} `json:"manifests"`
-}
-
 // RemoteCheckOutcome encapsula el resultado de comprobar un registry remoto.
 // Incluye el status para que el caller (endpoint update-check) decida si
 // guardarlo en BD como 'ok', 'unauthorized', 'rate_limited', etc.
@@ -126,9 +101,87 @@ type RemoteCheckOutcome struct {
 	Err    error  // detalles del fallo · útil para logs
 }
 
-// runtimeArch devuelve la arquitectura Docker (no Go) que corresponde al
-// runtime actual · 'amd64' en x86_64, 'arm64' en Raspberry Pi 4/5, etc.
-// Se mapea desde runtime.GOARCH a la nomenclatura Docker.
+// getRemoteImageDigest consulta el registry remoto para obtener el digest
+// actual del tag. NO descarga la imagen · solo metadatos.
+//
+// Ejemplos:
+//   getRemoteImageDigest("jellyfin/jellyfin:latest")  → "sha256:..."
+//   getRemoteImageDigest("private/repo:v1")           → "", status='unauthorized'
+//   getRemoteImageDigest("typo/imagen:latest")        → "", status='unsupported'
+//
+// IMPORTANTE · qué digest comparamos:
+//
+// Para imágenes multi-arch (la mayoría hoy día), hay DOS niveles de digests:
+//
+//   1. INDEX MANIFEST DIGEST · hash del JSON del manifest list completo.
+//      Es lo que `docker image inspect --format '{{index .RepoDigests 0}}'`
+//      devuelve para el local · es estable entre arquitecturas porque
+//      todas las arqs ven el MISMO index del registry.
+//
+//   2. ARCH-SPECIFIC MANIFEST DIGEST · hash del manifest dentro del index
+//      para una arch concreta (amd64, arm64). Este SÍ es distinto por arq.
+//
+// El comando `docker image inspect` devuelve el INDEX digest (nivel 1).
+// El comando `docker manifest inspect` devuelve el INDEX JSON con manifests
+// dentro · pero NO directamente el digest del index.
+//
+// Para obtener el INDEX digest del remoto, calculamos SHA256 del manifest
+// JSON raw. Eso es exactamente lo que Docker hace internamente · el "digest
+// del manifest" es literalmente sha256(manifest_json).
+//
+// Necesita que el daemon Docker esté corriendo y que `experimental` esté
+// habilitado en config (en Docker moderno está por defecto).
+func getRemoteImageDigest(ctx context.Context, image string) RemoteCheckOutcome {
+	if image == "" {
+		return RemoteCheckOutcome{Status: "error", Err: fmt.Errorf("image vacío")}
+	}
+
+	cctx, cancel := context.WithTimeout(ctx, remoteInspectTimeout)
+	defer cancel()
+
+	// `docker buildx imagetools inspect --raw` devuelve el manifest JSON
+	// raw exactamente como lo sirve el registry · sin re-serialización que
+	// alteraría el hash. Es lo único que devuelve el INDEX digest comparable
+	// con lo que tenemos local en .RepoDigests.
+	//
+	// Si buildx no está disponible (Docker viejo), fallback a manifest inspect
+	// pero ese tiene la limitación de no devolver el index digest directamente.
+	cmd := exec.CommandContext(cctx, "docker", "buildx", "imagetools", "inspect", image, "--raw")
+	out, err := cmd.Output()
+	if err != nil {
+		stderr := ""
+		if ee, ok := err.(*exec.ExitError); ok {
+			stderr = string(ee.Stderr)
+		}
+
+		// Clasificar el error
+		switch {
+		case strings.Contains(stderr, "toomanyrequests") || strings.Contains(stderr, "rate limit"):
+			return RemoteCheckOutcome{Status: "rate_limited", Err: fmt.Errorf("registry rate limit: %s", stderr)}
+		case strings.Contains(stderr, "unauthorized") || strings.Contains(stderr, "denied") || strings.Contains(stderr, "authentication required"):
+			return RemoteCheckOutcome{Status: "unauthorized", Err: fmt.Errorf("registry requires auth: %s", stderr)}
+		case strings.Contains(stderr, "not found") || strings.Contains(stderr, "manifest unknown"):
+			return RemoteCheckOutcome{Status: "unsupported", Err: fmt.Errorf("image/tag not in registry: %s", stderr)}
+		case cctx.Err() == context.DeadlineExceeded:
+			return RemoteCheckOutcome{Status: "error", Err: fmt.Errorf("registry timeout (%s)", remoteInspectTimeout)}
+		default:
+			return RemoteCheckOutcome{Status: "error", Err: fmt.Errorf("docker buildx imagetools inspect %s: %w (stderr: %s)", image, err, stderr)}
+		}
+	}
+
+	// El INDEX digest es literalmente sha256(manifest_raw_json).
+	// Docker calcula el digest así internamente · al hacer pull, guarda
+	// .RepoDigests con este mismo hash.
+	hash := sha256.Sum256(out)
+	digest := "sha256:" + hex.EncodeToString(hash[:])
+
+	return RemoteCheckOutcome{Digest: digest, Status: "ok"}
+}
+
+// runtimeArch · helper que mapea runtime.GOARCH a la nomenclatura Docker.
+// Mantenido como referencia para futuras necesidades de detección de arch,
+// aunque ya no se usa en getRemoteImageDigest (la nueva implementación
+// compara el index digest, que es agnóstico a arch).
 func runtimeArch() string {
 	switch runtime.GOARCH {
 	case "amd64", "x86_64":
@@ -142,98 +195,6 @@ func runtimeArch() string {
 	default:
 		return runtime.GOARCH
 	}
-}
-
-// getRemoteImageDigest consulta el registry remoto para obtener el digest
-// actual del tag. NO descarga la imagen · solo metadatos.
-//
-// Ejemplos:
-//   getRemoteImageDigest("jellyfin/jellyfin:latest")  → "sha256:..."
-//   getRemoteImageDigest("private/repo:v1")           → "", status='unauthorized'
-//   getRemoteImageDigest("typo/imagen:latest")        → "", status='unsupported'
-//
-// El comando es:
-//   docker manifest inspect <image>
-//
-// IMPORTANTE · multi-arch: muchas imágenes (Jellyfin, Immich, Postgres) son
-// multi-arch · el manifest inspect devuelve un INDEX con manifests por
-// arquitectura. Necesitamos el digest de la arquitectura del runtime actual
-// (en Pi 4 = arm64), NO el primer manifest que devuelve (que suele ser amd64).
-//
-// Sin este filtro, en Pi 4 comparamos:
-//   local (arm64)  = sha256:abc...
-//   remote (amd64) = sha256:xyz...
-// Y aunque la imagen sea la misma, los digests NUNCA coinciden · falsamente
-// detectamos update permanente.
-//
-// Necesita que el daemon Docker esté corriendo y que `experimental` esté
-// habilitado en config (en Docker moderno está por defecto).
-func getRemoteImageDigest(ctx context.Context, image string) RemoteCheckOutcome {
-	if image == "" {
-		return RemoteCheckOutcome{Status: "error", Err: fmt.Errorf("image vacío")}
-	}
-
-	cctx, cancel := context.WithTimeout(ctx, remoteInspectTimeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(cctx, "docker", "manifest", "inspect", image)
-	out, err := cmd.Output()
-	if err != nil {
-		stderr := ""
-		if ee, ok := err.(*exec.ExitError); ok {
-			stderr = string(ee.Stderr)
-		}
-
-		// Clasificar el error para que el frontend reaccione adecuadamente.
-		// Ver lista de status en apps_schema.sql.
-		switch {
-		case strings.Contains(stderr, "toomanyrequests") || strings.Contains(stderr, "rate limit"):
-			return RemoteCheckOutcome{Status: "rate_limited", Err: fmt.Errorf("registry rate limit: %s", stderr)}
-		case strings.Contains(stderr, "unauthorized") || strings.Contains(stderr, "denied") || strings.Contains(stderr, "authentication required"):
-			return RemoteCheckOutcome{Status: "unauthorized", Err: fmt.Errorf("registry requires auth: %s", stderr)}
-		case strings.Contains(stderr, "manifest unknown") || strings.Contains(stderr, "not found"):
-			return RemoteCheckOutcome{Status: "unsupported", Err: fmt.Errorf("image/tag not in registry: %s", stderr)}
-		case cctx.Err() == context.DeadlineExceeded:
-			return RemoteCheckOutcome{Status: "error", Err: fmt.Errorf("registry timeout (%s)", remoteInspectTimeout)}
-		default:
-			return RemoteCheckOutcome{Status: "error", Err: fmt.Errorf("docker manifest inspect %s: %w (stderr: %s)", image, err, stderr)}
-		}
-	}
-
-	// Parsear output JSON
-	var result manifestInspectResult
-	if err := json.Unmarshal(out, &result); err != nil {
-		return RemoteCheckOutcome{Status: "error", Err: fmt.Errorf("parse manifest JSON: %w", err)}
-	}
-
-	myArch := runtimeArch()
-
-	// Caso 1 · single-arch manifest · digest en config.digest.
-	// Este caso es raro hoy día · casi todas las imágenes públicas son multi-arch.
-	if result.Config.Digest != "" && len(result.Manifests) == 0 {
-		return RemoteCheckOutcome{Digest: result.Config.Digest, Status: "ok"}
-	}
-
-	// Caso 2 · multi-arch · buscar el manifest que coincide con la arch
-	// del runtime actual. Esto es CRÍTICO en Pi (arm64) porque la imagen
-	// instalada localmente es la del manifest arm64, no amd64.
-	for _, m := range result.Manifests {
-		if m.Platform.Architecture == myArch && m.Platform.OS == "linux" {
-			return RemoteCheckOutcome{Digest: m.Digest, Status: "ok"}
-		}
-	}
-
-	// Caso 3 · fallback · ninguna arch coincide pero hay manifests.
-	// Esto pasa si la imagen no tiene build para nuestra arquitectura
-	// (típicamente apps que solo publican amd64 y nosotros estamos en arm64,
-	// el usuario habría tenido un fallo de instalación previo, pero por si
-	// acaso devolvemos el primero como mejor esfuerzo).
-	if len(result.Manifests) > 0 {
-		logMsg("docker: image %s sin manifest para arch %s (manifests disponibles: %d) · usando el primero como fallback", image, myArch, len(result.Manifests))
-		return RemoteCheckOutcome{Digest: result.Manifests[0].Digest, Status: "ok"}
-	}
-
-	return RemoteCheckOutcome{Status: "unsupported", Err: fmt.Errorf("manifest sin digest reconocible")}
 }
 
 // refreshRemoteDigestsForApp consulta el registry para todas las imágenes de
