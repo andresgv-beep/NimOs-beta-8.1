@@ -72,7 +72,27 @@ func dockerStackDeploy(w http.ResponseWriter, r *http.Request) {
 
 	// Write compose file
 	composePath := filepath.Join(stackPath, "docker-compose.yml")
-	os.WriteFile(composePath, []byte(compose), 0644)
+
+	// Fase 2 (Beta 8.2) · inyectar labels com.nimos.* en cada servicio del
+	// compose ANTES de escribirlo a disco. Los labels de un container Docker
+	// son inmutables tras `docker create`, por lo que la única vía robusta
+	// es modificar el YAML antes del `compose up -d`.
+	//
+	// Permite identificación robusta de containers gestionados por NimOS
+	// (Fase 3 reconciler) sin depender de matching por nombre.
+	//
+	// Si la inyección falla (compose mal formado, etc.) el deploy continúa
+	// con el compose original · NO bloqueante para no romper installs por
+	// problemas en el catálogo.
+	stackLabels := NewNimOSLabels(id, bodyStr(body, "appVersion"), session.Username, true)
+	composeWithLabels, lerr := injectNimOSLabelsIntoCompose(compose, stackLabels)
+	if lerr != nil {
+		logMsg("docker: stack %s · inyección de labels falló (%v) · usando compose original", id, lerr)
+		composeWithLabels = compose
+	} else {
+		logMsg("docker: stack %s · labels com.nimos.* inyectados en compose", id)
+	}
+	os.WriteFile(composePath, []byte(composeWithLabels), 0644)
 
 	// APP-064 · Inyección automática de variables canónicas en .env del stack.
 	//
@@ -146,19 +166,6 @@ func dockerStackDeploy(w http.ResponseWriter, r *http.Request) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		jsonError(w, 500, fmt.Sprintf("Failed to deploy stack: %s", string(out)))
 		return
-	}
-
-	// Fase 2 (Beta 8.2) · aplicar labels com.nimos.* a todos los containers
-	// del stack. Permite identificación robusta y reconcile fiable (Fase 3).
-	//
-	// commitContext() · el labelling debe completarse aunque cliente HTTP se
-	// haya ido (mismo argumento que el INSERT a docker_apps de más abajo).
-	stackLabels := NewNimOSLabels(id, bodyStr(body, "appVersion"), session.Username, true)
-	labeled, lerr := applyLabelsToStack(commitContext(), composePath, stackPath, stackLabels)
-	if lerr != nil {
-		logMsg("docker: stack %s labelling failed: %v (continuamos · no bloqueante)", id, lerr)
-	} else {
-		logMsg("docker: stack %s · %d containers etiquetados con com.nimos.*", id, labeled)
 	}
 
 	// Fix permissions on container config dir after deploy

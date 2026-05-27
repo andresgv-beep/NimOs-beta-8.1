@@ -30,15 +30,20 @@
 // APLICACIÓN
 // ─────────────────────────────────────────────────────────────────────────
 //
-// Para stacks (docker compose up -d): `docker container update --label-add`
-// se ejecuta tras el up exitoso, sobre los containers del stack.
+// **CRÍTICO**: los labels de un container Docker son INMUTABLES tras el
+// `docker create`. NO se pueden añadir post-creación con `docker container
+// update` (esa API NO acepta --label-add · solo cambia recursos como CPU/RAM).
+// Solo `docker service update` (Swarm) acepta --label-add, y NimOS no usa
+// Swarm.
 //
-// Para single containers (docker run): los labels se añaden directamente
-// como flags --label en el comando docker run.
+// Por tanto, los labels deben aplicarse AL CREAR el container:
 //
-// NOTA · `docker container update --label-add` requiere Docker 23.0+.
-// En Docker viejo hay que destruir+recrear, pero NimOS ya requiere Docker
-// moderno por compose v2.
+//   Single containers (docker_containers.go) · args --label en `docker run`
+//   Stacks (docker_stacks.go) · injection en el YAML antes de `compose up -d`
+//
+// La función injectNimOSLabelsIntoCompose modifica el YAML del compose
+// recibido del catálogo, añadiendo el bloque `labels:` a cada servicio,
+// y devuelve el YAML modificado para escribir a disco.
 //
 // ─────────────────────────────────────────────────────────────────────────
 // VERSIONADO
@@ -58,6 +63,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -81,23 +88,23 @@ const (
 	LabelStack         = "com.nimos.stack"
 )
 
-// labelApplyTimeout · timeout para los `docker container update --label-add`.
-// Operación local sobre el daemon Docker, debería ser instantánea. Margen
-// generoso por si Docker está ocupado.
-const labelApplyTimeout = 30 * time.Second
+// dockerCmdTimeout · timeout para comandos docker locales (ps, inspect).
+// Estos solo consultan el daemon Docker local, deberían ser instantáneos.
+const dockerCmdTimeout = 30 * time.Second
 
 // ─────────────────────────────────────────────────────────────────────────
 // Modelos
 // ─────────────────────────────────────────────────────────────────────────
 
 // NimOSLabels · set completo de labels NimOS para un container.
-// Se construye en el handler de install y se aplica tras compose up.
+// Se construye en el handler de install y se aplica al CREAR el container
+// (no es posible aplicarlos después en Docker).
 type NimOSLabels struct {
-	AppID        string
-	AppVersion   string // puede estar vacío
-	InstalledBy  string
-	InstalledAt  string // ISO 8601 UTC
-	IsStack      bool   // true si parte de un stack, false si single container
+	AppID       string
+	AppVersion  string // puede estar vacío
+	InstalledBy string
+	InstalledAt string // ISO 8601 UTC
+	IsStack     bool   // true si parte de un stack, false si single container
 }
 
 // NewNimOSLabels construye un set de labels para una nueva instalación.
@@ -113,14 +120,13 @@ func NewNimOSLabels(appID, appVersion, installedBy string, isStack bool) NimOSLa
 }
 
 // ToDockerLabelArgs devuelve los argumentos `--label key=value` para usar
-// directamente en `docker run`. Cada label es un par de strings en el slice
-// para facilitar el spread en exec.Command.
+// directamente en `docker run`. Usado por docker_containers.go.
 //
 // Ejemplo:
-//   labels := NewNimOSLabels("nextcloud", "29.0.7", "andres", true)
-//   args := append([]string{"run", "-d", "--name", "nextcloud"},
+//   labels := NewNimOSLabels("jellyfin", "10.11", "andres", false)
+//   args := append([]string{"run", "-d", "--name", "jellyfin"},
 //                  labels.ToDockerLabelArgs()...)
-//   args = append(args, "nextcloud:latest")
+//   args = append(args, "jellyfin:latest")
 //   exec.Command("docker", args...)
 func (l NimOSLabels) ToDockerLabelArgs() []string {
 	stackVal := "false"
@@ -138,99 +144,224 @@ func (l NimOSLabels) ToDockerLabelArgs() []string {
 	}
 }
 
-// ToLabelAddArgs devuelve los argumentos `--label-add key=value` para usar
-// con `docker container update`. Es la sintaxis diferente que usa el
-// comando update vs run (la coherencia de Docker CLI deja que desear).
-func (l NimOSLabels) ToLabelAddArgs() []string {
+// ToMap devuelve el set de labels como map[string]string. Usado por
+// injectNimOSLabelsIntoCompose para añadirlos al YAML del stack.
+func (l NimOSLabels) ToMap() map[string]string {
 	stackVal := "false"
 	if l.IsStack {
 		stackVal = "true"
 	}
-	return []string{
-		"--label-add", LabelSchemaVersion + "=" + SchemaVersion,
-		"--label-add", LabelManaged + "=true",
-		"--label-add", LabelAppID + "=" + l.AppID,
-		"--label-add", LabelAppVersion + "=" + l.AppVersion,
-		"--label-add", LabelInstalledBy + "=" + l.InstalledBy,
-		"--label-add", LabelInstalledAt + "=" + l.InstalledAt,
-		"--label-add", LabelStack + "=" + stackVal,
+	return map[string]string{
+		LabelSchemaVersion: SchemaVersion,
+		LabelManaged:       "true",
+		LabelAppID:         l.AppID,
+		LabelAppVersion:    l.AppVersion,
+		LabelInstalledBy:   l.InstalledBy,
+		LabelInstalledAt:   l.InstalledAt,
+		LabelStack:         stackVal,
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Aplicación de labels
+// Inyección en YAML de compose
 // ─────────────────────────────────────────────────────────────────────────
 
-// applyLabelsToContainer aplica los labels NimOS a un container existente
-// vía `docker container update --label-add`. Usado tras compose up exitoso.
+// injectNimOSLabelsIntoCompose parsea el YAML de un docker-compose recibido
+// del catálogo y añade los labels com.nimos.* a cada servicio bajo la clave
+// `services:`. Devuelve el YAML modificado.
 //
-// Si el container no existe (raro, indicaría bug en flujo de install),
-// devuelve error. Si Docker daemon no responde, devuelve error con detalles.
+// Si el compose ya tiene labels en algún servicio, los labels NimOS se
+// MERGEAN (no se sobreescriben los labels del usuario; los NimOS se añaden).
+// Si hay colisión en un nombre exacto de label (ej. el catálogo ya define
+// "com.nimos.app_id"), el NimOS gana porque es metadato de gestión.
 //
-// IMPORTANTE: `docker container update --label-add` requiere Docker 23.0+.
-// NimOS ya requiere Docker moderno (compose v2 + manifest inspect), no es
-// regresión.
-func applyLabelsToContainer(ctx context.Context, containerName string, labels NimOSLabels) error {
-	if containerName == "" {
-		return fmt.Errorf("applyLabelsToContainer: containerName vacío")
+// La función NO modifica:
+//   - El resto del YAML (volumes, networks, secrets, ...)
+//   - El orden de los servicios
+//   - Otros campos de los servicios (image, ports, environment, ...)
+//
+// Si el YAML no parsea o no tiene clave `services:`, devuelve error.
+func injectNimOSLabelsIntoCompose(composeYAML string, labels NimOSLabels) (string, error) {
+	if strings.TrimSpace(composeYAML) == "" {
+		return "", fmt.Errorf("injectNimOSLabelsIntoCompose: compose vacío")
 	}
 
-	cctx, cancel := context.WithTimeout(ctx, labelApplyTimeout)
-	defer cancel()
+	// Parseamos como Node para preservar estructura, comentarios y orden.
+	// Esto es más robusto que map[string]interface{} para escritura.
+	var root yaml.Node
+	if err := yaml.Unmarshal([]byte(composeYAML), &root); err != nil {
+		return "", fmt.Errorf("yaml unmarshal: %w", err)
+	}
+	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
+		return "", fmt.Errorf("yaml root no es DocumentNode válido")
+	}
 
-	args := append([]string{"container", "update"}, labels.ToLabelAddArgs()...)
-	args = append(args, containerName)
+	doc := root.Content[0]
+	if doc.Kind != yaml.MappingNode {
+		return "", fmt.Errorf("yaml root document no es MappingNode (compose mal formado)")
+	}
 
-	cmd := exec.CommandContext(cctx, "docker", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("docker container update %s: %w (output: %s)",
-			containerName, err, strings.TrimSpace(string(out)))
+	// Buscar la clave 'services:' en el mapping raíz.
+	servicesNode := findMappingValue(doc, "services")
+	if servicesNode == nil {
+		return "", fmt.Errorf("compose sin clave 'services:' (no es un compose válido)")
+	}
+	if servicesNode.Kind != yaml.MappingNode {
+		return "", fmt.Errorf("'services:' no es un mapping (compose mal formado)")
+	}
+
+	// Recorrer cada servicio bajo services:
+	labelMap := labels.ToMap()
+	for i := 0; i < len(servicesNode.Content); i += 2 {
+		serviceKey := servicesNode.Content[i]
+		serviceVal := servicesNode.Content[i+1]
+
+		if serviceVal.Kind != yaml.MappingNode {
+			// Servicio mal formado (ej. solo nombre sin definición) · saltamos
+			logMsg("docker_labels: servicio %q no es MappingNode, omitido", serviceKey.Value)
+			continue
+		}
+
+		// Aplicar labels a este servicio (merge si ya existen, add si no).
+		mergeLabelsIntoServiceNode(serviceVal, labelMap)
+	}
+
+	// Re-serializar a YAML.
+	var buf strings.Builder
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&root); err != nil {
+		return "", fmt.Errorf("yaml encode: %w", err)
+	}
+	enc.Close()
+
+	return buf.String(), nil
+}
+
+// findMappingValue busca una clave en un MappingNode y devuelve su nodo valor.
+// Devuelve nil si no se encuentra. Las claves en YAML mapping son pares
+// (key, value) consecutivos en Content[].
+func findMappingValue(mapping *yaml.Node, key string) *yaml.Node {
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			return mapping.Content[i+1]
+		}
 	}
 	return nil
 }
 
-// applyLabelsToStack aplica los labels NimOS a TODOS los containers de un
-// stack tras `compose up -d` exitoso. Lista los containers vía `docker compose
-// ps -q` y aplica labels uno por uno.
+// mergeLabelsIntoServiceNode añade los labels NimOS al servicio.
+// Si el servicio ya tiene una clave `labels:` la mergea (no la reemplaza).
+// Si no la tiene, crea la clave entera.
 //
-// Si un container individual falla, se loguea pero NO aborta · queremos que
-// la mayoría queden etiquetados aunque uno tenga problema (sería visible en
-// el reconciler Fase 3).
-//
-// Devuelve el número de containers etiquetados con éxito.
-func applyLabelsToStack(ctx context.Context, composePath, stackDir string, labels NimOSLabels) (int, error) {
-	if composePath == "" {
-		return 0, fmt.Errorf("applyLabelsToStack: composePath vacío")
+// Acepta tanto formato map (labels: { key: value }) como secuencia
+// (labels: [ "key=value" ]). En ambos casos preserva el formato original
+// del usuario · si era map sigue siendo map, si era secuencia sigue siendo
+// secuencia.
+func mergeLabelsIntoServiceNode(service *yaml.Node, labelMap map[string]string) {
+	existing := findMappingValue(service, "labels")
+
+	if existing == nil {
+		// No hay labels · creamos el bloque entero en formato map
+		labelsNode := buildLabelsMappingNode(labelMap)
+		service.Content = append(service.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: "labels", Tag: "!!str"},
+			labelsNode,
+		)
+		return
 	}
 
-	cctx, cancel := context.WithTimeout(ctx, labelApplyTimeout)
-	defer cancel()
-
-	// `docker compose ps -q` lista solo los IDs de containers del stack
-	psCmd := exec.CommandContext(cctx, "docker", "compose", "-f", composePath, "ps", "-q")
-	if stackDir != "" {
-		psCmd.Dir = stackDir
-	}
-	out, err := psCmd.Output()
-	if err != nil {
-		return 0, fmt.Errorf("docker compose ps -q: %w", err)
-	}
-
-	containerIDs := strings.Fields(strings.TrimSpace(string(out)))
-	if len(containerIDs) == 0 {
-		return 0, fmt.Errorf("no containers en stack %s tras compose up", composePath)
-	}
-
-	success := 0
-	for _, id := range containerIDs {
-		if err := applyLabelsToContainer(ctx, id, labels); err != nil {
-			logMsg("docker_labels: failed to label container %s of stack %s: %v",
-				id, composePath, err)
-			continue
+	// Existen labels · mergeamos preservando el formato original
+	switch existing.Kind {
+	case yaml.MappingNode:
+		// Formato map · añadimos los nuestros (sobrescribimos si colisión)
+		for k, v := range labelMap {
+			setMappingValue(existing, k, v)
 		}
-		success++
+	case yaml.SequenceNode:
+		// Formato lista ("key=value") · añadimos al final, deduplicando
+		for k, v := range labelMap {
+			removeSequenceItemWithPrefix(existing, k+"=")
+			existing.Content = append(existing.Content, &yaml.Node{
+				Kind:  yaml.ScalarNode,
+				Tag:   "!!str",
+				Value: k + "=" + v,
+			})
+		}
+	default:
+		// Tipo inesperado · loggeamos y omitimos (mejor no romper el deploy)
+		logMsg("docker_labels: servicio con labels de tipo inesperado (kind=%d), omitido", existing.Kind)
 	}
-	return success, nil
+}
+
+// buildLabelsMappingNode construye un MappingNode con los labels dados.
+// Salida YAML típica:
+//
+//   labels:
+//     com.nimos.app_id: "nextcloud"
+//     com.nimos.managed: "true"
+//     ...
+//
+// Orden alfabético para output reproducible (facilita tests deterministas).
+func buildLabelsMappingNode(labels map[string]string) *yaml.Node {
+	node := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+
+	// Sort claves manualmente (evita import "sort" extra)
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	for i := 0; i < len(keys); i++ {
+		for j := i + 1; j < len(keys); j++ {
+			if keys[j] < keys[i] {
+				keys[i], keys[j] = keys[j], keys[i]
+			}
+		}
+	}
+
+	for _, k := range keys {
+		node.Content = append(node.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: k},
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: labels[k], Style: yaml.DoubleQuotedStyle},
+		)
+	}
+	return node
+}
+
+// setMappingValue añade o sobrescribe un par clave/valor en un MappingNode.
+func setMappingValue(mapping *yaml.Node, key, value string) {
+	for i := 0; i < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			mapping.Content[i+1].Kind = yaml.ScalarNode
+			mapping.Content[i+1].Tag = "!!str"
+			mapping.Content[i+1].Value = value
+			mapping.Content[i+1].Style = yaml.DoubleQuotedStyle
+			return
+		}
+	}
+	mapping.Content = append(mapping.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value, Style: yaml.DoubleQuotedStyle},
+	)
+}
+
+// removeSequenceItemWithPrefix elimina del SequenceNode los items cuyo Value
+// empieza con el prefix dado. Usado para deduplicar al mergear labels en
+// formato lista ("key=value").
+func removeSequenceItemWithPrefix(seq *yaml.Node, prefix string) {
+	if seq == nil || seq.Kind != yaml.SequenceNode {
+		return
+	}
+	filtered := seq.Content[:0]
+	for _, item := range seq.Content {
+		if !strings.HasPrefix(item.Value, prefix) {
+			filtered = append(filtered, item)
+		}
+	}
+	seq.Content = filtered
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -240,11 +371,11 @@ func applyLabelsToStack(ctx context.Context, composePath, stackDir string, label
 // NimOSContainer · representación mínima de un container gestionado.
 // Resultado de listNimOSContainers · usado por reconciler (Fase 3).
 type NimOSContainer struct {
-	ID          string // ID del container Docker
-	Name        string // Nombre (sin slash prefix)
-	AppID       string // Valor del label com.nimos.app_id
-	IsStack     bool   // Valor del label com.nimos.stack
-	SchemaVer   string // Valor del label com.nimos.schema_version
+	ID        string // ID del container Docker
+	Name      string // Nombre (sin slash prefix)
+	AppID     string // Valor del label com.nimos.app_id
+	IsStack   bool   // Valor del label com.nimos.stack
+	SchemaVer string // Valor del label com.nimos.schema_version
 }
 
 // listNimOSContainers devuelve los containers que tienen label
@@ -255,7 +386,7 @@ type NimOSContainer struct {
 //   - Containers vivos sin row (huérfanos a importar)
 //   - Rows sin container correspondiente (apps perdidas)
 func listNimOSContainers(ctx context.Context) ([]NimOSContainer, error) {
-	cctx, cancel := context.WithTimeout(ctx, labelApplyTimeout)
+	cctx, cancel := context.WithTimeout(ctx, dockerCmdTimeout)
 	defer cancel()
 
 	// docker ps -a · incluir parados también (el reconciler decide qué hacer)

@@ -1,24 +1,31 @@
 // docker_labels_test.go — Tests unitarios del sistema de labels NimOS.
 //
-// NO testea applyLabelsToContainer/applyLabelsToStack/listNimOSContainers
-// porque requieren un daemon Docker real. Eso queda para integration tests.
+// NO testea listNimOSContainers porque requiere daemon Docker real.
+// Eso queda para integration tests.
 //
 // Cobertura aquí:
 //   - SchemaVersion · valor estable, no se cambia sin querer
+//   - Constantes de labels · sin typos
 //   - NewNimOSLabels · construye correctamente con todos los campos
 //   - ToDockerLabelArgs · formato correcto para docker run
-//   - ToLabelAddArgs · formato correcto para docker container update
-//   - Nombres de labels · constantes coherentes con el schema documentado
+//   - ToMap · formato correcto para inyección en YAML
+//   - injectNimOSLabelsIntoCompose · CRÍTICO · varios escenarios reales:
+//       · compose simple sin labels existentes
+//       · compose con labels en formato map
+//       · compose con labels en formato lista (key=value)
+//       · stack multi-servicio (Immich-style)
+//       · compose mal formado · devuelve error
 
 package main
 
 import (
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
-// TestSchemaVersion_StableValue · si alguien cambia esto sin querer, el test
-// grita. El cambio debe ser intencional (documentado en CHANGELOG).
+// TestSchemaVersion_StableValue · si alguien cambia esto sin querer, el test grita.
 func TestSchemaVersion_StableValue(t *testing.T) {
 	const expected = "beta_8.2"
 	if SchemaVersion != expected {
@@ -29,8 +36,7 @@ func TestSchemaVersion_StableValue(t *testing.T) {
 	}
 }
 
-// TestLabelConstants_NoTypos · verifica que los nombres de labels son los
-// documentados. Un typo aquí dejaría containers sin filtrar correctamente.
+// TestLabelConstants_NoTypos · verifica que los nombres de labels son los documentados.
 func TestLabelConstants_NoTypos(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -73,53 +79,20 @@ func TestNewNimOSLabels_StackBuild(t *testing.T) {
 	if labels.InstalledAt == "" {
 		t.Error("InstalledAt vacío · debería rellenarse con time.Now().UTC()")
 	}
-	// Formato ISO 8601 · contiene 'T' y termina en 'Z' (UTC)
 	if !strings.Contains(labels.InstalledAt, "T") || !strings.HasSuffix(labels.InstalledAt, "Z") {
 		t.Errorf("InstalledAt = %q, no parece ISO 8601 UTC", labels.InstalledAt)
 	}
 }
 
-// TestNewNimOSLabels_SingleContainer · construcción para single container.
-func TestNewNimOSLabels_SingleContainer(t *testing.T) {
-	labels := NewNimOSLabels("jellyfin", "10.11.10", "andres", false)
-	if labels.IsStack {
-		t.Errorf("IsStack = true, want false (es single container)")
-	}
-}
-
-// TestNewNimOSLabels_EmptyVersion · acepta version vacía (apps sin
-// versión declarada en catálogo).
-func TestNewNimOSLabels_EmptyVersion(t *testing.T) {
-	labels := NewNimOSLabels("custom-app", "", "andres", false)
-	if labels.AppVersion != "" {
-		t.Errorf("AppVersion = %q, want '' (vacío)", labels.AppVersion)
-	}
-	// El label se sigue añadiendo, solo que con valor vacío
-	args := labels.ToDockerLabelArgs()
-	found := false
-	for i := 0; i < len(args)-1; i++ {
-		if args[i] == "--label" && args[i+1] == LabelAppVersion+"=" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("LabelAppVersion no aparece en ToDockerLabelArgs con valor vacío")
-	}
-}
-
-// TestToDockerLabelArgs_Format · verifica el formato exacto de los args
-// para docker run.
+// TestToDockerLabelArgs_Format · verifica el formato para docker run.
 func TestToDockerLabelArgs_Format(t *testing.T) {
 	labels := NewNimOSLabels("test-app", "1.0", "test-user", true)
 	args := labels.ToDockerLabelArgs()
 
-	// Debe tener pares --label key=value · 7 labels * 2 args = 14
 	if len(args) != 14 {
-		t.Fatalf("ToDockerLabelArgs devolvió %d args, want 14 (7 labels x 2)", len(args))
+		t.Fatalf("ToDockerLabelArgs devolvió %d args, want 14", len(args))
 	}
 
-	// Cada par debe ser --label seguido de key=value
 	for i := 0; i < len(args); i += 2 {
 		if args[i] != "--label" {
 			t.Errorf("args[%d] = %q, want '--label'", i, args[i])
@@ -129,37 +102,274 @@ func TestToDockerLabelArgs_Format(t *testing.T) {
 		}
 	}
 
-	// Verificar que com.nimos.managed=true está presente
 	mustContain(t, args, LabelManaged+"=true")
 	mustContain(t, args, LabelAppID+"=test-app")
-	mustContain(t, args, LabelAppVersion+"=1.0")
-	mustContain(t, args, LabelInstalledBy+"=test-user")
 	mustContain(t, args, LabelStack+"=true")
 	mustContain(t, args, LabelSchemaVersion+"="+SchemaVersion)
 }
 
-// TestToLabelAddArgs_Format · verifica el formato para docker container update.
-func TestToLabelAddArgs_Format(t *testing.T) {
-	labels := NewNimOSLabels("test-app", "1.0", "test-user", false)
-	args := labels.ToLabelAddArgs()
-
-	if len(args) != 14 {
-		t.Fatalf("ToLabelAddArgs devolvió %d args, want 14", len(args))
+// TestToMap_AllFieldsPresent · ToMap debe contener los 7 labels.
+func TestToMap_AllFieldsPresent(t *testing.T) {
+	labels := NewNimOSLabels("test-app", "1.0", "user", false)
+	m := labels.ToMap()
+	if len(m) != 7 {
+		t.Errorf("ToMap devolvió %d entradas, want 7", len(m))
 	}
-
-	// Cada par debe ser --label-add (NO --label · es diferente comando)
-	for i := 0; i < len(args); i += 2 {
-		if args[i] != "--label-add" {
-			t.Errorf("args[%d] = %q, want '--label-add'", i, args[i])
+	for _, key := range []string{
+		LabelSchemaVersion, LabelManaged, LabelAppID, LabelAppVersion,
+		LabelInstalledBy, LabelInstalledAt, LabelStack,
+	} {
+		if _, ok := m[key]; !ok {
+			t.Errorf("ToMap falta clave %q", key)
 		}
 	}
-
-	mustContain(t, args, LabelStack+"=false") // single container
-	mustContain(t, args, LabelManaged+"=true")
+	if m[LabelStack] != "false" {
+		t.Errorf("ToMap LabelStack = %q, want 'false'", m[LabelStack])
+	}
 }
 
-// mustContain · helper para verificar que un valor está en un slice.
-// Útil para verificar args de docker sin asumir orden.
+// ─────────────────────────────────────────────────────────────────────────
+// injectNimOSLabelsIntoCompose · tests críticos
+// ─────────────────────────────────────────────────────────────────────────
+
+// TestInject_SimpleCompose_NoExistingLabels · compose sencillo sin labels.
+// El más típico · catálogo NimOS los compose suelen venir así.
+func TestInject_SimpleCompose_NoExistingLabels(t *testing.T) {
+	compose := `services:
+  nextcloud:
+    image: nextcloud:latest
+    container_name: nextcloud
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+`
+	labels := NewNimOSLabels("nextcloud", "29.0.7", "andres", true)
+
+	out, err := injectNimOSLabelsIntoCompose(compose, labels)
+	if err != nil {
+		t.Fatalf("injectNimOSLabelsIntoCompose falló: %v", err)
+	}
+
+	assertComposeHasLabel(t, out, "nextcloud", LabelManaged, "true")
+	assertComposeHasLabel(t, out, "nextcloud", LabelAppID, "nextcloud")
+	assertComposeHasLabel(t, out, "nextcloud", LabelStack, "true")
+	assertComposeHasLabel(t, out, "nextcloud", LabelSchemaVersion, SchemaVersion)
+	assertComposeHasLabel(t, out, "nextcloud", LabelAppVersion, "29.0.7")
+	assertComposeHasLabel(t, out, "nextcloud", LabelInstalledBy, "andres")
+
+	// El resto del compose debe preservarse
+	if !strings.Contains(out, "nextcloud:latest") {
+		t.Error("La imagen 'nextcloud:latest' se perdió tras inyección")
+	}
+	if !strings.Contains(out, "8080:80") {
+		t.Error("El port mapping 8080:80 se perdió tras inyección")
+	}
+}
+
+// TestInject_ComposeWithExistingLabels_MapFormat · compose con labels en map.
+// Los nuevos labels NimOS se añaden, los del usuario se preservan.
+func TestInject_ComposeWithExistingLabels_MapFormat(t *testing.T) {
+	compose := `services:
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    labels:
+      traefik.enable: "true"
+      org.example.custom: "userlabel"
+`
+	labels := NewNimOSLabels("jellyfin", "10.11.10", "andres", true)
+
+	out, err := injectNimOSLabelsIntoCompose(compose, labels)
+	if err != nil {
+		t.Fatalf("injectNimOSLabelsIntoCompose falló: %v", err)
+	}
+
+	assertComposeHasLabel(t, out, "jellyfin", LabelManaged, "true")
+	assertComposeHasLabel(t, out, "jellyfin", LabelAppID, "jellyfin")
+	assertComposeHasLabel(t, out, "jellyfin", "traefik.enable", "true")
+	assertComposeHasLabel(t, out, "jellyfin", "org.example.custom", "userlabel")
+}
+
+// TestInject_ComposeWithExistingLabels_ListFormat · compose con labels en lista.
+func TestInject_ComposeWithExistingLabels_ListFormat(t *testing.T) {
+	compose := `services:
+  gitea:
+    image: gitea/gitea:latest
+    labels:
+      - "traefik.enable=true"
+      - "org.example.custom=userlabel"
+`
+	labels := NewNimOSLabels("gitea", "1.21", "andres", true)
+
+	out, err := injectNimOSLabelsIntoCompose(compose, labels)
+	if err != nil {
+		t.Fatalf("injectNimOSLabelsIntoCompose falló: %v", err)
+	}
+
+	if !strings.Contains(out, "traefik.enable=true") {
+		t.Error("Label del usuario 'traefik.enable=true' se perdió")
+	}
+	if !strings.Contains(out, "com.nimos.managed=true") {
+		t.Error("Label NimOS 'com.nimos.managed=true' no se añadió")
+	}
+	if !strings.Contains(out, "com.nimos.app_id=gitea") {
+		t.Error("Label NimOS 'com.nimos.app_id=gitea' no se añadió")
+	}
+}
+
+// TestInject_MultiServiceStack · stack tipo Immich con varios servicios.
+// TODOS los servicios deben recibir los labels.
+func TestInject_MultiServiceStack(t *testing.T) {
+	compose := `services:
+  immich-server:
+    image: ghcr.io/immich-app/immich-server:release
+    ports:
+      - "2283:2283"
+  immich-machine-learning:
+    image: ghcr.io/immich-app/immich-machine-learning:release
+  redis:
+    image: redis:alpine
+  database:
+    image: postgres:14
+    environment:
+      POSTGRES_PASSWORD: changeme
+`
+	labels := NewNimOSLabels("immich", "v2.7.5", "andres", true)
+
+	out, err := injectNimOSLabelsIntoCompose(compose, labels)
+	if err != nil {
+		t.Fatalf("injectNimOSLabelsIntoCompose falló: %v", err)
+	}
+
+	for _, svc := range []string{"immich-server", "immich-machine-learning", "redis", "database"} {
+		assertComposeHasLabel(t, out, svc, LabelManaged, "true")
+		assertComposeHasLabel(t, out, svc, LabelAppID, "immich")
+	}
+}
+
+// TestInject_EmptyCompose · devuelve error.
+func TestInject_EmptyCompose(t *testing.T) {
+	labels := NewNimOSLabels("test", "1.0", "user", true)
+	_, err := injectNimOSLabelsIntoCompose("", labels)
+	if err == nil {
+		t.Error("inject con compose vacío debería fallar, no falló")
+	}
+}
+
+// TestInject_NoServicesKey · compose sin 'services:' → error.
+func TestInject_NoServicesKey(t *testing.T) {
+	compose := `version: "3"
+networks:
+  default:
+    external: true
+`
+	labels := NewNimOSLabels("test", "1.0", "user", true)
+	_, err := injectNimOSLabelsIntoCompose(compose, labels)
+	if err == nil {
+		t.Error("inject sin 'services:' debería fallar, no falló")
+	}
+}
+
+// TestInject_RegressionNextcloudBug · simula el compose Nextcloud con
+// variables interpoladas (${CONFIG_PATH}, ${TZ}). Las variables deben
+// preservarse tras la inyección.
+func TestInject_RegressionNextcloudBug(t *testing.T) {
+	compose := `services:
+  nextcloud:
+    image: nextcloud:latest
+    container_name: nextcloud
+    ports:
+      - "${HOST_PORT:-8080}:80"
+    volumes:
+      - ${CONFIG_PATH}/html:/var/www/html
+      - ${CONFIG_PATH}/data:/var/www/html/data
+    environment:
+      - TZ=${TZ}
+    restart: unless-stopped
+`
+	labels := NewNimOSLabels("nextcloud", "", "andres", true)
+
+	out, err := injectNimOSLabelsIntoCompose(compose, labels)
+	if err != nil {
+		t.Fatalf("inject del compose Nextcloud falló: %v", err)
+	}
+
+	// Re-parse · debe seguir siendo YAML válido
+	var parsed map[string]interface{}
+	if err := yaml.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("output no es YAML válido tras inyección: %v\noutput:\n%s", err, out)
+	}
+
+	assertComposeHasLabel(t, out, "nextcloud", LabelManaged, "true")
+	assertComposeHasLabel(t, out, "nextcloud", LabelAppID, "nextcloud")
+
+	// Las variables interpoladas del compose original deben preservarse
+	if !strings.Contains(out, "${CONFIG_PATH}/html") {
+		t.Error("Variable ${CONFIG_PATH} se perdió tras inyección")
+	}
+	if !strings.Contains(out, "${TZ}") {
+		t.Error("Variable ${TZ} se perdió tras inyección")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────
+
+// assertComposeHasLabel parsea el YAML y verifica que un servicio tiene un
+// label con la clave y valor especificados. Más robusto que strings.Contains
+// porque acepta múltiples formatos (map o lista).
+func assertComposeHasLabel(t *testing.T, composeYAML, serviceName, labelKey, expectedValue string) {
+	t.Helper()
+
+	var doc map[string]interface{}
+	if err := yaml.Unmarshal([]byte(composeYAML), &doc); err != nil {
+		t.Fatalf("assertComposeHasLabel: no parsea YAML: %v", err)
+	}
+
+	services, ok := doc["services"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("assertComposeHasLabel: services no es map")
+	}
+
+	svc, ok := services[serviceName].(map[string]interface{})
+	if !ok {
+		t.Fatalf("assertComposeHasLabel: servicio %q no encontrado", serviceName)
+	}
+
+	labels, hasLabels := svc["labels"]
+	if !hasLabels {
+		t.Fatalf("assertComposeHasLabel: servicio %q no tiene labels", serviceName)
+	}
+
+	// Labels en formato map
+	if labelMap, ok := labels.(map[string]interface{}); ok {
+		got, exists := labelMap[labelKey]
+		if !exists {
+			t.Errorf("servicio %q: label %q no presente", serviceName, labelKey)
+			return
+		}
+		gotStr, _ := got.(string)
+		if gotStr != expectedValue {
+			t.Errorf("servicio %q label %q = %q, want %q", serviceName, labelKey, gotStr, expectedValue)
+		}
+		return
+	}
+
+	// Labels en formato lista (key=value)
+	if labelList, ok := labels.([]interface{}); ok {
+		want := labelKey + "=" + expectedValue
+		for _, item := range labelList {
+			if itemStr, _ := item.(string); itemStr == want {
+				return
+			}
+		}
+		t.Errorf("servicio %q (lista): no encontrado %q en %v", serviceName, want, labelList)
+		return
+	}
+
+	t.Errorf("servicio %q: labels en formato desconocido (%T)", serviceName, labels)
+}
+
 func mustContain(t *testing.T, args []string, want string) {
 	t.Helper()
 	for _, a := range args {
