@@ -146,6 +146,12 @@ func dockerContainerCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Fase 2 (Beta 8.2) · labels com.nimos.* para identificación robusta.
+	// Permite que el reconciler Docker (Fase 3) detecte containers gestionados
+	// sin depender del nombre.
+	containerLabels := NewNimOSLabels(id, bodyStr(body, "appVersion"), session.Username, false)
+	dockerArgs = append(dockerArgs, containerLabels.ToDockerLabelArgs()...)
+
 	dockerArgs = append(dockerArgs, image)
 
 	out, ok := runSafe("docker", dockerArgs...)

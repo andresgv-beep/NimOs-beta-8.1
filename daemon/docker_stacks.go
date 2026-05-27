@@ -148,6 +148,19 @@ func dockerStackDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fase 2 (Beta 8.2) · aplicar labels com.nimos.* a todos los containers
+	// del stack. Permite identificación robusta y reconcile fiable (Fase 3).
+	//
+	// commitContext() · el labelling debe completarse aunque cliente HTTP se
+	// haya ido (mismo argumento que el INSERT a docker_apps de más abajo).
+	stackLabels := NewNimOSLabels(id, bodyStr(body, "appVersion"), session.Username, true)
+	labeled, lerr := applyLabelsToStack(commitContext(), composePath, stackPath, stackLabels)
+	if lerr != nil {
+		logMsg("docker: stack %s labelling failed: %v (continuamos · no bloqueante)", id, lerr)
+	} else {
+		logMsg("docker: stack %s · %d containers etiquetados con com.nimos.*", id, labeled)
+	}
+
 	// Fix permissions on container config dir after deploy
 	// Set group to nimos-share-docker-apps so FileManager can browse
 	runSafe("chown", "-R", "root:nimos-share-docker-apps", containerPath)
