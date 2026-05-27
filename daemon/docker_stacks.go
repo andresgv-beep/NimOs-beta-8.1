@@ -175,7 +175,16 @@ func dockerStackDeploy(w http.ResponseWriter, r *http.Request) {
 		Port:        stackPort,
 		InstalledBy: session.Username,
 	}
-	if err := appsRepo.CreateOrUpdateDockerApp(r.Context(), app); err != nil {
+	// BUG-FIX (Nextcloud install · 26/05/2026): usar context.Background() en lugar
+	// de r.Context() porque el frontend puede dar timeout durante descargas pesadas
+	// (Nextcloud ~1GB, Immich varios GB · 5-15min). Si el HTTP context se cancela,
+	// `compose up` (subprocess externo) continúa hasta terminar PERO el INSERT a
+	// docker_apps usaría un contexto cancelado y abortaría silenciosamente · resultado:
+	// container vivo pero NimOS sin registro = invisible en AppStore/NimShield.
+	//
+	// Síntoma del bug original: Nextcloud apareció en docker ps + en docker_app_images
+	// (poblada por goroutine con context.Background()) pero NO en docker_apps.
+	if err := appsRepo.CreateOrUpdateDockerApp(context.Background(), app); err != nil {
 		logMsg("docker: stack install register failed for %s: %v", id, err)
 	}
 
@@ -186,7 +195,8 @@ func dockerStackDeploy(w http.ResponseWriter, r *http.Request) {
 
 	// APP-034 · invalidación inmediata de cache de NimHealth (sync, ~150ms en Pi).
 	// Sin esto, la app no aparece en /api/services hasta el siguiente tick (≤30s).
-	ForceDockerCacheRefresh(r.Context())
+	// También usamos context.Background() · misma razón.
+	ForceDockerCacheRefresh(context.Background())
 
 	jsonOk(w, map[string]interface{}{"ok": true, "stack": id, "path": stackPath})
 }

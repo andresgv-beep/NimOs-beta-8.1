@@ -196,7 +196,9 @@ func dockerContainerCreate(w http.ResponseWriter, r *http.Request) {
 		PortsJSON:   portsJSON,
 		InstalledBy: session.Username,
 	}
-	if err := appsRepo.CreateOrUpdateDockerApp(r.Context(), app); err != nil {
+	// BUG-FIX (26/05/2026) · misma razón que dockerStackDeploy: usar
+	// context.Background() porque pulls largos pueden cancelar r.Context().
+	if err := appsRepo.CreateOrUpdateDockerApp(context.Background(), app); err != nil {
 		logMsg("docker: install register failed for %s: %v", id, err)
 	}
 
@@ -204,7 +206,8 @@ func dockerContainerCreate(w http.ResponseWriter, r *http.Request) {
 	go populateAppImagesForContainer(context.Background(), id, image)
 
 	// APP-034 · invalidación inmediata de cache de NimHealth (sync, ~150ms en Pi).
-	ForceDockerCacheRefresh(r.Context())
+	// context.Background() · misma razón que arriba.
+	ForceDockerCacheRefresh(context.Background())
 
 	jsonOk(w, map[string]interface{}{
 		"ok": true, "containerId": strings.TrimSpace(out),
