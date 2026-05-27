@@ -272,7 +272,8 @@ func dockerContainerDelete(w http.ResponseWriter, r *http.Request, id string) {
 	//
 	// Sustituye al flujo legacy (DELETE row síncrono + container stop async)
 	// que generaba flicker en orphanCount durante la ventana stop/rm.
-	if err := appsRepo.MarkDockerAppDeleting(r.Context(), safeId); err != nil {
+	// commitContext() · debe persistir aunque cliente se desconecte.
+	if err := appsRepo.MarkDockerAppDeleting(commitContext(), safeId); err != nil {
 		logMsg("docker: uninstall mark-deleting failed for %s: %v", safeId, err)
 		// Continuamos: el cleanup de Docker es lo importante. El observer puede
 		// generar un orphan transitorio pero no es peor que el flujo legacy.

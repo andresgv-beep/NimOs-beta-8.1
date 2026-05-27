@@ -469,7 +469,9 @@ func nativeAppUninstall(w http.ResponseWriter, r *http.Request, appId string) {
 	}
 
 	// Eliminar de native_apps en la DB
-	if err := appsRepo.DeleteNativeApp(r.Context(), appId); err != nil {
+	// commitContext() · la app ya está desinstalada del sistema, la BD debe
+	// reflejarlo aunque el cliente se haya ido.
+	if err := appsRepo.DeleteNativeApp(commitContext(), appId); err != nil {
 		logMsg("apps: uninstall DB cleanup failed for %s: %v", appId, err)
 		// No abortamos · la app ya está desinstalada del sistema
 	}

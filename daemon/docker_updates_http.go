@@ -247,7 +247,11 @@ func dockerAppUpdate(w http.ResponseWriter, r *http.Request, appID string) {
 	// el del registry, no descarga). El paso 2 con --pull always es el que
 	// FUERZA realmente la descarga al recrear · el pull aquí solo "calienta"
 	// el cache para que el up -d sea rápido.
-	pullCtx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
+	//
+	// commitContext() · si el cliente se desconecta a mitad, NO queremos
+	// matar el subprocess Docker (dejaría imágenes a medias y containers
+	// inconsistentes). El timeout sigue siendo 15min absolutos.
+	pullCtx, cancel := context.WithTimeout(commitContext(), 15*time.Minute)
 	defer cancel()
 	pullCmd := exec.CommandContext(pullCtx, "docker", "compose", "-f", composePath, "pull")
 	pullCmd.Dir = stackPath
@@ -278,7 +282,9 @@ func dockerAppUpdate(w http.ResponseWriter, r *http.Request, appID string) {
 	//
 	// Timeout 15 min · pull + recreate + healthchecks de 4 containers Immich
 	// pueden tardar fácil 5-10 min.
-	upCtx, cancel2 := context.WithTimeout(r.Context(), 15*time.Minute)
+	//
+	// commitContext() · idem que arriba · no matar el recreate si cliente se va.
+	upCtx, cancel2 := context.WithTimeout(commitContext(), 15*time.Minute)
 	defer cancel2()
 	upCmd := exec.CommandContext(upCtx, "docker", "compose", "-f", composePath, "up", "-d", "--pull", "always", "--force-recreate")
 	upCmd.Dir = stackPath
@@ -292,8 +298,10 @@ func dockerAppUpdate(w http.ResponseWriter, r *http.Request, appID string) {
 	// No bloqueante · si falla, update-check los refrescará al abrir el detail.
 	go refreshLocalDigestsAfterUpdate(context.Background(), safeID, composePath, stackPath)
 
-	// 4. Invalidar cache de NimHealth
-	ForceDockerCacheRefresh(r.Context())
+	// 4. Invalidar cache de NimHealth.
+	// commitContext() · refresh debe completarse aunque cliente se haya ido.
+	// Otros consumidores (UI, observers) leerán esta cache.
+	ForceDockerCacheRefresh(commitContext())
 
 	logMsg("docker: app %s updated successfully", safeID)
 	jsonOk(w, map[string]interface{}{

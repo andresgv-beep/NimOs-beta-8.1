@@ -239,7 +239,9 @@ func dockerStackDelete(w http.ResponseWriter, r *http.Request, id string) {
 	wipe := r.URL.Query().Get("wipe") == "true"
 
 	// APP-031 · race-free uninstall (mismo flujo que dockerContainerDelete).
-	if err := appsRepo.MarkDockerAppDeleting(r.Context(), safeId); err != nil {
+	// commitContext() · debe persistir aunque cliente se desconecte (el cleanup
+	// en goroutine ya está lanzado, la BD debe quedar consistente).
+	if err := appsRepo.MarkDockerAppDeleting(commitContext(), safeId); err != nil {
 		logMsg("docker: stack uninstall mark-deleting failed for %s: %v", safeId, err)
 	}
 
@@ -250,7 +252,8 @@ func dockerStackDelete(w http.ResponseWriter, r *http.Request, id string) {
 			dockerPath = dp
 		} else {
 			// Sin path · borramos la row directamente, no hay nada de stack que limpiar.
-			if delErr := appsRepo.DeleteDockerApp(r.Context(), safeId); delErr != nil {
+			// commitContext() · borrado final debe persistir.
+			if delErr := appsRepo.DeleteDockerApp(commitContext(), safeId); delErr != nil {
 				logMsg("docker: stack uninstall row delete failed for %s: %v", safeId, delErr)
 			}
 			jsonOk(w, map[string]interface{}{"ok": true})
