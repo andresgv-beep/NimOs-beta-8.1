@@ -19,18 +19,14 @@ func destroyPoolBtrfs(poolName string) map[string]interface{} {
 	storageMu.Lock()
 	defer storageMu.Unlock()
 
-	// Check service dependencies before destroying
 	poolLocked[poolName] = true
 	defer delete(poolLocked, poolName)
 
-	deps, canDestroy, _, err := canDestroyPool(poolName)
-	if err == nil && !canDestroy {
-		names := []string{}
-		for _, d := range deps {
-			names = append(names, d.AppName)
-		}
-		return map[string]interface{}{"error": fmt.Sprintf("Active services depend on this pool: %s. Stop them first.", strings.Join(names, ", "))}
-	}
+	// NOTA Beta 8.1: la antigua guarda canDestroyPool (que consultaba la
+	// tabla service_dependencies) se eliminó. Falló en silencio en producción
+	// (28/05/2026): la tabla estaba desincronizada → devolvía "sin deps" aunque
+	// había containers vivos sobre el pool. Storage no consulta metadatos de
+	// otros módulos; la protección real es poolHasSubmounts (mira el kernel).
 
 	// ── Buscar pool vía service v2 (Beta 8.1) ──
 	if storageService == nil {
@@ -56,33 +52,35 @@ func destroyPoolBtrfs(poolName string) map[string]interface{} {
 
 	logMsg("Destroying BTRFS pool '%s' (mount: %s)", poolName, mountPoint)
 
-	// 1. Delete shares from DB
-	deleteSharesForPool(poolName, mountPoint)
-
-	// 2. Unmount — verify it actually unmounted
-	if mountPoint != "" {
-		runCmd("umount", []string{"-f", mountPoint}, opts)
-		time.Sleep(1 * time.Second)
-
-		// Verify unmount
-		verifyRes, _ := runCmd("findmnt", []string{"-n", "-o", "TARGET", mountPoint}, opts)
-		if strings.TrimSpace(verifyRes.Stdout) != "" {
-			// Still mounted — try lazy unmount as last resort
-			logMsg("WARNING: %s still mounted after umount -f, trying lazy umount", mountPoint)
-			runCmd("umount", []string{"-f", "-l", mountPoint}, opts)
-			time.Sleep(2 * time.Second)
+	// 1. Pre-check: ¿hay filesystems montados ENCIMA del pool?
+	// Storage solo mira el estado real del filesystem, no consulta otros
+	// módulos. Si hay submounts (overlays Docker, binds...) abortamos antes
+	// de wipear nada — destruir con submounts vivos corrompe y deja fantasma.
+	if mountPoint != "" && poolHasSubmounts(mountPoint, opts) {
+		return map[string]interface{}{
+			"error":   "pool_busy_submounts",
+			"message": "El pool tiene filesystems montados encima (servicios activos usándolo). Deténlos antes de destruir.",
 		}
 	}
 
-	// 3. Clean up mount point
+	// 2. Unmount limpio — SIN lazy. Si falla, abortamos ANTES de wipear.
+	// Wipear un disco montado corrompe el FS vivo y deja la BD inconsistente.
+	if mountPoint != "" {
+		if errMap := unmountStrict(mountPoint, opts); errMap != nil {
+			return errMap
+		}
+	}
+
+	// 3. A partir de aquí el filesystem está 100% desmontado y confirmado.
+	// Ahora es seguro destruir: limpiar mountpoint, fstab, y wipear discos.
+	deleteSharesForPool(poolName, mountPoint)
+
 	if mountPoint != "" && strings.HasPrefix(mountPoint, nimosPoolsDir) {
 		os.RemoveAll(mountPoint)
 	}
-
-	// 4. Remove fstab entry
 	removeFstabEntry(mountPoint)
 
-	// 5. Release BTRFS multi-device lock and wipe disks
+	// Release BTRFS multi-device lock and wipe disks
 	runCmd("btrfs", []string{"device", "scan", "--forget"}, opts)
 	for _, dev := range targetPool.Devices {
 		if dev.CurrentPath != "" {
@@ -90,7 +88,7 @@ func destroyPoolBtrfs(poolName string) map[string]interface{} {
 		}
 	}
 
-	// 6. Remove pool from SQLite directamente (Beta 8.1 Bloque C: sin adapter)
+	// 4. Remove pool from SQLite (Beta 8.1 Bloque C: sin adapter)
 	// Si era primary, transferir flag al primer pool restante o limpiar metadata.
 	// La lógica transaccional vive en removePoolFromDB (testeada en isolation).
 	ctx := context.Background()
@@ -125,14 +123,9 @@ func exportPoolBtrfs(poolName string) map[string]interface{} {
 	storageMu.Lock()
 	defer storageMu.Unlock()
 
-	deps, canDestroy, _, err := canDestroyPool(poolName)
-	if err == nil && !canDestroy {
-		names := []string{}
-		for _, d := range deps {
-			names = append(names, d.AppName)
-		}
-		return map[string]interface{}{"error": "services_active", "services": names}
-	}
+	// NOTA Beta 8.1: canDestroyPool eliminada (ver destroyPoolBtrfs). La
+	// protección real es poolHasSubmounts, que mira el kernel en vez de una
+	// tabla de la DB que puede estar desincronizada.
 
 	// ── Buscar pool vía service v2 (Beta 8.1) ──
 	if storageService == nil {
@@ -158,24 +151,33 @@ func exportPoolBtrfs(poolName string) map[string]interface{} {
 
 	logMsg("Exporting BTRFS pool '%s' — data preserved", poolName)
 
-	// 1. Delete shares from DB
-	deleteSharesForPool(poolName, mountPoint)
-
-	// 2. Unmount
-	if mountPoint != "" {
-		runCmd("umount", []string{"-f", mountPoint}, opts)
-		time.Sleep(500 * time.Millisecond)
-		verifyRes, _ := runCmd("findmnt", []string{"-n", "-o", "TARGET", mountPoint}, opts)
-		if strings.TrimSpace(verifyRes.Stdout) != "" {
-			runCmd("umount", []string{"-f", "-l", mountPoint}, opts)
+	// 1. Pre-check: ¿hay filesystems montados ENCIMA del pool?
+	// Storage no consulta a Docker ni a servicios (cada módulo es responsable
+	// de lo suyo). Solo comprueba el estado real del filesystem: si hay
+	// submounts (overlays Docker, binds, etc.) el umount fallaría y dejaría
+	// un pool fantasma. Abortamos limpio antes de tocar nada.
+	if mountPoint != "" && poolHasSubmounts(mountPoint, opts) {
+		return map[string]interface{}{
+			"error":   "pool_busy_submounts",
+			"message": "El pool tiene filesystems montados encima (servicios activos usándolo). Deténlos antes de desmontar.",
 		}
 	}
 
-	// 3. Remove fstab entry (will be re-added on import)
+	// 2. Unmount limpio — SIN lazy. Si falla, abortamos sin tocar la BD.
+	// El lazy (umount -l) miente: desmonta del namespace pero deja los inodos
+	// vivos, generando el estado fantasma. Preferimos fallar claro.
+	if mountPoint != "" {
+		if errMap := unmountStrict(mountPoint, opts); errMap != nil {
+			return errMap
+		}
+	}
+
+	// 3. A partir de aquí el filesystem está 100% desmontado y confirmado.
+	// Ahora SÍ es seguro tocar la BD y el fstab.
+	deleteSharesForPool(poolName, mountPoint)
 	removeFstabEntry(mountPoint)
 
-	// 4. Remove pool from SQLite directamente (Beta 8.1 Bloque C: sin adapter)
-	// Misma lógica transaccional que destroyPoolBtrfs — extraída a removePoolFromDB.
+	// 4. Remove pool from SQLite (Beta 8.1 Bloque C: sin adapter)
 	ctx := context.Background()
 	err = removePoolFromDB(ctx, storageService, targetPool.ID)
 	if err != nil {
@@ -196,6 +198,56 @@ func exportPoolBtrfs(poolName string) map[string]interface{} {
 }
 
 // ─── Helpers internos ────────────────────────────────────────────────────────
+
+// poolHasSubmounts comprueba si hay filesystems montados POR ENCIMA del
+// mountpoint del pool (overlays de Docker, bind mounts, etc.).
+//
+// Filosofía Storage: este módulo NO consulta a Docker ni al registro de
+// servicios — cada módulo es responsable de lo suyo. Solo mira el estado
+// real del kernel vía findmnt. Si algo tiene montado un FS encima del pool,
+// el umount fallaría y dejaría un pool fantasma; mejor abortar antes.
+//
+// findmnt -R lista el mountpoint y todos sus submounts recursivamente.
+// Si devuelve más de 1 línea, hay submounts → el pool está en uso.
+func poolHasSubmounts(mountPoint string, opts CmdOptions) bool {
+	res, err := runCmd("findmnt", []string{"-R", "-n", "-o", "TARGET", mountPoint}, opts)
+	if err != nil {
+		// findmnt falla si el mountpoint no está montado → sin submounts.
+		return false
+	}
+	lines := 0
+	for _, l := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
+		if strings.TrimSpace(l) != "" {
+			lines++
+		}
+	}
+	// 0 = no montado · 1 = solo el pool · >1 = hay submounts encima
+	return lines > 1
+}
+
+// unmountStrict desmonta el pool SIN lazy unmount y verifica el resultado.
+// Devuelve nil si el umount fue 100% confirmado, o un map de error listo
+// para devolver al caller si quedó montado.
+//
+// Por qué NO lazy: `umount -l` desmonta del namespace pero deja los inodos
+// vivos si hay procesos con FDs abiertos. El filesystem sigue recibiendo
+// escrituras mientras NimOS cree que ya no existe — el bug fantasma. Si el
+// umount limpio falla, preferimos error claro a inconsistencia silenciosa.
+func unmountStrict(mountPoint string, opts CmdOptions) map[string]interface{} {
+	runCmd("umount", []string{"-f", mountPoint}, opts)
+	time.Sleep(1 * time.Second)
+
+	// Verificación post-unmount obligatoria: findmnt debe devolver vacío.
+	verifyRes, _ := runCmd("findmnt", []string{"-n", "-o", "TARGET", mountPoint}, opts)
+	if strings.TrimSpace(verifyRes.Stdout) != "" {
+		logMsg("unmountStrict: %s sigue montado tras umount -f — abortando (sin lazy)", mountPoint)
+		return map[string]interface{}{
+			"error":   "unmount_failed",
+			"message": "El pool sigue montado tras intentar desmontarlo. Hay procesos con archivos abiertos. Detén los servicios que usan este pool e inténtalo de nuevo.",
+		}
+	}
+	return nil
+}
 
 // removePoolFromDB elimina el pool de SQLite y reasigna o limpia la metadata
 // `primary_pool` de forma atómica. Es el "core transaccional" compartido por
