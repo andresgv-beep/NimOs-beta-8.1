@@ -19,6 +19,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -378,4 +379,58 @@ func mustContain(t *testing.T, args []string, want string) {
 		}
 	}
 	t.Errorf("args no contiene %q · args = %v", want, args)
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Borrado de imágenes (uninstall wipe)
+// ─────────────────────────────────────────────────────────────────────────
+
+// TestDedupeNonEmpty · el helper que limpia la lista de imágenes.
+func TestDedupeNonEmpty(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"vacío", []string{}, nil},
+		{"sin duplicados", []string{"a", "b", "c"}, []string{"a", "b", "c"}},
+		{"con duplicados", []string{"a", "b", "a", "c", "b"}, []string{"a", "b", "c"}},
+		{"con vacíos", []string{"a", "", "  ", "b"}, []string{"a", "b"}},
+		{"con espacios", []string{" a ", "a", "b "}, []string{"a", "b"}},
+		{"todos iguales", []string{"x", "x", "x"}, []string{"x"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := dedupeNonEmpty(c.in)
+			if len(got) != len(c.want) {
+				t.Fatalf("dedupeNonEmpty(%v) = %v, want %v", c.in, got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Errorf("dedupeNonEmpty(%v)[%d] = %q, want %q", c.in, i, got[i], c.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestRemoveAppImages_SkipsNoneImages · verifica que las imágenes <none>
+// (sin tag claro) se saltan por seguridad · no intentamos borrarlas.
+//
+// No testea el borrado real (requiere Docker) · solo la lógica de filtrado.
+// Como removeAppImages llama a runSafe (que ejecuta docker), aquí solo
+// verificamos que con input de solo <none> NO intenta nada y devuelve 0.
+func TestRemoveAppImages_SkipsNoneImages(t *testing.T) {
+	// Estas imágenes deben saltarse todas · sin Docker real, si intentara
+	// borrarlas runSafe fallaría, pero como las salta, removed=0 sin tocar nada.
+	skipped := []string{
+		"",
+		"<none>:<none>",
+		"repo:<none>",
+		"  ",
+	}
+	got := removeAppImages(context.Background(), skipped)
+	if got != 0 {
+		t.Errorf("removeAppImages con solo imágenes inválidas devolvió %d, want 0", got)
+	}
 }

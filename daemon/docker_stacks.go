@@ -288,6 +288,15 @@ func dockerStackDelete(w http.ResponseWriter, r *http.Request, id string) {
 	wipeCapture := wipe
 	dockerPathCapture := dockerPath
 	go func() {
+		// En modo wipe · capturar las imágenes del stack ANTES del down
+		// (necesita los containers vivos para listarlas). Se borran después.
+		var stackImages []string
+		if wipeCapture {
+			if _, err := os.Stat(composePath); err == nil {
+				stackImages = getStackImages(context.Background(), composePath, stackPath)
+			}
+		}
+
 		if _, err := os.Stat(composePath); err == nil {
 			// Argumentos de compose down · siempre --remove-orphans, solo añade -v
 			// en modo wipe (destruir volúmenes Docker)
@@ -305,6 +314,14 @@ func dockerStackDelete(w http.ResponseWriter, r *http.Request, id string) {
 			os.RemoveAll(stackPath)
 			os.RemoveAll(filepath.Join(dockerPathCapture, "containers", idCapture))
 			logMsg("docker: stack %s uninstalled in WIPE mode · all data removed", idCapture)
+
+			// Borrar las imágenes del stack (capturadas antes del down).
+			// docker rmi SIN -f · seguro entre apps: si otra app usa una imagen
+			// compartida, Docker la protege y no se borra.
+			if len(stackImages) > 0 {
+				n := removeAppImages(context.Background(), stackImages)
+				logMsg("docker: stack %s · %d/%d imágenes borradas (wipe)", idCapture, n, len(stackImages))
+			}
 		} else {
 			logMsg("docker: stack %s uninstalled in SOFT mode · data preserved at %s/containers/%s", idCapture, dockerPathCapture, idCapture)
 		}

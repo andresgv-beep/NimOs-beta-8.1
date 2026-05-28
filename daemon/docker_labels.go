@@ -458,3 +458,111 @@ func getNimOSContainerLabels(ctx context.Context, containerID string) (map[strin
 	}
 	return labels, nil
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Borrado de imágenes de una app (Beta 8.2 · uninstall WIPE)
+// ─────────────────────────────────────────────────────────────────────────
+//
+// Problema: al desinstalar una app, NimOS borraba containers/volúmenes/datos
+// pero NUNCA las imágenes Docker. Resultado: se acumulan GB de imágenes
+// huérfanas (en producción real, ~7.7GB tras varias reinstalaciones).
+//
+// Solución: en modo WIPE ("Desinstalar y borrar todos los datos"), tras quitar
+// los containers, borrar las imágenes que usaba la app.
+//
+// SEGURIDAD ENTRE APPS (requisito de Andrés): usamos `docker rmi` SIN -f.
+// Docker rechaza borrar una imagen si CUALQUIER otro container (de otra app)
+// la está usando. Por tanto es IMPOSIBLE romper otra app: si dos apps comparten
+// redis:alpine y borras una, Docker se niega a borrar la imagen porque la otra
+// la usa, y la dejamos intacta. Solo se borran imágenes que quedan realmente
+// sin usar tras quitar esta app.
+//
+// El modo SOFT ("Desinstalar", recomendado) NO llama a esto · conserva las
+// imágenes para que una reinstalación sea instantánea (no re-descarga GB).
+
+// getStackImages devuelve las imágenes usadas por los containers de un stack.
+// Debe llamarse ANTES de `compose down` (necesita los containers vivos).
+//
+// Usa `docker compose images` que lista las imágenes de los servicios del
+// stack. Devuelve los nombres de imagen (ej. "nextcloud:latest").
+func getStackImages(ctx context.Context, composePath, stackDir string) []string {
+	cctx, cancel := context.WithTimeout(ctx, dockerCmdTimeout)
+	defer cancel()
+
+	// --format '{{.Repository}}:{{.Tag}}' da el nombre completo de imagen por
+	// servicio. Una línea por container del stack.
+	cmd := exec.CommandContext(cctx, "docker", "compose", "-f", composePath,
+		"images", "--format", "{{.Repository}}:{{.Tag}}")
+	if stackDir != "" {
+		cmd.Dir = stackDir
+	}
+
+	out, err := cmd.Output()
+	if err != nil {
+		logMsg("docker_labels: getStackImages falló para %s: %v (no se borrarán imágenes)", composePath, err)
+		return nil
+	}
+
+	return dedupeNonEmpty(strings.Split(strings.TrimSpace(string(out)), "\n"))
+}
+
+// getContainerImage devuelve el nombre de imagen de un single container.
+// Debe llamarse ANTES de `docker rm`.
+func getContainerImage(ctx context.Context, containerName string) string {
+	cctx, cancel := context.WithTimeout(ctx, dockerCmdTimeout)
+	defer cancel()
+
+	// .Config.Image da el nombre tal como se especificó (ej. "jellyfin/jellyfin:latest")
+	cmd := exec.CommandContext(cctx, "docker", "inspect", containerName,
+		"--format", "{{.Config.Image}}")
+	out, err := cmd.Output()
+	if err != nil {
+		logMsg("docker_labels: getContainerImage falló para %s: %v", containerName, err)
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// removeAppImages borra las imágenes dadas con `docker rmi` SIN -f.
+//
+// SEGURO ENTRE APPS: si una imagen está en uso por otro container (otra app),
+// `docker rmi` falla para ESA imagen y la dejamos intacta. Las demás se borran.
+// Nunca usamos -f · eso rompería apps que comparten imagen.
+//
+// Devuelve cuántas imágenes se borraron con éxito.
+func removeAppImages(ctx context.Context, images []string) int {
+	removed := 0
+	for _, img := range images {
+		img = strings.TrimSpace(img)
+		if img == "" || strings.Contains(img, "<none>") {
+			continue // imagen sin tag claro o vacía · saltamos por seguridad
+		}
+		// docker rmi SIN -f · Docker protege imágenes en uso por otras apps.
+		out, ok := runSafe("docker", "rmi", img)
+		if !ok {
+			// Falla esperado si la imagen está compartida con otra app viva.
+			// No es error · es la protección funcionando.
+			logMsg("docker_labels: imagen %s no borrada (probablemente en uso por otra app): %s",
+				img, out)
+			continue
+		}
+		removed++
+		logMsg("docker_labels: imagen %s borrada (wipe uninstall)", img)
+	}
+	return removed
+}
+
+// dedupeNonEmpty elimina duplicados y strings vacíos de un slice.
+func dedupeNonEmpty(items []string) []string {
+	seen := make(map[string]bool)
+	var result []string
+	for _, it := range items {
+		it = strings.TrimSpace(it)
+		if it == "" || seen[it] {
+			continue
+		}
+		seen[it] = true
+		result = append(result, it)
+	}
+	return result
+}

@@ -289,6 +289,12 @@ func dockerContainerDelete(w http.ResponseWriter, r *http.Request, id string) {
 	idCapture := safeId
 	wipeCapture := wipe
 	go func() {
+		// En modo wipe · capturar la imagen ANTES de borrar el container.
+		var containerImage string
+		if wipeCapture {
+			containerImage = getContainerImage(context.Background(), idCapture)
+		}
+
 		runSafe("docker", "stop", idCapture)
 		// En modo wipe usamos -v (borra volúmenes anónimos asociados).
 		// En modo soft, los volúmenes anónimos también se borran porque
@@ -305,6 +311,13 @@ func dockerContainerDelete(w http.ResponseWriter, r *http.Request, id string) {
 		}
 		if wipeCapture {
 			logMsg("docker: container %s uninstalled in WIPE mode", idCapture)
+			// Borrar la imagen del container (capturada antes del rm).
+			// docker rmi SIN -f · seguro entre apps: si otra app usa la misma
+			// imagen, Docker la protege y no se borra.
+			if containerImage != "" {
+				n := removeAppImages(context.Background(), []string{containerImage})
+				logMsg("docker: container %s · %d imagen(es) borrada(s) (wipe)", idCapture, n)
+			}
 		} else {
 			logMsg("docker: container %s uninstalled in SOFT mode", idCapture)
 		}
