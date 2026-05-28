@@ -290,11 +290,11 @@ func dockerStackDelete(w http.ResponseWriter, r *http.Request, id string) {
 	go func() {
 		// En modo wipe · capturar las imágenes del stack ANTES del down
 		// (necesita los containers vivos para listarlas). Se borran después.
+		// Usa el label com.nimos.app_id · inmune a variables sin definir en
+		// el compose (bug navidrome/MUSIC_PATH).
 		var stackImages []string
 		if wipeCapture {
-			if _, err := os.Stat(composePath); err == nil {
-				stackImages = getStackImages(context.Background(), composePath, stackPath)
-			}
+			stackImages = getStackImages(context.Background(), idCapture)
 		}
 
 		if _, err := os.Stat(composePath); err == nil {

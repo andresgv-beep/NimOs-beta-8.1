@@ -483,27 +483,54 @@ func getNimOSContainerLabels(ctx context.Context, containerID string) (map[strin
 // getStackImages devuelve las imágenes usadas por los containers de un stack.
 // Debe llamarse ANTES de `compose down` (necesita los containers vivos).
 //
-// Usa `docker compose images` que lista las imágenes de los servicios del
-// stack. Devuelve los nombres de imagen (ej. "nextcloud:latest").
-func getStackImages(ctx context.Context, composePath, stackDir string) []string {
+// APPROACH (corregido 28/05/2026): NO usa `docker compose images` porque ese
+// comando EVALÚA el YAML del compose · si el compose tiene una variable sin
+// definir (ej. ${MUSIC_PATH} en navidrome sin valor en .env), el comando
+// FALLA ENTERO y no devuelve ninguna imagen. Bug real visto en producción.
+//
+// En su lugar, busca los containers del stack por su label com.nimos.app_id
+// (inyectado en Fase 2) y obtiene la imagen de cada uno con `docker inspect`.
+// Esto trabaja sobre containers YA CREADOS · inmune a variables del YAML.
+//
+// Devuelve los nombres de imagen (ej. "nextcloud:latest"), deduplicados.
+func getStackImages(ctx context.Context, appID string) []string {
 	cctx, cancel := context.WithTimeout(ctx, dockerCmdTimeout)
 	defer cancel()
 
-	// --format '{{.Repository}}:{{.Tag}}' da el nombre completo de imagen por
-	// servicio. Una línea por container del stack.
-	cmd := exec.CommandContext(cctx, "docker", "compose", "-f", composePath,
-		"images", "--format", "{{.Repository}}:{{.Tag}}")
-	if stackDir != "" {
-		cmd.Dir = stackDir
-	}
-
-	out, err := cmd.Output()
-	if err != nil {
-		logMsg("docker_labels: getStackImages falló para %s: %v (no se borrarán imágenes)", composePath, err)
+	if appID == "" {
+		logMsg("docker_labels: getStackImages llamado con appID vacío")
 		return nil
 	}
 
-	return dedupeNonEmpty(strings.Split(strings.TrimSpace(string(out)), "\n"))
+	// 1. Listar IDs de containers del stack por label com.nimos.app_id.
+	//    Trabaja sobre containers reales · no evalúa el compose YAML.
+	psCmd := exec.CommandContext(cctx, "docker", "ps", "-a",
+		"--filter", "label="+LabelAppID+"="+appID,
+		"--format", "{{.ID}}")
+	out, err := psCmd.Output()
+	if err != nil {
+		logMsg("docker_labels: getStackImages ps falló para %s: %v (no se borrarán imágenes)", appID, err)
+		return nil
+	}
+
+	containerIDs := strings.Fields(strings.TrimSpace(string(out)))
+	if len(containerIDs) == 0 {
+		// Fallback · containers ya parados sin label (instalación pre-Fase 2).
+		// No es error · simplemente no hay imágenes que rastrear por label.
+		logMsg("docker_labels: getStackImages · sin containers con label %s=%s", LabelAppID, appID)
+		return nil
+	}
+
+	// 2. Por cada container, obtener su imagen con inspect.
+	var images []string
+	for _, id := range containerIDs {
+		img := getContainerImage(ctx, id)
+		if img != "" {
+			images = append(images, img)
+		}
+	}
+
+	return dedupeNonEmpty(images)
 }
 
 // getContainerImage devuelve el nombre de imagen de un single container.
