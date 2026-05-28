@@ -421,3 +421,40 @@ func listNimOSContainers(ctx context.Context) ([]NimOSContainer, error) {
 	}
 	return result, nil
 }
+
+// getNimOSContainerLabels devuelve TODOS los labels de un container concreto
+// vía `docker inspect`. Usado por el reconciler (Fase 3) para reconstruir la
+// row de docker_apps de un huérfano con la máxima fidelidad (installed_by,
+// installed_at, etc).
+//
+// Devuelve un map vacío (no error) si el container no tiene labels.
+func getNimOSContainerLabels(ctx context.Context, containerID string) (map[string]string, error) {
+	cctx, cancel := context.WithTimeout(ctx, dockerCmdTimeout)
+	defer cancel()
+
+	// --format con range genera "key=value" por línea · parsing trivial,
+	// sin depender de jq ni de parsear JSON.
+	cmd := exec.CommandContext(cctx, "docker", "inspect", containerID,
+		"--format", `{{range $k, $v := .Config.Labels}}{{$k}}={{$v}}{{"\n"}}{{end}}`)
+
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("docker inspect %s: %w", containerID, err)
+	}
+
+	labels := make(map[string]string)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		// Split en el PRIMER "=" · los valores pueden contener "=".
+		idx := strings.IndexByte(line, '=')
+		if idx < 0 {
+			continue
+		}
+		key := line[:idx]
+		val := line[idx+1:]
+		labels[key] = val
+	}
+	return labels, nil
+}

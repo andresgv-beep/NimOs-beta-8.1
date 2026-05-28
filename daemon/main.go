@@ -823,6 +823,27 @@ func main() {
 		}
 	}()
 
+	// Docker app reconciler (Beta 8.2 · Fase 3) · red de seguridad contra
+	// inconsistencias BD↔Docker (bug Nextcloud). Detecta containers con label
+	// com.nimos.managed=true sin row en docker_apps y los reimporta.
+	//
+	// Scheduler propio (mismo patrón que NimHealth). RunOnce al arranque tras
+	// ceder al boot storm · así un huérfano de la sesión anterior se rescata
+	// nada más arrancar.
+	dockerAppScheduler = NewReconcilerScheduler(NewRealClock())
+	dockerAppReconciler := NewDockerAppReconciler(appsRepo, NewRealClock())
+	if err := dockerAppScheduler.Register(dockerAppReconciler); err != nil {
+		logMsg("docker_reconciler: register failed: %v", err)
+	} else if err := dockerAppScheduler.Start(context.Background()); err != nil {
+		logMsg("docker_reconciler: scheduler start failed: %v", err)
+	}
+	go func() {
+		time.Sleep(12 * time.Second) // tras NimHealth · Docker ya debería estar arriba
+		if err := dockerAppScheduler.RunOnce(context.Background(), dockerAppReconciler.Name()); err != nil {
+			logMsg("docker_reconciler: initial RunOnce failed: %v", err)
+		}
+	}()
+
 	// Start scrub scheduler — checks every 60s if a scheduled verification is due
 	go startScrubScheduler()
 

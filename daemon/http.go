@@ -342,6 +342,10 @@ func startHTTPServer() {
 	mux.HandleFunc("/api/installed-apps", handleInstalledAppsRoutes)
 	mux.HandleFunc("/api/installed-apps/", handleInstalledAppsRoutes)
 
+	// ── Operations (async ops tracking · APP-012) ──
+	mux.HandleFunc("/api/operations", handleOperationsRoutes)
+	mux.HandleFunc("/api/operations/", handleOperationsRoutes)
+
 	// ── Hardware / System monitoring routes ──
 	mux.HandleFunc("/api/system", handleHardwareRoutes)
 	mux.HandleFunc("/api/system/", handleHardwareRoutes)
@@ -384,6 +388,9 @@ func startHTTPServer() {
 	mux.HandleFunc("/api/firewall/add-rule", handleDockerRoutes)
 	mux.HandleFunc("/api/firewall/remove-rule", handleDockerRoutes)
 	mux.HandleFunc("/api/firewall/toggle", handleDockerRoutes)
+
+	// Admin · disparo manual del reconciler de Docker apps (Beta 8.2 · Fase 3)
+	mux.HandleFunc("/api/admin/reconcile-apps", handleReconcileApps)
 
 	// ── Network + VMs routes ──
 	registerNetworkRoutes(mux)
