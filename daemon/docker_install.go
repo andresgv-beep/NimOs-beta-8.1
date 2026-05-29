@@ -18,6 +18,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -264,11 +265,18 @@ func runDockerInstallWork(ctx context.Context, body map[string]interface{}, opID
 
 	dockerPath := filepath.Join(mountPoint, "docker")
 	dockerDataPath := filepath.Join(dockerPath, "data")
+	// Beta 8.2 · containerd guarda las capas descomprimidas de las imágenes.
+	// Por defecto vive en /var/lib/containerd (disco del sistema · en un Pi,
+	// la microSD lenta). Si no se mueve al pool, las capas saturan la SD y
+	// las instalaciones se vuelven lentísimas (descompresión en SD) y
+	// congelan el sistema (toda la I/O compite por la SD). Lo movemos al
+	// pool SSD igual que el data-root de Docker.
+	containerdPath := filepath.Join(dockerPath, "containerd")
 
 	updateOpProgressSafe(ctx, opID, 20, "Preparing directories")
 
 	// ── 3. Create ALL directories on the pool FIRST ──
-	for _, dir := range []string{"data", "containers", "stacks", "volumes"} {
+	for _, dir := range []string{"data", "containers", "stacks", "volumes", "containerd"} {
 		if err := os.MkdirAll(filepath.Join(dockerPath, dir), 0755); err != nil {
 			return nil, asHTTPError(500, "Failed to create directory: %v", err)
 		}
@@ -283,6 +291,22 @@ func runDockerInstallWork(ctx context.Context, body map[string]interface{}, opID
 		return nil, asHTTPError(500, "Failed to write daemon.json: %v", err)
 	}
 	log.Printf("Docker daemon.json → data-root=%s", dockerDataPath)
+
+	// ── 4b. Configure containerd root on the pool ──
+	// Docker delega en containerd el almacenamiento de capas (snapshots
+	// overlayfs). Su root por defecto es /var/lib/containerd (SD lenta).
+	// Generamos /etc/containerd/config.toml apuntando al pool SSD.
+	//
+	// Formato config.toml v2 (containerd 1.x/2.x):
+	//   version = 2
+	//   root = "<pool>/docker/containerd"
+	//   state = "/run/containerd"   (state es efímero · runtime · se queda en /run)
+	os.MkdirAll("/etc/containerd", 0755)
+	containerdConf := fmt.Sprintf("version = 2\nroot = %q\nstate = \"/run/containerd\"\n", containerdPath)
+	if err := os.WriteFile("/etc/containerd/config.toml", []byte(containerdConf), 0644); err != nil {
+		return nil, asHTTPError(500, "Failed to write containerd config.toml: %v", err)
+	}
+	log.Printf("containerd config.toml → root=%s", containerdPath)
 
 	// ── 5. Install Docker if not present ──
 	dockerAvailable := isDockerInstalledGo()
@@ -325,26 +349,47 @@ func runDockerInstallWork(ctx context.Context, body map[string]interface{}, opID
 
 	updateOpProgressSafe(ctx, opID, 80, "Starting Docker service")
 
-	// ── 6. Kill /var/lib/docker — pool only ──
+	// ── 6. Kill /var/lib/docker y /var/lib/containerd — pool only ──
 	// Seguro: si NimOS no había instalado Docker antes, el check APP-063 en
 	// paso 0 ya verificó que /var/lib/docker está vacío o no existe. Si NimOS
 	// SÍ había instalado Docker antes, data-root ya estaba en el pool desde
 	// el primer install · /var/lib/docker no debería tener data nuestra.
+	//
+	// containerd: su root viejo en la SD se limpia · las capas se
+	// recrearán en el pool al instalar apps. Sin esto, quedaría 5GB+ de
+	// capas huérfanas saturando la SD (bug detectado 29/05/2026).
 	runSafe("rm", "-rf", "/var/lib/docker")
+	runSafe("rm", "-rf", "/var/lib/containerd")
 
 	// ── 7. Start Docker with correct config ──
 	if dockerAvailable {
+		// containerd primero · debe arrancar con el nuevo config.toml (root
+		// en el pool) ANTES que Docker, porque Docker depende de él. Si
+		// containerd ya estaba corriendo con la config vieja, este restart
+		// lo recarga apuntando al pool.
+		runSafe("systemctl", "enable", "containerd")
+		runSafe("systemctl", "restart", "containerd")
+		time.Sleep(1 * time.Second)
+
 		runSafe("systemctl", "enable", "docker.service", "docker.socket")
 		runSafe("systemctl", "start", "docker")
 		time.Sleep(2 * time.Second)
 
-		// Verify
+		// Verify Docker root
 		rootDir, _ := runSafe("docker", "info", "--format", "{{.DockerRootDir}}")
 		rootDir = strings.TrimSpace(rootDir)
 		if rootDir != "" && rootDir != dockerDataPath {
 			log.Printf("WARNING: Docker Root Dir=%s expected=%s", rootDir, dockerDataPath)
 		} else {
 			log.Printf("Docker Root Dir confirmed: %s", dockerDataPath)
+		}
+
+		// Verify containerd root está en el pool (no en la SD)
+		cdRoot, _ := runSafe("containerd", "config", "dump")
+		if strings.Contains(cdRoot, containerdPath) {
+			log.Printf("containerd root confirmed: %s", containerdPath)
+		} else {
+			log.Printf("WARNING: containerd root may not be on pool · expected=%s", containerdPath)
 		}
 
 		// ── 8. Permissions for FileManager ──
