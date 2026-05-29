@@ -363,8 +363,11 @@ func serviceStop(instanceID string) error {
 		}
 		_, stopErr = runCmd("systemctl", []string{"stop", unitName}, opts)
 	case "docker":
-		// Stop all containers (Docker engine stays)
-		_, stopErr = runCmd("systemctl", []string{"stop", "docker.socket", "docker"}, opts)
+		// Parar Docker Y containerd juntos. containerd es independiente de
+		// dockerd y mantiene los overlays (snapshots) montados sobre el pool;
+		// parar solo docker deja containerd agarrando el filesystem → el pool
+		// no se puede desmontar (POOL BUSY). Son un combo para liberar el pool.
+		_, stopErr = runCmd("systemctl", []string{"stop", "docker.socket", "docker", "containerd"}, opts)
 	case "internal":
 		// Handled by daemon internally — no external process to stop
 		stopErr = nil
