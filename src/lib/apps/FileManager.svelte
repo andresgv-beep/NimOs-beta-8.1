@@ -464,10 +464,15 @@
       <b>Shared Folders</b>
       <span class="ph-desc">· {shares.length} share{shares.length !== 1 ? 's' : ''}</span>
     {/if}
+  </svelte:fragment>
 
-    <!-- Acciones a la derecha · clipboard + view toggle + nueva carpeta + subir -->
+  <!-- ═══ TOOLBAR · fila propia debajo del header (estilo subbar mockup) ═══
+       Acciones (clipboard + view toggle + nueva carpeta + subir). Ya NO
+       viven en el page-header: ahí colisionaban con los controles de
+       ventana flotantes. Aquí tienen su propia franja. -->
+  <svelte:fragment slot="toolbar">
     {#if currentShare || clipboard}
-      <div class="ph-right">
+      <div class="fm-toolbar">
         {#if clipboard}
           <div class="clipboard-badge" class:cut={clipboard.op === 'cut'}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:10px;height:10px">
@@ -867,11 +872,22 @@
   }
 
   /* ═══════════════════════════════════════════════════════════
-     PAGE-HEADER ACTIONS · clipboard badge + view toggle + upload
+     TOOLBAR · franja propia debajo del header (estilo subbar mockup)
      ───────────────────────────────────────────────────────────
-     Conviven con back+share+breadcrumb en una sola fila.
-     El .ph-right del AppShell los alinea a la derecha automáticamente.
+     Antes los botones vivían en .ph-right del page-header y
+     colisionaban con los controles de ventana flotantes. Ahora
+     tienen su propia fila, alineados a la derecha.
      ═══════════════════════════════════════════════════════════ */
+  .fm-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 8px 22px;
+    border-bottom: 1px solid var(--line, rgba(255,255,255,0.04));
+    flex-wrap: wrap;
+  }
+
   .clipboard-badge {
     display: flex; align-items: center; gap: 5px;
     padding: 3px 8px 3px 6px;
@@ -883,6 +899,7 @@
     max-width: 180px;
     overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
     font-family: var(--font-sans);
+    margin-right: auto; /* empuja el badge a la izquierda, botones a la derecha */
   }
   .clipboard-badge.cut {
     color: var(--warn, #fbbf24);
