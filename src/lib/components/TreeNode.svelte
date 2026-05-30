@@ -87,13 +87,12 @@
   }
 
   $: isActive = activeShare === share && activePath === path;
-  /* v3.2: cubo rota cuando este nodo está abierto o en el trail de
-     navegación. Rombo = expandido / estás dentro. Cuadrado = cerrado. */
+  /* v3.2: el cubo gira (rombo) SOLO cuando el nodo está realmente
+     expandido Y tiene subcarpetas que se están mostrando. Estar en el
+     trail de navegación auto-expande (abajo), pero el giro refleja el
+     estado real del árbol, no el foco — así no gira en vacío. */
   $: inTrail = isActive || shouldBeOpen;
-  $: isOpenLike = expanded || inTrail;
-  /* ¿Tiene hijos? Hasta que se cargan asumimos que sí (cursor pointer).
-     Si ya se cargaron y está vacío, el cubo no actúa como toggle. */
-  $: hasChildren = children === null || children.length > 0;
+  $: isOpenLike = expanded && children !== null && children.length > 0;
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -121,7 +120,7 @@
     class:leaf={children !== null && children.length === 0}
     on:click={onCubeClick}
     aria-hidden="true"
-  ></span>
+  ><span class="tn-square"></span></span>
 
   <span class="tn-name">{name}</span>
 </div>
@@ -146,7 +145,7 @@
   .tree-item {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     padding: 7px 10px;
     margin: 1px 0;
     border-radius: 6px;
@@ -169,34 +168,23 @@
   }
 
   /* ─── Cubo · firma NimOS · ES el toggle de expand/colapso ───
-     Cuadrado 10×10 con esquinas redondeadas (border-radius 2px).
-     Color refleja origen por sí mismo:
-       · Local  → --nim-folder (naranja)
-       · Remote → --nim-remote (azul)
-     Cuadrado quieto = carpeta cerrada.
-     Rotado 45° con glow = carpeta abierta / estás dentro.
-
-     El contenedor .tn-cube es transparente y aporta el área de hit
-     holgada (padding). El cuadrado visible (con su border-radius) es
-     el pseudo-elemento ::before — así el redondeo se ve de verdad,
-     cosa que background-clip:content-box rompía.
+     Contenedor .tn-cube: caja flex de 14×14 que centra el cuadrado
+     visible (.tn-square) y aporta el área de click. El cuadrado interno
+     es 10×10 con border-radius 2px. Color por origen:
+       · Local  → --nim-folder (naranja)  · Remote → --nim-remote (azul)
+     Cuadrado quieto = carpeta cerrada · rombo con glow = abierta.
+     Sin position:absolute ni margin negativo → alinea con el texto.
   */
   .tn-cube {
-    position: relative;
-    width: 10px;
-    height: 10px;
+    width: 14px;
+    height: 14px;
     flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     cursor: pointer;
-    /* hit-area sin desplazar el layout */
-    padding: 4px;
-    margin: -4px;
-    background: transparent;
   }
-  .tn-cube::before {
-    content: '';
-    position: absolute;
-    top: 4px;
-    left: 4px;
+  .tn-square {
     width: 10px;
     height: 10px;
     border-radius: 2px;
@@ -206,32 +194,29 @@
       box-shadow 0.2s ease,
       opacity 0.15s;
   }
-  .tree-item.remote .tn-cube::before {
+  .tree-item.remote .tn-square {
     background: var(--nim-remote, #4db8ff);
   }
-  /* Abierto / en trail → rombo con glow */
-  .tn-cube.open::before {
+  /* Expandido con hijos → rombo con glow */
+  .tn-cube.open .tn-square {
     transform: rotate(45deg);
     box-shadow: 0 0 5px rgba(255, 156, 90, 0.45);
   }
-  .tree-item.remote .tn-cube.open::before {
+  .tree-item.remote .tn-cube.open .tn-square {
     box-shadow: 0 0 5px rgba(77, 184, 255, 0.45);
   }
   /* Carpeta sin hijos → cubo apagado, no actúa como toggle */
   .tn-cube.leaf {
     cursor: default;
   }
-  .tn-cube.leaf::before {
+  .tn-cube.leaf .tn-square {
     opacity: 0.5;
   }
-  .tn-cube:hover::before {
+  .tn-cube:not(.leaf):hover .tn-square {
     box-shadow: 0 0 6px rgba(255, 156, 90, 0.5);
   }
-  .tree-item.remote .tn-cube:hover::before {
+  .tree-item.remote .tn-cube:not(.leaf):hover .tn-square {
     box-shadow: 0 0 6px rgba(77, 184, 255, 0.5);
-  }
-  .tn-cube.leaf:hover::before {
-    box-shadow: none;
   }
 
   /* ─── Nombre ─── */
@@ -247,13 +232,13 @@
      Cuando la ventana no tiene foco, atenuar el cubo y su glow
      para que case con el resto del chrome inactivo (ink-cube, LEDs).
   */
-  :global(.window.inactive) .tn-cube::before {
+  :global(.window.inactive) .tn-square {
     opacity: 0.55;
   }
-  :global(.window.inactive) .tn-cube.open::before {
+  :global(.window.inactive) .tn-cube.open .tn-square {
     box-shadow: 0 0 2px rgba(255, 156, 90, 0.2);
   }
-  :global(.window.inactive) .tree-item.remote .tn-cube.open::before {
+  :global(.window.inactive) .tree-item.remote .tn-cube.open .tn-square {
     box-shadow: 0 0 2px rgba(77, 184, 255, 0.2);
   }
 </style>
