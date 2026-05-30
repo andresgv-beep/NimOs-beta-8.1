@@ -895,9 +895,9 @@
         </div>
         {#if wallUploadMsg}<div class="form-msg" class:error={wallUploadErr} style="margin-bottom: 12px">{wallUploadMsg}</div>{/if}
         <div class="wall-grid">
-          <!-- Default · sin wallpaper (usa --wallpaper blueprint del CSS) -->
+          <!-- Default · sin wallpaper (usa --wallpaper NimOS del CSS) -->
           <div class="wall-item" class:active={!currentWallpaper} on:click={() => selectWallpaper('')} on:keydown={(e) => e.key === 'Enter' && selectWallpaper('')} role="button" tabindex="0">
-            <div class="wall-none">Blueprint NimOS</div>
+            <div class="wall-none">NimOS</div>
             {#if !currentWallpaper}<div class="wall-check">✓</div>{/if}
           </div>
 
