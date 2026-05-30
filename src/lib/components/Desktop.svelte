@@ -97,8 +97,6 @@
     position: fixed;
     inset: 0;
     background: var(--wallpaper);
-    background-size: cover;
-    background-position: center;
     background-attachment: fixed;
     overflow: hidden;
   }

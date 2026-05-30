@@ -142,8 +142,6 @@
     width: 100%;
     height: 100vh;
     background: var(--wallpaper);
-    background-size: cover;
-    background-position: center;
     display: flex;
     align-items: center;
     justify-content: center;
