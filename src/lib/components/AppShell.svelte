@@ -72,13 +72,16 @@
   import KeyBind from '$lib/ui/KeyBind.svelte';
   import Badge from '$lib/ui/Badge.svelte';
 
-  export let appId = '';
+  /** appId · prop legacy (la titlebar que la usaba se eliminó en 8.2).
+      Se mantiene aceptada para no romper las llamadas existentes. */
+  export const appId = '';
   export let title = '';
   export let headerIcon = '◆';
   export let sections = [];
   export let active = '';
-  /** pathSegments: segmentos del path tras el host, ej ['health','task-manager'] */
-  export let pathSegments = [];
+  /** pathSegments · prop legacy del path nimos:// (titlebar eliminada en 8.2).
+      Se mantiene aceptada para no romper llamadas existentes. */
+  export const pathSegments = [];
   /** Footer interno que muestra daemon status + versión */
   export let showDaemonStatus = true;
 
@@ -90,7 +93,6 @@
 
   const wc = getContext('windowControls');
 
-  $: hostname = typeof window !== 'undefined' ? (window.location.hostname || 'nimos') : 'nimos';
   $: userName = $user?.username || 'user';
 
   function handleItem(itemId) {
@@ -494,6 +496,22 @@
     gap: 10px;
     min-height: 44px;
     border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.04));
+  }
+  /* ───────────────────────────────────────────────────────────
+     El page-header vive bajo la .drag-zone de WindowFrame (z-index 5),
+     que captura el mousedown para arrastrar la ventana. Para que los
+     controles del header (flecha atrás, breadcrumb, botones) reciban
+     clicks, los "perforamos" por encima de la drag-zone: position
+     relative + z-index 6. El fondo vacío del header sigue debajo, así
+     que arrastrar desde ahí sigue funcionando.
+     ─────────────────────────────────────────────────────────── */
+  .page-header :global(button),
+  .page-header :global(a),
+  .page-header :global([role="button"]),
+  .page-header :global(input),
+  .page-header :global(select) {
+    position: relative;
+    z-index: 6;
   }
   .page-header :global(b),
   .page-header :global(strong) {
