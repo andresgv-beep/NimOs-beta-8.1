@@ -75,18 +75,25 @@
     } catch { children = []; }
   }
 
-  async function toggle(e) {
+  function handleClick() { onNavigate(share, path); }
+
+  /* El cubo es ahora el control de expand/colapso (ya no hay chevron).
+     Click en el cubo → alterna expand sin navegar. Click en el resto
+     de la fila → navega. */
+  async function onCubeClick(e) {
     e.stopPropagation();
     expanded = !expanded;
     if (expanded && children === null) await loadChildren();
   }
 
-  function handleClick() { onNavigate(share, path); }
-
   $: isActive = activeShare === share && activePath === path;
-  /* v3.2: cubo rota cuando este nodo está siendo navegado
-     (es el activo o uno ancestro del activo). */
+  /* v3.2: cubo rota cuando este nodo está abierto o en el trail de
+     navegación. Rombo = expandido / estás dentro. Cuadrado = cerrado. */
   $: inTrail = isActive || shouldBeOpen;
+  $: isOpenLike = expanded || inTrail;
+  /* ¿Tiene hijos? Hasta que se cargan asumimos que sí (cursor pointer).
+     Si ya se cargaron y está vacío, el cubo no actúa como toggle. */
+  $: hasChildren = children === null || children.length > 0;
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -103,22 +110,18 @@
   role="button"
   tabindex="0"
 >
+  <!-- Cubo · firma NimOS · ES el control de expand/colapso (ya no hay
+       flecha). Rota a 45° cuando está abierto o en el trail de navegación.
+       Color refleja origen: naranja local / azul remote. -->
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    class="tn-chevron"
-    class:open={expanded}
-    class:invisible={children !== null && children.length === 0}
-    on:click={toggle}
-  >
-    <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <polyline points="4.5 2 8.5 6 4.5 10"/>
-    </svg>
-  </div>
-
-  <!-- Cubo · firma NimOS · rota a 45° cuando inTrail
-       Color refleja origen: naranja local / azul remote -->
-  <span class="tn-cube" aria-hidden="true"></span>
+  <span
+    class="tn-cube"
+    class:open={isOpenLike}
+    class:leaf={children !== null && children.length === 0}
+    on:click={onCubeClick}
+    aria-hidden="true"
+  ></span>
 
   <span class="tn-name">{name}</span>
 </div>
@@ -165,47 +168,37 @@
     color: var(--side-active-fg, #7a9eb1);
   }
 
-  /* ─── Chevron ─── */
-  .tn-chevron {
-    width: 12px;
-    height: 12px;
-    flex-shrink: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--ink-trace, #44444a);
-    border-radius: 2px;
-    transition: transform 0.15s ease, color 0.12s;
-  }
-  .tn-chevron:hover {
-    color: var(--ink, #f2f2f5);
-  }
-  .tn-chevron.open {
-    transform: rotate(90deg);
-  }
-  .tn-chevron.invisible {
-    visibility: hidden;
-    pointer-events: none;
-  }
-  .tn-chevron svg {
-    width: 12px;
-    height: 12px;
-    pointer-events: none;
-  }
-
-  /* ─── Cubo · firma NimOS para "carpeta navegable" ───
-     Cuadrado 10×10 con esquinas redondeadas (border-radius 2px)
-     siguiendo el patrón de los .nav-item-ico / .r-vol-dot del
-     mockup NimOS. Color del cubo refleja origen por sí mismo:
+  /* ─── Cubo · firma NimOS · ES el toggle de expand/colapso ───
+     Cuadrado 10×10 con esquinas redondeadas (border-radius 2px).
+     Color refleja origen por sí mismo:
        · Local  → --nim-folder (naranja)
        · Remote → --nim-remote (azul)
-     Cuadrado quieto = carpeta cerrada / no estás aquí.
-     Rotado 45° con glow = estás navegando este subárbol.
+     Cuadrado quieto = carpeta cerrada.
+     Rotado 45° con glow = carpeta abierta / estás dentro.
+
+     El contenedor .tn-cube es transparente y aporta el área de hit
+     holgada (padding). El cuadrado visible (con su border-radius) es
+     el pseudo-elemento ::before — así el redondeo se ve de verdad,
+     cosa que background-clip:content-box rompía.
   */
   .tn-cube {
+    position: relative;
     width: 10px;
     height: 10px;
     flex-shrink: 0;
+    cursor: pointer;
+    /* hit-area sin desplazar el layout */
+    padding: 4px;
+    margin: -4px;
+    background: transparent;
+  }
+  .tn-cube::before {
+    content: '';
+    position: absolute;
+    top: 4px;
+    left: 4px;
+    width: 10px;
+    height: 10px;
     border-radius: 2px;
     background: var(--nim-folder, #ff9c5a);
     transition:
@@ -213,15 +206,32 @@
       box-shadow 0.2s ease,
       opacity 0.15s;
   }
-  .tree-item.remote .tn-cube {
+  .tree-item.remote .tn-cube::before {
     background: var(--nim-remote, #4db8ff);
   }
-  .tree-item.in-trail .tn-cube {
+  /* Abierto / en trail → rombo con glow */
+  .tn-cube.open::before {
     transform: rotate(45deg);
     box-shadow: 0 0 5px rgba(255, 156, 90, 0.45);
   }
-  .tree-item.remote.in-trail .tn-cube {
+  .tree-item.remote .tn-cube.open::before {
     box-shadow: 0 0 5px rgba(77, 184, 255, 0.45);
+  }
+  /* Carpeta sin hijos → cubo apagado, no actúa como toggle */
+  .tn-cube.leaf {
+    cursor: default;
+  }
+  .tn-cube.leaf::before {
+    opacity: 0.5;
+  }
+  .tn-cube:hover::before {
+    box-shadow: 0 0 6px rgba(255, 156, 90, 0.5);
+  }
+  .tree-item.remote .tn-cube:hover::before {
+    box-shadow: 0 0 6px rgba(77, 184, 255, 0.5);
+  }
+  .tn-cube.leaf:hover::before {
+    box-shadow: none;
   }
 
   /* ─── Nombre ─── */
@@ -237,13 +247,13 @@
      Cuando la ventana no tiene foco, atenuar el cubo y su glow
      para que case con el resto del chrome inactivo (ink-cube, LEDs).
   */
-  :global(.window.inactive) .tn-cube {
+  :global(.window.inactive) .tn-cube::before {
     opacity: 0.55;
   }
-  :global(.window.inactive) .tree-item.in-trail .tn-cube {
+  :global(.window.inactive) .tn-cube.open::before {
     box-shadow: 0 0 2px rgba(255, 156, 90, 0.2);
   }
-  :global(.window.inactive) .tree-item.remote.in-trail .tn-cube {
+  :global(.window.inactive) .tree-item.remote .tn-cube.open::before {
     box-shadow: 0 0 2px rgba(77, 184, 255, 0.2);
   }
 </style>
