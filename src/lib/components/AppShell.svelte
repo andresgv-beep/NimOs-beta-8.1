@@ -99,56 +99,11 @@
 </script>
 
 <div class="app-shell" style="--sidebar-width: {sidebarWidth};">
-  <!-- ═══════════ TITLEBAR · cubo + path + LEDs ═══════════ -->
-  <div class="titlebar">
-
-    <!-- Izquierda · cubo 45° + path -->
-    <div class="tb-left">
-      <span class="ink-cube" aria-hidden="true"></span>
-      <span class="tb-path">
-        <span class="scheme">nimos://</span><span class="host">{hostname}</span>
-        {#each pathSegments as seg, i}
-          <span class="sep">/</span>
-          {#if i === pathSegments.length - 1}
-            <span class="current">{seg}</span>
-          {:else}
-            <span class="seg">{seg}</span>
-          {/if}
-        {/each}
-      </span>
-    </div>
-
-    <!-- Derecha · acciones + LEDs C2 -->
-    <div class="tb-right">
-      <div class="tb-actions">
-        <slot name="titlebar-actions" />
-      </div>
-      {#if wc}
-        <div class="wc-bar">
-          <button
-            class="wc-led min"
-            on:click={wc.minimize}
-            title="Minimizar"
-            aria-label="Minimizar"
-          ></button>
-          <button
-            class="wc-led max"
-            on:click={wc.maximize}
-            title="Maximizar"
-            aria-label="Maximizar"
-          ></button>
-          <button
-            class="wc-led close"
-            on:click={wc.close}
-            title="Cerrar"
-            aria-label="Cerrar"
-          ></button>
-        </div>
-      {/if}
-    </div>
-  </div>
-
   <!-- ═══════════ APP BODY · sidebar + main ═══════════ -->
+  <!-- Beta 8.2: la titlebar con path nimos:// se elimina. Los controles
+       de ventana (min/max/close) pasan a flotar en la esquina superior
+       derecha del main, según mockup nimos-window-shell-v2. Las acciones
+       opcionales (slot titlebar-actions) flotan a su izquierda. -->
   <div class="app-body" class:no-sidebar={!showSidebar}>
 
     {#if showSidebar}
@@ -218,6 +173,37 @@
 
     <!-- Main -->
     <div class="main">
+      <!-- Controles flotantes · esquina superior derecha (mockup v2) -->
+      <div class="win-ctl-bar">
+        {#if $$slots['titlebar-actions']}
+          <div class="tb-actions">
+            <slot name="titlebar-actions" />
+          </div>
+        {/if}
+        {#if wc}
+          <div class="wc-bar">
+            <button
+              class="wc-ctl min"
+              on:click={wc.minimize}
+              title="Minimizar"
+              aria-label="Minimizar"
+            ></button>
+            <button
+              class="wc-ctl max"
+              on:click={wc.maximize}
+              title="Maximizar"
+              aria-label="Maximizar"
+            ></button>
+            <button
+              class="wc-ctl close"
+              on:click={wc.close}
+              title="Cerrar"
+              aria-label="Cerrar"
+            ></button>
+          </div>
+        {/if}
+      </div>
+
       {#if $$slots['page-header']}
         <div class="page-header">
           <slot name="page-header" />
@@ -257,144 +243,57 @@
   }
 
   /* ═══════════════════════════════════════════════════════════
-     TITLEBAR · estética NimOS Beta 8.1
+     CONTROLES DE VENTANA FLOTANTES · estética mockup v2
+     ───────────────────────────────────────────────────────────
+     Beta 8.2: sin titlebar/path. Los controles flotan en la
+     esquina superior derecha del main. Cuadraditos planos con
+     esquinas suaves (border-radius 3px), sin glow agresivo.
+     Las acciones del slot titlebar-actions flotan a su izquierda.
      ═══════════════════════════════════════════════════════════ */
-  .titlebar {
-    height: var(--titlebar-height, 36px);
-    background: var(--panel-elev, #1c1c1c);
-    border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+  .win-ctl-bar {
+    position: absolute;
+    top: 12px;
+    right: 14px;
+    z-index: 20;
     display: flex;
     align-items: center;
-    font-family: var(--font-mono, 'JetBrains Mono', monospace);
-    font-size: 11px;
-    user-select: none;
-    flex-shrink: 0;
-  }
-  .tb-left {
-    padding: 0 16px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex: 1;
-    min-width: 0;
-  }
-
-  /* ─── Cubo 45° blanco · firma NimOS micro ─── */
-  .ink-cube {
-    display: inline-block;
-    width: 10px;
-    height: 10px;
-    background: #ffffff;
-    transform: rotate(45deg);
-    flex-shrink: 0;
-    filter:
-      drop-shadow(0 0 5px var(--accent-glow-soft, rgba(220, 255, 235, 0.6)))
-      drop-shadow(0 0 2px var(--accent-glow-hard, rgba(255, 255, 255, 0.7)));
-    transition: filter 0.2s, opacity 0.2s;
-  }
-
-  /* ─── Path · nimos://host/seg/seg/current ─── */
-  .tb-path {
-    color: var(--ink-dim, #c8c8cf);
-    font-family: var(--font-mono, monospace);
-    font-size: 11px;
-    letter-spacing: 0.3px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    font-feature-settings: "tnum";
-  }
-  .tb-path .scheme  { color: var(--ink-trace, #44444a); }
-  .tb-path .host    {
-    color: var(--ink, #f2f2f5);
-    font-weight: 700;
-    text-shadow: 0 0 6px var(--accent-glow-soft, rgba(220, 255, 235, 0.6));
-  }
-  .tb-path .sep     { color: var(--ink-trace, #44444a); margin: 0 1px; }
-  .tb-path .seg     { color: var(--ink-mute, #9a9aa3); }
-  .tb-path .current { color: var(--ink, #f2f2f5); font-weight: 500; }
-
-  /* ─── Acciones derecha · slot opcional ─── */
-  .tb-right {
-    display: flex;
-    align-items: center;
+    gap: 10px;
   }
   .tb-actions {
     display: flex;
+    align-items: center;
     gap: 6px;
-    padding: 0 10px;
   }
-
-  /* ═══════════════════════════════════════════════════════════
-     LEDs C2 · GLOW DRAMÁTICO · min/max/close (orden NimOS)
-     ═══════════════════════════════════════════════════════════ */
   .wc-bar {
     display: flex;
-    gap: 10px;
     align-items: center;
-    padding: 0 16px;
+    gap: 6px;
   }
-  .wc-led {
-    width: 10px;
-    height: 10px;
-    background: var(--led-color);
+  .wc-ctl {
+    width: 11px;
+    height: 11px;
+    border-radius: 3px;
+    background: var(--ctl-color, #2a2a30);
     border: none;
     cursor: pointer;
     padding: 0;
-    transition: filter 0.12s, transform 0.12s;
-    position: relative;
+    transition: filter 0.12s, transform 0.12s, opacity 0.12s;
   }
-  .wc-led.min {
-    --led-color: var(--warn, #fbbf24);
-    box-shadow:
-      0 0 8px var(--warn-glow, rgba(251, 191, 36, 0.5)),
-      0 0 16px rgba(251, 191, 36, 0.25);
-  }
-  .wc-led.max {
-    --led-color: var(--signal, #00ff9f);
-    box-shadow:
-      0 0 8px var(--signal-glow, rgba(0, 255, 159, 0.5)),
-      0 0 16px rgba(0, 255, 159, 0.25);
-  }
-  .wc-led.close {
-    --led-color: var(--crit, #f87171);
-    box-shadow:
-      0 0 8px var(--crit-glow, rgba(248, 113, 113, 0.5)),
-      0 0 16px rgba(248, 113, 113, 0.25);
-  }
-  .wc-led:hover {
-    filter: brightness(1.4);
-    transform: scale(1.1);
-  }
-  .wc-led:active {
-    transform: scale(0.92);
-  }
+  .wc-ctl.min   { --ctl-color: #ffc857; }
+  .wc-ctl.max   { --ctl-color: #00ff9f; }
+  .wc-ctl.close { --ctl-color: #ff5a5a; }
+  .wc-ctl:hover  { filter: brightness(1.25); }
+  .wc-ctl:active { transform: scale(0.9); }
 
   /* ═══════════════════════════════════════════════════════════
-     ESTADO INACTIVO · cubo y LEDs apagados desde el padre
+     ESTADO INACTIVO · controles atenuados desde el padre
      ───────────────────────────────────────────────────────────
-     WindowFrame aplica `.inactive` al .window padre.
-     Aquí cazamos esa clase con :global() para atenuar.
+     WindowFrame aplica `.inactive` al .window padre. Atenuamos
+     los controles a gris neutro para señalar foco perdido.
      ═══════════════════════════════════════════════════════════ */
-  :global(.window.inactive) .ink-cube {
-    filter: drop-shadow(0 0 2px rgba(220, 255, 235, 0.18));
-    opacity: 0.45;
-  }
-  :global(.window.inactive) .tb-path .host {
-    text-shadow: none;
-    color: var(--ink-dim, #c8c8cf);
-  }
-  :global(.window.inactive) .wc-led.min {
-    box-shadow: 0 0 2px rgba(251, 191, 36, 0.2);
-    opacity: 0.4;
-  }
-  :global(.window.inactive) .wc-led.max {
-    box-shadow: 0 0 2px rgba(0, 255, 159, 0.2);
-    opacity: 0.4;
-  }
-  :global(.window.inactive) .wc-led.close {
-    box-shadow: 0 0 2px rgba(248, 113, 113, 0.2);
-    opacity: 0.4;
+  :global(.window.inactive) .wc-ctl {
+    --ctl-color: var(--bd-3, #3a3a42) !important;
+    opacity: 0.6;
   }
 
   /* ═══════════════════════════════════════════════════════════
@@ -419,8 +318,8 @@
 
   /* ─── Sidebar ─── */
   .sidebar {
-    background: var(--side-bg, #1c1c1c);
-    border-right: 1px solid var(--side-border, rgba(255, 255, 255, 0.08));
+    background: var(--side-bg, #131316);
+    border-right: 1px solid var(--side-border, rgba(255, 255, 255, 0.04));
     display: flex;
     flex-direction: column;
     font-family: var(--font-sans);
@@ -428,29 +327,31 @@
     overflow: hidden;
   }
   .sb-header {
-    padding: 16px 16px 14px;
+    padding: 14px 12px 16px;
     display: flex;
     align-items: center;
     gap: 10px;
     flex-shrink: 0;
   }
   .sb-header-icon {
-    width: 26px;
-    height: 26px;
-    background: var(--signal-dim, rgba(0, 255, 159, 0.15));
-    color: var(--signal, #00ff9f);
+    width: 22px;
+    height: 22px;
+    border-radius: 5px;
+    background: var(--signal, #00ff9f);
+    color: var(--bg-window, #16161a);
     display: flex;
     align-items: center;
     justify-content: center;
-    font-weight: 600;
-    font-size: 13px;
+    font-weight: 700;
+    font-size: 11px;
+    flex-shrink: 0;
   }
   .sb-title {
     color: var(--ink, #f2f2f5);
     font-weight: 600;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.6px;
     text-transform: uppercase;
-    font-size: 11px;
+    font-size: 12px;
   }
 
   .sb-scroll {
@@ -460,29 +361,30 @@
   }
 
   .sb-section {
-    padding: 14px 6px 6px;
+    padding: 14px 8px 6px;
     font-size: 10px;
-    color: var(--ink-trace, #44444a);
+    color: var(--ink-trace, #5a5a62);
     text-transform: uppercase;
-    letter-spacing: 1.5px;
-    font-weight: 600;
+    letter-spacing: 0.8px;
+    font-weight: 500;
   }
 
   .sb-item {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px 10px;
+    gap: 9px;
+    padding: 7px 8px;
     margin: 1px 0;
-    color: var(--ink-dim, #c8c8cf);
+    border-radius: 6px;
+    color: var(--ink-dim, #9c9ca4);
     cursor: pointer;
     transition: background 0.12s, color 0.12s;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 400;
   }
   .sb-item:hover {
-    background: var(--side-hover, rgba(255, 255, 255, 0.04));
-    color: var(--ink, #f2f2f5);
+    background: var(--side-hover, rgba(255, 255, 255, 0.025));
+    color: var(--ink, #d0d0d4);
   }
   .sb-item.active {
     background: var(--side-active-bg, rgba(122, 158, 177, 0.10));
@@ -534,7 +436,7 @@
   /* Sidebar footer · daemon status */
   .sb-footer {
     padding: 12px 16px;
-    border-top: 1px solid var(--side-border, rgba(255, 255, 255, 0.08));
+    border-top: 1px solid var(--side-border, rgba(255, 255, 255, 0.04));
     display: flex;
     flex-direction: column;
     gap: 4px;
@@ -565,10 +467,11 @@
      MAIN · área de contenido
      ═══════════════════════════════════════════════════════════ */
   .main {
+    position: relative;
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    background: var(--main-bg, #161616);
+    background: var(--main-bg, #1a1a1f);
     min-width: 0;
   }
   .content {
@@ -577,9 +480,9 @@
     min-height: 0;
   }
 
-  /* Page header opcional · título y descripción debajo del titlebar */
+  /* Page header opcional · título y descripción (sin titlebar encima) */
   .page-header {
-    padding: 14px 22px;
+    padding: 14px 78px 14px 22px;
     background: transparent;
     font-family: var(--font-sans);
     font-size: 14px;
@@ -590,7 +493,7 @@
     align-items: center;
     gap: 10px;
     min-height: 44px;
-    border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+    border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.04));
   }
   .page-header :global(b),
   .page-header :global(strong) {

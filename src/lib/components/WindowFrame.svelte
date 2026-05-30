@@ -63,7 +63,7 @@
   }
 
   function onTitleMouseDown(e) {
-    if (e.target.closest('.wc-led')) return;
+    if (e.target.closest('.wc-ctl') || e.target.closest('.wc-bar')) return;
     // v3.1 fix: cubre cualquier hijo del slot titlebar-actions
     // (button, input, select, span clickable, etc.) — no solo <button>
     if (e.target.closest('.tb-actions')) return;
@@ -259,8 +259,8 @@
     position: absolute;
     top: 0;
     left: 0;
-    right: 140px; /* deja espacio para los LEDs a la derecha */
-    height: 36px;
+    right: 80px; /* deja libre la esquina de controles flotantes (top:12 right:14) */
+    height: 44px; /* cubre la franja del page-header para arrastrar */
     z-index: 5;
     cursor: default;
     pointer-events: auto;
