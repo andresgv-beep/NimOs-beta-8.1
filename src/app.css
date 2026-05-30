@@ -210,21 +210,18 @@ html, body {
      - Halo cálido 2.5% (sup-dcha) para contraste
      - Vignette muy sutil en bordes
      - Base negro casi puro */
+  /* ── Wallpaper · fondo de escritorio NimOS (estilo Setup Wizard) ──
+     - Radial verde muy sutil arriba (firma NimOS)
+     - Grid técnico blanco 40px tenue
+     - Base casi negra #0a0a0c */
   --wallpaper:
-    /* Cuadrícula menor 12px */
-    linear-gradient(rgba(0, 255, 159, 0.012) 1px, transparent 1px) 0 0 / 12px 12px,
-    linear-gradient(90deg, rgba(0, 255, 159, 0.012) 1px, transparent 1px) 0 0 / 12px 12px,
-    /* Cuadrícula mayor 60px */
-    linear-gradient(rgba(0, 255, 159, 0.03) 1px, transparent 1px) 0 0 / 60px 60px,
-    linear-gradient(90deg, rgba(0, 255, 159, 0.03) 1px, transparent 1px) 0 0 / 60px 60px,
-    /* Halos verdes ambient */
-    radial-gradient(ellipse 50% 45% at 20% 25%, rgba(0, 255, 159, 0.05) 0%, rgba(0, 255, 159, 0.015) 35%, transparent 60%),
-    radial-gradient(ellipse 40% 35% at 85% 15%, rgba(255, 245, 230, 0.025) 0%, transparent 55%),
-    radial-gradient(ellipse 70% 50% at 50% 110%, rgba(0, 255, 159, 0.04) 0%, transparent 55%),
-    /* Vignette sutil */
-    radial-gradient(ellipse 100% 100% at 50% 50%, transparent 50%, rgba(0, 0, 0, 0.4) 100%),
+    /* Grid técnico 40px (líneas blancas tenues) */
+    linear-gradient(rgba(255, 255, 255, 0.012) 1px, transparent 1px) 0 0 / 40px 40px,
+    linear-gradient(90deg, rgba(255, 255, 255, 0.012) 1px, transparent 1px) 0 0 / 40px 40px,
+    /* Halo verde superior */
+    radial-gradient(ellipse at top, rgba(0, 255, 159, 0.04) 0%, transparent 50%),
     /* Base */
-    #050505;
+    #0a0a0c;
 
   /* ── Scrollbar ───────────────────────────────────────────── */
   --scroll-thumb:        rgba(255, 255, 255, 0.12);
