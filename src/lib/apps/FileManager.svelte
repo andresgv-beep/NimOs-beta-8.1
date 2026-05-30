@@ -98,15 +98,20 @@
 
   $: if (currentShare !== undefined || currentPath) fetchFiles();
 
-  function navigate(share, path) { currentShare = share; currentPath = path; closeCtx(); }
+  function navigate(share, path) { currentShare = share; currentPath = path; closeCtx(); fetchFiles(); }
   function goBack() {
     if (currentPath !== '/') currentPath = currentPath.split('/').slice(0, -1).join('/') || '/';
     else if (currentShare) { currentShare = null; currentPath = '/'; }
     closeCtx();
+    fetchFiles();
   }
   async function openItem(file) {
     closeCtx();
-    if (file.isDirectory) { currentPath = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`; return; }
+    if (file.isDirectory) {
+      currentPath = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
+      fetchFiles();
+      return;
+    }
     const fp = filePath(file);
     // CRIT-008: download token corto en lugar de session token en URL
     try {
