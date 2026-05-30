@@ -866,6 +866,9 @@
     cursor: pointer;
     white-space: nowrap;
     transition: background 0.1s, color 0.1s;
+    /* perforar la drag-zone de WindowFrame (z-index 5) para recibir clicks */
+    position: relative;
+    z-index: 6;
   }
   .fm-crumb-part:hover {
     color: var(--ink, #f2f2f5);
