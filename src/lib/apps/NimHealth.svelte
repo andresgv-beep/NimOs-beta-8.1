@@ -166,11 +166,16 @@
     return b + ' B';
   }
 
+  /* Devuelve velocidad con su unidad correcta. Antes devolvía solo el
+     número y la unidad iba hardcodeada a "MB/s" en la etiqueta, lo que
+     mostraba valores en KB con etiqueta MB. Ahora la unidad acompaña al
+     valor siempre. b en bytes/s. */
   function fmtSpeed(b) {
-    if (!b) return '0';
-    if (b >= 1e6) return (b / 1e6).toFixed(1);
-    if (b >= 1e3) return (b / 1e3).toFixed(1);
-    return '0';
+    if (!b || b < 1) return '0 B/s';
+    if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB/s';
+    if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB/s';
+    if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB/s';
+    return b.toFixed(0) + ' B/s';
   }
 
   function fmtUptime(svc) {
@@ -317,7 +322,7 @@
       <KPICard
         label="Disco I/O"
         value={fmtSpeed(diskIO.read + diskIO.write)}
-        unit="MB/s · ↓{fmtSpeed(diskIO.read)} ↑{fmtSpeed(diskIO.write)}"
+        unit="↓{fmtSpeed(diskIO.read)} ↑{fmtSpeed(diskIO.write)}"
         state="active"
         stateVariant="ok"
         valueVariant="info"
@@ -329,7 +334,7 @@
       <KPICard
         label="Red"
         value={fmtSpeed(netIO.rx + netIO.tx)}
-        unit="MB/s · ↓{fmtSpeed(netIO.rx)} ↑{fmtSpeed(netIO.tx)}"
+        unit="↓{fmtSpeed(netIO.rx)} ↑{fmtSpeed(netIO.tx)}"
         state="online"
         stateVariant="ok"
         sparkData={netHistory}
@@ -385,8 +390,8 @@
             { label: 'Estado' },
             { label: 'CPU', align: 'right' },
             { label: 'Mem', align: 'right' },
-            { label: 'Uptime' },
-            { label: 'Acciones' },
+            { label: 'Uptime', align: 'right' },
+            { label: 'Acciones', align: 'right' },
           ]}
         >
           {#each filteredServices as svc, i}
@@ -643,6 +648,10 @@
     padding: 14px 18px 18px;
     font-family: var(--font-mono);
   }
+  /* Altura de fila uniforme · con o sin icono miden lo mismo */
+  .nh-table-wrap :global(.dt-body .tr-row) {
+    min-height: 38px;
+  }
 
   .tr-ln {
     color: var(--fg-faint);
@@ -657,13 +666,31 @@
     gap: 10px;
     min-width: 0;
   }
-  .svc-icon {
+  /* Caja fija para el icono · con o sin imagen la fila mide igual.
+     El AppIcon interno se restringe a 20×20 y se centra; así una
+     imagen más alta no estira la fila. */
+  .svc-icon-wrap {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  .svc-icon-wrap :global(img),
+  .svc-icon-wrap :global(svg) {
     width: 20px;
     height: 20px;
     object-fit: contain;
-    flex-shrink: 0;
+    display: block;
   }
-  .svc-icon.lg {
+  .svc-icon-wrap.lg {
+    width: 40px;
+    height: 40px;
+  }
+  .svc-icon-wrap.lg :global(img),
+  .svc-icon-wrap.lg :global(svg) {
     width: 40px;
     height: 40px;
   }
