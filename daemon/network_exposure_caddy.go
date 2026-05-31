@@ -1,25 +1,21 @@
-// network_exposure_caddy.go — Generador de config Caddy + cliente API admin.
+// network_exposure_caddy.go — Generador de rutas Caddy + cliente API admin.
 //
-// Traduce las apps expuestas (network_exposed_apps) + la config global
-// (network_exposure_config) al formato JSON que entiende la API admin de
-// Caddy, y la envía vía POST /load a http://127.0.0.1:2019.
+// MODELO 1 (panel independiente): Caddy es servido por un config BASE que
+// instala install.sh. Ese base define el server "nimos" con:
+//   · La ruta del panel de NimOS (dominio raíz → :5000) + protecciones.
+//   · La API admin en :2019.
+//   · Un grupo de rutas reservado @id "nimos_apps" (subroute) cuyo array
+//     interno de rutas es lo que ESTE módulo gestiona.
 //
-// Reparto de responsabilidades (el modelo de todo el subsistema):
-//   · NimOS DECLARA   → tablas en DB (source of truth)
-//   · NimOS GENERA    → este archivo: DB → JSON Caddy (derivado, efímero)
-//   · Caddy EJECUTA   → TLS (ACME automático) + reverse proxy
-//   · NimOS OBSERVA   → network_exposure_observer lee /pki/certificates
+// El panel NO depende de este módulo: aunque el daemon falle, Caddy sigue
+// sirviendo el panel desde su config persistida. Esto es deliberado — el
+// panel es infraestructura crítica y no debe depender del subsistema de
+// exposición para ser accesible (no metas la llave de casa dentro de casa).
 //
-// El JSON generado NO se persiste: si Caddy reinicia y pierde la config,
-// el reconciler la regenera desde la DB. La DB siempre manda.
-//
-// Enrutado agnóstico (Opción C):
-//   · subdomain != "" → match por host (<subdomain>.<base_domain>)
-//   · path     != "" → match por path  (<base_domain> + path)
-//
-// Caddy solicita y renueva el cert ACME automáticamente para cada host que
-// aparece en un match "host". Por eso NimOS no gestiona certs: basta con
-// declarar el host y Caddy hace el resto.
+// Este módulo gestiona ÚNICAMENTE las rutas de las apps expuestas, de forma
+// quirúrgica sobre la API admin de Caddy con un PUT al path del array de
+// rutas del grupo "nimos_apps". NUNCA usa POST /load (que reemplazaría toda
+// la config y borraría el panel).
 
 package main
 
@@ -38,23 +34,7 @@ import (
 // Tipos del config Caddy (subset que usamos)
 // ─────────────────────────────────────────────────────────────────────────────
 
-type caddyConfig struct {
-	Apps caddyApps `json:"apps"`
-}
-
-type caddyApps struct {
-	HTTP caddyHTTP `json:"http"`
-}
-
-type caddyHTTP struct {
-	Servers map[string]caddyServer `json:"servers"`
-}
-
-type caddyServer struct {
-	Listen []string     `json:"listen"`
-	Routes []caddyRoute `json:"routes"`
-}
-
+// caddyRoute es una ruta del server: un match + handlers.
 type caddyRoute struct {
 	Match  []caddyMatch  `json:"match,omitempty"`
 	Handle []caddyHandle `json:"handle"`
@@ -75,60 +55,44 @@ type caddyUpstream struct {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Generador
+// Generador de rutas de apps
 // ─────────────────────────────────────────────────────────────────────────────
 
-// buildCaddyConfig construye la config Caddy a partir de las apps
-// habilitadas y la config global. Si no hay apps o falta base_domain,
-// devuelve un server vacío (listen :443 sin rutas) — Caddy queda activo
-// pero sin exponer nada.
+// buildAppRoutes construye SOLO las rutas de las apps expuestas (no el panel,
+// no la config global). Es lo que NimOS sincroniza con Caddy.
 //
-// El nombre del server es fijo ("nimos") para que cada POST /load
-// reemplace limpiamente la config anterior.
-func buildCaddyConfig(cfg NetworkExposureConfig, apps []*NetworkExposedApp) caddyConfig {
+// Si no hay dominio base o no hay apps habilitadas, devuelve un array vacío
+// — Caddy se queda solo con el panel (definido en el base), sin exponer apps.
+func buildAppRoutes(cfg NetworkExposureConfig, apps []*NetworkExposedApp) []caddyRoute {
 	routes := make([]caddyRoute, 0, len(apps))
-
-	if cfg.BaseDomain != "" {
-		for _, a := range apps {
-			if !a.Enabled {
-				continue
-			}
-			match := caddyMatch{}
-			if a.Subdomain != "" {
-				match.Host = []string{a.Subdomain + "." + cfg.BaseDomain}
-			}
-			if a.Path != "" {
-				// Caddy hace match por prefijo con el patrón "/p*".
-				match.Path = []string{normalizeCaddyPath(a.Path)}
-				if len(match.Host) == 0 {
-					match.Host = []string{cfg.BaseDomain}
-				}
-			}
-			route := caddyRoute{
-				Match: []caddyMatch{match},
-				Handle: []caddyHandle{{
-					Handler: "reverse_proxy",
-					Upstreams: []caddyUpstream{{
-						Dial: fmt.Sprintf("%s:%d", a.UpstreamHost, a.UpstreamPort),
-					}},
-				}},
-			}
-			routes = append(routes, route)
+	if cfg.BaseDomain == "" {
+		return routes
+	}
+	for _, a := range apps {
+		if !a.Enabled {
+			continue
 		}
+		match := caddyMatch{}
+		if a.Subdomain != "" {
+			match.Host = []string{a.Subdomain + "." + cfg.BaseDomain}
+		}
+		if a.Path != "" {
+			match.Path = []string{normalizeCaddyPath(a.Path)}
+			if len(match.Host) == 0 {
+				match.Host = []string{cfg.BaseDomain}
+			}
+		}
+		routes = append(routes, caddyRoute{
+			Match: []caddyMatch{match},
+			Handle: []caddyHandle{{
+				Handler: "reverse_proxy",
+				Upstreams: []caddyUpstream{{
+					Dial: fmt.Sprintf("%s:%d", a.UpstreamHost, a.UpstreamPort),
+				}},
+			}},
+		})
 	}
-
-	return caddyConfig{
-		Apps: caddyApps{
-			HTTP: caddyHTTP{
-				Servers: map[string]caddyServer{
-					"nimos": {
-						Listen: []string{":443"},
-						Routes: routes,
-					},
-				},
-			},
-		},
-	}
+	return routes
 }
 
 // normalizeCaddyPath asegura que el path empiece por "/" y termine en "*"
@@ -147,15 +111,22 @@ func normalizeCaddyPath(p string) string {
 // Cliente API admin
 // ─────────────────────────────────────────────────────────────────────────────
 
-// CaddyAdminClient habla con la API admin de Caddy para cargar config sin
-// downtime. El httpClient es inyectable para tests (servidor mock).
+// caddyAppsRoutesPath apunta al array de rutas internas del subroute con
+// @id "nimos_apps" del server base. Caddy expone los objetos con @id bajo
+// el endpoint /id/<nombre>, que entra directo al scope de ese objeto sin
+// el prefijo /config/.../@id. Desde el objeto subroute, navegamos a su
+// handle[0].routes. Reemplazar este array NO toca el panel ni el resto.
+// El base lo instala install.sh.
+const caddyAppsRoutesPath = "/id/nimos_apps/handle/0/routes"
+
+// CaddyAdminClient habla con la API admin de Caddy. httpClient inyectable
+// para tests.
 type CaddyAdminClient struct {
 	adminURL   string
 	httpClient *http.Client
 }
 
-// NewCaddyAdminClient crea un cliente. adminURL sin barra final
-// (ej. "http://127.0.0.1:2019"). Si httpClient es nil, usa uno con timeout.
+// NewCaddyAdminClient crea un cliente. adminURL sin barra final.
 func NewCaddyAdminClient(adminURL string, httpClient *http.Client) *CaddyAdminClient {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 10 * time.Second}
@@ -166,29 +137,34 @@ func NewCaddyAdminClient(adminURL string, httpClient *http.Client) *CaddyAdminCl
 	}
 }
 
-// Load envía la config completa a Caddy vía POST /load. Caddy la aplica
-// atómicamente: si es inválida, mantiene la anterior y devuelve error.
-func (c *CaddyAdminClient) Load(ctx context.Context, cfg caddyConfig) error {
-	body, err := json.Marshal(cfg)
+// SyncAppRoutes reemplaza SOLO el array de rutas de apps (grupo @id
+// "nimos_apps"), sin tocar el panel ni la config global. Usa PUT sobre el
+// path concreto del array.
+func (c *CaddyAdminClient) SyncAppRoutes(ctx context.Context, routes []caddyRoute) error {
+	body, err := json.Marshal(routes)
 	if err != nil {
-		return fmt.Errorf("caddy load: marshal: %w", err)
+		return fmt.Errorf("caddy sync: marshal routes: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.adminURL+"/load", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut,
+		c.adminURL+caddyAppsRoutesPath, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("caddy load: build request: %w", err)
+		return fmt.Errorf("caddy sync: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("caddy load: request failed (is Caddy running?): %w", err)
+		return fmt.Errorf("caddy sync: request failed (is Caddy running?): %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("caddy load: status %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
+		trimmed := strings.TrimSpace(string(msg))
+		if resp.StatusCode == http.StatusBadRequest && strings.Contains(trimmed, "unknown object") {
+			return fmt.Errorf("caddy sync: base config missing 'nimos_apps' route group (reinstall Caddy base config): %s", trimmed)
+		}
+		return fmt.Errorf("caddy sync: status %d: %s", resp.StatusCode, trimmed)
 	}
 	return nil
 }

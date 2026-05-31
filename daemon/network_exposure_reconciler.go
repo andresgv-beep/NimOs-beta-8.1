@@ -47,13 +47,13 @@ type NetworkExposureReconciler struct {
 
 	// caddyClientFor crea un cliente para la URL admin dada. Inyectable
 	// para tests (mock). En producción usa NewCaddyAdminClient real.
-	caddyClientFor func(adminURL string) caddyLoader
+	caddyClientFor func(adminURL string) caddySyncer
 }
 
-// caddyLoader es el subconjunto del cliente Caddy que el reconciler usa.
+// caddySyncer es el subconjunto del cliente Caddy que el reconciler usa.
 // Interfaz para poder mockear en tests.
-type caddyLoader interface {
-	Load(ctx context.Context, cfg caddyConfig) error
+type caddySyncer interface {
+	SyncAppRoutes(ctx context.Context, routes []caddyRoute) error
 }
 
 // NewNetworkExposureReconciler construye el reconciler. clock nil → RealClock.
@@ -71,7 +71,7 @@ func NewNetworkExposureReconciler(repo *NetworkRepo, emitter *EventEmitter, cloc
 		config:  config,
 	}
 	// Factory por defecto: cliente Caddy real.
-	r.caddyClientFor = func(adminURL string) caddyLoader {
+	r.caddyClientFor = func(adminURL string) caddySyncer {
 		return NewCaddyAdminClient(adminURL, nil)
 	}
 	return r
@@ -106,15 +106,16 @@ func (r *NetworkExposureReconciler) Reconcile(ctx context.Context) error {
 		}
 	}
 
-	// Generar y enviar config a Caddy.
-	caddyCfg := buildCaddyConfig(cfg, caddyApps)
+	// Generar SOLO las rutas de apps y sincronizarlas con Caddy. El panel
+	// vive en el config base de Caddy y NO se toca aquí.
+	routes := buildAppRoutes(cfg, caddyApps)
 	client := r.caddyClientFor(cfg.CaddyAdminURL)
-	if err := client.Load(ctx, caddyCfg); err != nil {
+	if err := client.SyncAppRoutes(ctx, routes); err != nil {
 		// Caddy caído o config rechazada: degradación, no fatal. Emitimos
 		// evento y NO marcamos applied (quedan pending para reintentar).
-		r.emit(ctx, nil, "caddy_load_failed", EventLevelError,
-			fmt.Sprintf("Failed to load Caddy config: %v", err))
-		return fmt.Errorf("exposure reconcile: caddy load: %w", err)
+		r.emit(ctx, nil, "caddy_sync_failed", EventLevelError,
+			fmt.Sprintf("Failed to sync Caddy routes: %v", err))
+		return fmt.Errorf("exposure reconcile: caddy sync: %w", err)
 	}
 
 	// Caddy aceptó la config. Marcar applied en cada app pendiente.

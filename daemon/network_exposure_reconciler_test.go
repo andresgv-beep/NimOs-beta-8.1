@@ -16,25 +16,25 @@ import (
 	"testing"
 )
 
-// mockCaddyLoader captura la última config recibida y puede simular fallo.
-type mockCaddyLoader struct {
-	lastCfg  caddyConfig
-	calls    int
-	failWith error
+// mockCaddySyncer captura las últimas rutas recibidas y puede simular fallo.
+type mockCaddySyncer struct {
+	lastRoutes []caddyRoute
+	calls      int
+	failWith   error
 }
 
-func (m *mockCaddyLoader) Load(ctx context.Context, cfg caddyConfig) error {
+func (m *mockCaddySyncer) SyncAppRoutes(ctx context.Context, routes []caddyRoute) error {
 	m.calls++
-	m.lastCfg = cfg
+	m.lastRoutes = routes
 	return m.failWith
 }
 
-func newTestExposureReconciler(t *testing.T) (*NetworkExposureReconciler, *mockCaddyLoader, *NetworkRepo, *sqlConn, func()) {
+func newTestExposureReconciler(t *testing.T) (*NetworkExposureReconciler, *mockCaddySyncer, *NetworkRepo, *sqlConn, func()) {
 	t.Helper()
 	repo, clock, c, cleanup := newTestRepo(t)
-	mock := &mockCaddyLoader{}
+	mock := &mockCaddySyncer{}
 	rec := NewNetworkExposureReconciler(repo, nil, clock, DefaultNetworkExposureReconcilerConfig())
-	rec.caddyClientFor = func(adminURL string) caddyLoader { return mock }
+	rec.caddyClientFor = func(adminURL string) caddySyncer { return mock }
 	return rec, mock, repo, c, cleanup
 }
 
@@ -61,7 +61,7 @@ func TestExposureReconcile_GlobalOffLoadsEmpty(t *testing.T) {
 		t.Errorf("Load calls = %d, want 1", mock.calls)
 	}
 	// Config vacía: server existe pero sin rutas.
-	routes := mock.lastCfg.Apps.HTTP.Servers["nimos"].Routes
+	routes := mock.lastRoutes
 	if len(routes) != 0 {
 		t.Errorf("routes = %d, want 0 (global off)", len(routes))
 	}
@@ -90,7 +90,7 @@ func TestExposureReconcile_GlobalOnExposesEnabled(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	routes := mock.lastCfg.Apps.HTTP.Servers["nimos"].Routes
+	routes := mock.lastRoutes
 	if len(routes) != 1 {
 		t.Fatalf("routes = %d, want 1", len(routes))
 	}
@@ -121,7 +121,7 @@ func TestExposureReconcile_DisabledAppNotExposed(t *testing.T) {
 	if err := rec.Reconcile(context.Background()); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	routes := mock.lastCfg.Apps.HTTP.Servers["nimos"].Routes
+	routes := mock.lastRoutes
 	if len(routes) != 0 {
 		t.Errorf("routes = %d, want 0 (app disabled)", len(routes))
 	}

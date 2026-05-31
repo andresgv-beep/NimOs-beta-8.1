@@ -1,14 +1,15 @@
-// network_exposure_caddy_test.go — Tests del generador Caddy + cliente admin.
+// network_exposure_caddy_test.go — Tests del generador de rutas + cliente admin.
 //
 // Cubre:
-//   - buildCaddyConfig: subdomain → match host.
-//   - buildCaddyConfig: path → match path (+ host base).
-//   - buildCaddyConfig: app disabled se omite.
-//   - buildCaddyConfig: sin base_domain → server vacío (sin rutas).
+//   - buildAppRoutes: subdomain → match host.
+//   - buildAppRoutes: path → match path (+ host base).
+//   - buildAppRoutes: app disabled se omite.
+//   - buildAppRoutes: sin base_domain → array vacío.
 //   - normalizeCaddyPath: añade / y *.
-//   - Load: POST correcto al mock, 200 OK.
-//   - Load: status != 200 → error con cuerpo.
-//   - Load: servidor caído → error claro.
+//   - SyncAppRoutes: PUT correcto al path del grupo nimos_apps, 200 OK.
+//   - SyncAppRoutes: status != 200 → error con cuerpo.
+//   - SyncAppRoutes: "unknown object" → error pista de base mal instalado.
+//   - SyncAppRoutes: servidor caído → error claro.
 //   - FetchCertificates: devuelve el cuerpo crudo.
 
 package main
@@ -23,14 +24,12 @@ import (
 	"testing"
 )
 
-func TestBuildCaddyConfig_SubdomainMatchHost(t *testing.T) {
+func TestBuildAppRoutes_SubdomainMatchHost(t *testing.T) {
 	cfg := NetworkExposureConfig{BaseDomain: "nimosbarraca1.duckdns.org", Enabled: true}
 	apps := []*NetworkExposedApp{
 		{AppID: "immich", Subdomain: "immich", UpstreamHost: "127.0.0.1", UpstreamPort: 2283, Enabled: true},
 	}
-	cc := buildCaddyConfig(cfg, apps)
-
-	routes := cc.Apps.HTTP.Servers["nimos"].Routes
+	routes := buildAppRoutes(cfg, apps)
 	if len(routes) != 1 {
 		t.Fatalf("routes = %d, want 1", len(routes))
 	}
@@ -44,31 +43,28 @@ func TestBuildCaddyConfig_SubdomainMatchHost(t *testing.T) {
 	}
 }
 
-func TestBuildCaddyConfig_PathMatch(t *testing.T) {
+func TestBuildAppRoutes_PathMatch(t *testing.T) {
 	cfg := NetworkExposureConfig{BaseDomain: "nimosbarraca1.duckdns.org", Enabled: true}
 	apps := []*NetworkExposedApp{
 		{AppID: "gitea", Path: "/gitea", UpstreamHost: "127.0.0.1", UpstreamPort: 3000, Enabled: true},
 	}
-	cc := buildCaddyConfig(cfg, apps)
-	route := cc.Apps.HTTP.Servers["nimos"].Routes[0]
-
+	routes := buildAppRoutes(cfg, apps)
+	route := routes[0]
 	if len(route.Match[0].Path) != 1 || route.Match[0].Path[0] != "/gitea*" {
 		t.Errorf("path = %v, want [/gitea*]", route.Match[0].Path)
 	}
-	// path-only debe llevar el host base para no capturar otros dominios.
 	if len(route.Match[0].Host) != 1 || route.Match[0].Host[0] != "nimosbarraca1.duckdns.org" {
 		t.Errorf("path route host = %v, want base domain", route.Match[0].Host)
 	}
 }
 
-func TestBuildCaddyConfig_DisabledAppOmitted(t *testing.T) {
+func TestBuildAppRoutes_DisabledAppOmitted(t *testing.T) {
 	cfg := NetworkExposureConfig{BaseDomain: "x.duckdns.org", Enabled: true}
 	apps := []*NetworkExposedApp{
 		{AppID: "on", Subdomain: "on", UpstreamHost: "127.0.0.1", UpstreamPort: 1, Enabled: true},
 		{AppID: "off", Subdomain: "off", UpstreamHost: "127.0.0.1", UpstreamPort: 2, Enabled: false},
 	}
-	cc := buildCaddyConfig(cfg, apps)
-	routes := cc.Apps.HTTP.Servers["nimos"].Routes
+	routes := buildAppRoutes(cfg, apps)
 	if len(routes) != 1 {
 		t.Fatalf("routes = %d, want 1 (disabled omitted)", len(routes))
 	}
@@ -77,30 +73,23 @@ func TestBuildCaddyConfig_DisabledAppOmitted(t *testing.T) {
 	}
 }
 
-func TestBuildCaddyConfig_NoBaseDomainEmptyServer(t *testing.T) {
+func TestBuildAppRoutes_NoBaseDomainEmpty(t *testing.T) {
 	cfg := NetworkExposureConfig{BaseDomain: "", Enabled: false}
 	apps := []*NetworkExposedApp{
 		{AppID: "immich", Subdomain: "immich", UpstreamHost: "127.0.0.1", UpstreamPort: 2283, Enabled: true},
 	}
-	cc := buildCaddyConfig(cfg, apps)
-	server, ok := cc.Apps.HTTP.Servers["nimos"]
-	if !ok {
-		t.Fatal("nimos server should exist even without domain")
-	}
-	if len(server.Routes) != 0 {
-		t.Errorf("routes = %d, want 0 (no base domain)", len(server.Routes))
-	}
-	if len(server.Listen) != 1 || server.Listen[0] != ":443" {
-		t.Errorf("listen = %v, want [:443]", server.Listen)
+	routes := buildAppRoutes(cfg, apps)
+	if len(routes) != 0 {
+		t.Errorf("routes = %d, want 0 (no base domain)", len(routes))
 	}
 }
 
 func TestNormalizeCaddyPath(t *testing.T) {
 	cases := map[string]string{
-		"/gitea":  "/gitea*",
-		"gitea":   "/gitea*",
-		"/x*":     "/x*",
-		"/a/b":    "/a/b*",
+		"/gitea": "/gitea*",
+		"gitea":  "/gitea*",
+		"/x*":    "/x*",
+		"/a/b":   "/a/b*",
 	}
 	for in, want := range cases {
 		if got := normalizeCaddyPath(in); got != want {
@@ -109,59 +98,90 @@ func TestNormalizeCaddyPath(t *testing.T) {
 	}
 }
 
-func TestCaddyClient_LoadSuccess(t *testing.T) {
+func TestCaddyClient_SyncSuccess(t *testing.T) {
 	var receivedBody []byte
-	var receivedPath string
+	var receivedPath, receivedMethod string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedPath = r.URL.Path
+		receivedMethod = r.Method
 		receivedBody, _ = io.ReadAll(r.Body)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
 	client := NewCaddyAdminClient(srv.URL, srv.Client())
-	cfg := buildCaddyConfig(
+	routes := buildAppRoutes(
 		NetworkExposureConfig{BaseDomain: "x.org", Enabled: true},
 		[]*NetworkExposedApp{{AppID: "a", Subdomain: "a", UpstreamHost: "127.0.0.1", UpstreamPort: 80, Enabled: true}},
 	)
-	if err := client.Load(context.Background(), cfg); err != nil {
-		t.Fatalf("Load: %v", err)
+	if err := client.SyncAppRoutes(context.Background(), routes); err != nil {
+		t.Fatalf("SyncAppRoutes: %v", err)
 	}
-	if receivedPath != "/load" {
-		t.Errorf("path = %q, want /load", receivedPath)
+	if receivedMethod != http.MethodPut {
+		t.Errorf("method = %q, want PUT", receivedMethod)
 	}
-	// Verificar que el body es JSON Caddy válido.
-	var parsed caddyConfig
+	if !strings.Contains(receivedPath, "nimos_apps") {
+		t.Errorf("path = %q, want to contain nimos_apps", receivedPath)
+	}
+	// El body debe ser un array de rutas válido.
+	var parsed []caddyRoute
 	if err := json.Unmarshal(receivedBody, &parsed); err != nil {
-		t.Errorf("body not valid caddy config: %v", err)
+		t.Errorf("body not valid routes array: %v", err)
 	}
-	if len(parsed.Apps.HTTP.Servers["nimos"].Routes) != 1 {
-		t.Error("route lost in serialization")
+	if len(parsed) != 1 {
+		t.Errorf("route count in body = %d, want 1", len(parsed))
 	}
 }
 
-func TestCaddyClient_LoadErrorStatus(t *testing.T) {
+func TestCaddyClient_SyncEmptyRoutes(t *testing.T) {
+	var receivedBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("invalid config"))
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
 	client := NewCaddyAdminClient(srv.URL, srv.Client())
-	err := client.Load(context.Background(), caddyConfig{})
-	if err == nil {
-		t.Fatal("expected error on 400")
+	// Sin apps → array vacío, pero debe enviar [] no null.
+	if err := client.SyncAppRoutes(context.Background(), buildAppRoutes(NetworkExposureConfig{BaseDomain: "x.org"}, nil)); err != nil {
+		t.Fatalf("SyncAppRoutes empty: %v", err)
 	}
-	if !strings.Contains(err.Error(), "invalid config") {
-		t.Errorf("error should include body: %v", err)
+	if strings.TrimSpace(string(receivedBody)) != "[]" {
+		t.Errorf("empty routes body = %q, want []", receivedBody)
 	}
 }
 
-func TestCaddyClient_LoadServerDown(t *testing.T) {
-	// URL a un puerto que nadie escucha.
-	client := NewCaddyAdminClient("http://127.0.0.1:59999", &http.Client{})
-	err := client.Load(context.Background(), caddyConfig{})
-	if err == nil {
+func TestCaddyClient_SyncErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("boom"))
+	}))
+	defer srv.Close()
+
+	client := NewCaddyAdminClient(srv.URL, srv.Client())
+	err := client.SyncAppRoutes(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Errorf("expected error with body, got: %v", err)
+	}
+}
+
+func TestCaddyClient_SyncMissingBaseGroup(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("unknown object path /config/apps/http/servers/nimos/routes/@id/nimos_apps"))
+	}))
+	defer srv.Close()
+
+	client := NewCaddyAdminClient(srv.URL, srv.Client())
+	err := client.SyncAppRoutes(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "base config missing") {
+		t.Errorf("expected base-missing hint, got: %v", err)
+	}
+}
+
+func TestCaddyClient_SyncServerDown(t *testing.T) {
+	client := NewCaddyAdminClient("http://127.0.0.1:59998", &http.Client{})
+	if err := client.SyncAppRoutes(context.Background(), nil); err == nil {
 		t.Error("expected error when Caddy is unreachable")
 	}
 }
