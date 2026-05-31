@@ -31,6 +31,14 @@ func btrfsAutoMountOnStartup() {
 		if p.MountPoint == "" {
 			continue
 		}
+		// Si ya está montado (p.ej. por la entrada de fstab al arrancar), NO
+		// volver a montar — un segundo `mount` apila otra capa sobre el mismo
+		// punto, y cada capa extra confunde a containerd (lee de una, escribe
+		// en otra) → snapshots corruptos. Verificamos antes de montar.
+		if isPathOnMountedPool(p.MountPoint) {
+			logMsg("auto-mount: '%s' ya montado en %s — omitido", p.Name, p.MountPoint)
+			continue
+		}
 		// Try mount from fstab
 		runSafe("mount", p.MountPoint)
 	}
