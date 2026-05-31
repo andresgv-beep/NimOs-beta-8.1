@@ -138,14 +138,22 @@ func NewCaddyAdminClient(adminURL string, httpClient *http.Client) *CaddyAdminCl
 }
 
 // SyncAppRoutes reemplaza SOLO el array de rutas de apps (grupo @id
-// "nimos_apps"), sin tocar el panel ni la config global. Usa PUT sobre el
+// "nimos_apps"), sin tocar el panel ni la config global. Usa PATCH sobre el
 // path concreto del array.
+//
+// IMPORTANTE: el método es PATCH, no PUT. En la API de Caddy:
+//   · PATCH → reemplaza un objeto/array existente (lo que queremos).
+//   · PUT   → INSERTA en el array (daría 409 "key already exists" sobre un
+//             array ya presente).
+//   · POST  → set/replace, pero sobre arrays "appendea".
+// Como el array "routes" ya existe en el base (vacío), PATCH lo reemplaza
+// limpiamente con el conjunto regenerado.
 func (c *CaddyAdminClient) SyncAppRoutes(ctx context.Context, routes []caddyRoute) error {
 	body, err := json.Marshal(routes)
 	if err != nil {
 		return fmt.Errorf("caddy sync: marshal routes: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut,
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch,
 		c.adminURL+caddyAppsRoutesPath, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("caddy sync: build request: %w", err)
