@@ -1,0 +1,297 @@
+<script>
+  /**
+   * NetworkExposure · Sección de exposición de apps a internet (v4).
+   * ─────────────────────────────────────────────────────────────────
+   * Muestra y gestiona qué apps se exponen a internet con HTTPS vía Caddy.
+   *
+   * Dos bloques:
+   *   1. Config global: dominio base + interruptor de exposición.
+   *   2. Lista de apps expuestas: cada una con su ruta, upstream, estado
+   *      del cert (observado de Caddy) y acciones (pausar/editar/quitar).
+   *
+   * El componente es "tonto" respecto a la red: recibe datos por props y
+   * emite eventos al padre (NetworkApp), que es quien llama a la API.
+   *
+   * Props:
+   *   · config     — { base_domain, caddy_admin_url, enabled }
+   *   · apps       — array de apps expuestas
+   *   · certs      — snapshot del observer { reachable, certs:[...] } | null
+   *   · busy       — bool, deshabilita acciones mientras hay una en curso
+   *   · msg        — feedback del último intento
+   *
+   * Eventos:
+   *   · save-config  — { detail: { baseDomain, enabled } }
+   *   · expose       — (abre modal en el padre)
+   *   · toggle       — { detail: { app, enabled } }
+   *   · edit         — { detail: { app } }
+   *   · remove       — { detail: { app } }
+   */
+  import { createEventDispatcher } from 'svelte';
+  import { SectionHead, BevelButton, Badge, TextInput, EmptyState, LED } from '$lib/ui';
+  import { fullDomainFor, certForApp, appState } from './api.js';
+
+  export let config = { base_domain: '', caddy_admin_url: '', enabled: false };
+  export let apps = [];
+  export let certs = null;
+  export let busy = false;
+  export let msg = '';
+
+  const dispatch = createEventDispatcher();
+
+  // Estado local del formulario de config (editable antes de guardar).
+  let domainInput = config.base_domain || '';
+  let enabledInput = config.enabled || false;
+
+  // Resincronizar inputs si cambia la config desde el padre (tras guardar).
+  $: if (config) {
+    domainInput = config.base_domain || '';
+    enabledInput = config.enabled || false;
+  }
+
+  $: dirty = domainInput !== (config.base_domain || '') || enabledInput !== (config.enabled || false);
+  $: caddyReachable = certs ? certs.reachable : null;
+
+  function saveConfig() {
+    dispatch('save-config', { baseDomain: domainInput.trim(), enabled: enabledInput });
+  }
+
+  function badgeVariantFor(kind) {
+    switch (kind) {
+      case 'exposed': return 'accent';
+      case 'paused': return 'default';
+      case 'applying': return 'info';
+      case 'cert_warn': return 'orange';
+      case 'cert_pending': return 'warn';
+      default: return 'default';
+    }
+  }
+
+  function ledVariantFor(kind) {
+    switch (kind) {
+      case 'exposed': return 'ok';
+      case 'paused': return 'muted';
+      case 'applying': return 'info';
+      case 'cert_warn': return 'warn';
+      case 'cert_pending': return 'warn';
+      default: return 'muted';
+    }
+  }
+</script>
+
+<div class="nx-section">
+  <!-- ── Config global ── -->
+  <SectionHead>Configuración global</SectionHead>
+
+  <div class="nx-config">
+    <div class="nx-config-row">
+      <label class="nx-label" for="nx-domain">Dominio base</label>
+      <div class="nx-field">
+        <TextInput
+          value={domainInput}
+          placeholder="ej. minas.duckdns.org"
+          disabled={busy}
+          onInput={(e) => (domainInput = e.target.value)}
+        />
+        <span class="nx-hint">El dominio bajo el que se montan las apps (subdominios o rutas).</span>
+      </div>
+    </div>
+
+    <div class="nx-config-row">
+      <span class="nx-label">Exposición</span>
+      <div class="nx-field">
+        <button
+          class="nx-toggle"
+          class:on={enabledInput}
+          disabled={busy}
+          on:click={() => (enabledInput = !enabledInput)}
+          type="button"
+        >
+          <span class="nx-toggle-knob"></span>
+          <span class="nx-toggle-text">{enabledInput ? 'ACTIVADA' : 'DESACTIVADA'}</span>
+        </button>
+        <span class="nx-hint">
+          Interruptor maestro. Si está desactivado, ninguna app se expone aunque esté marcada.
+        </span>
+      </div>
+    </div>
+
+    {#if dirty}
+      <div class="nx-config-save">
+        <BevelButton size="sm" variant="primary" onClick={saveConfig} disabled={busy}>
+          {busy ? '▸ Guardando…' : '▸ Guardar configuración'}
+        </BevelButton>
+      </div>
+    {/if}
+  </div>
+
+  <!-- ── Banner de Caddy no alcanzable ── -->
+  {#if caddyReachable === false}
+    <div class="nx-banner warn">
+      <LED variant="warn" size={8} />
+      <span>Caddy no responde. Las apps no se están sirviendo. Comprueba que el servicio Caddy esté activo.</span>
+    </div>
+  {/if}
+
+  <!-- ── Lista de apps ── -->
+  <div class="nx-apps-head">
+    <SectionHead>Apps expuestas · {apps.length}</SectionHead>
+    <BevelButton size="sm" variant="primary" onClick={() => dispatch('expose')} disabled={busy || !config.base_domain}>
+      + Exponer app
+    </BevelButton>
+  </div>
+
+  {#if !config.base_domain}
+    <div class="nx-banner info">
+      <span>Configura primero un dominio base para poder exponer apps.</span>
+    </div>
+  {/if}
+
+  {#if apps.length === 0}
+    <EmptyState icon="◇" title="Ninguna app expuesta" hint="Pulsa «Exponer app» para hacer accesible un servicio desde fuera de tu red." />
+  {:else}
+    <div class="nx-apps">
+      {#each apps as app (app.id)}
+        {@const cert = certForApp(app, config.base_domain, certs)}
+        {@const state = appState(app, cert, caddyReachable)}
+        <div class="nx-app" class:paused={!app.enabled}>
+          <div class="nx-app-mark"></div>
+
+          <div class="nx-app-body">
+            <div class="nx-app-top">
+              <span class="nx-app-name">{app.display_name || app.app_id}</span>
+              <span class="nx-app-badge">
+                <LED variant={ledVariantFor(state.kind)} size={7} pulse={state.kind === 'applying'} />
+                <Badge variant={badgeVariantFor(state.kind)} size="sm">{state.label}</Badge>
+              </span>
+            </div>
+
+            <div class="nx-app-route mono">
+              {fullDomainFor(app, config.base_domain) || '(sin dominio base)'}
+              <span class="nx-arrow">→</span>
+              {app.upstream_host}:{app.upstream_port}
+            </div>
+
+            {#if cert}
+              <div class="nx-app-cert">
+                <span class="nx-cert-icon">🔒</span>
+                <span class="mono">{cert.issuer || 'cert'}</span>
+                {#if typeof cert.days_left === 'number'}
+                  <span class="nx-cert-sep">·</span>
+                  <span class:nx-cert-warn={cert.days_left < 15}>expira en {cert.days_left}d</span>
+                {/if}
+              </div>
+            {/if}
+          </div>
+
+          <div class="nx-app-actions">
+            <button class="nx-act" disabled={busy} on:click={() => dispatch('toggle', { app, enabled: !app.enabled })}>
+              {app.enabled ? 'Pausar' : 'Activar'}
+            </button>
+            <button class="nx-act" disabled={busy} on:click={() => dispatch('edit', { app })}>Editar</button>
+            <button class="nx-act danger" disabled={busy} on:click={() => dispatch('remove', { app })}>Quitar</button>
+          </div>
+        </div>
+      {/each}
+    </div>
+  {/if}
+
+  {#if msg}
+    <div class="nx-msg">{msg}</div>
+  {/if}
+</div>
+
+<style>
+  .nx-section { display: flex; flex-direction: column; }
+
+  /* ── Config ── */
+  .nx-config {
+    background: var(--bg-card, #15151a);
+    border-radius: 10px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin-bottom: 8px;
+  }
+  .nx-config-row { display: flex; gap: 16px; align-items: flex-start; }
+  .nx-label {
+    font-size: 11px; color: var(--fg-3, #9c9ca4); font-weight: 500;
+    letter-spacing: 0.4px; min-width: 110px; padding-top: 8px;
+  }
+  .nx-field { flex: 1; display: flex; flex-direction: column; gap: 5px; }
+  .nx-hint { font-size: 11px; color: var(--fg-4, #7a7a82); }
+
+  .nx-toggle {
+    display: inline-flex; align-items: center; gap: 9px; align-self: flex-start;
+    padding: 6px 12px 6px 7px; border-radius: 20px; cursor: pointer;
+    background: rgba(255,255,255,0.04); border: 1px solid var(--bd-3, #2a2a32);
+    font-family: ui-monospace, monospace; font-size: 11px; letter-spacing: 0.5px;
+    color: var(--fg-3, #9c9ca4); transition: all 0.15s;
+  }
+  .nx-toggle-knob {
+    width: 14px; height: 14px; border-radius: 50%;
+    background: var(--fg-4, #7a7a82); transition: all 0.15s;
+  }
+  .nx-toggle.on { color: var(--nim-green, #00ff9f); border-color: rgba(0,255,159,0.4); background: rgba(0,255,159,0.08); }
+  .nx-toggle.on .nx-toggle-knob { background: var(--nim-green, #00ff9f); transform: translateX(2px); }
+  .nx-toggle:disabled { opacity: 0.5; cursor: default; }
+
+  .nx-config-save { display: flex; justify-content: flex-end; }
+
+  /* ── Banners ── */
+  .nx-banner {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; border-radius: 8px; font-size: 12px;
+    margin: 10px 0; color: var(--fg-2, #d0d0d4);
+  }
+  .nx-banner.warn { background: rgba(255,200,87,0.08); border: 1px solid rgba(255,200,87,0.25); }
+  .nx-banner.info { background: rgba(77,184,255,0.07); border: 1px solid rgba(77,184,255,0.2); }
+
+  /* ── Apps ── */
+  .nx-apps-head { display: flex; align-items: center; justify-content: space-between; margin-top: 18px; }
+  .nx-apps { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+
+  .nx-app {
+    display: grid; grid-template-columns: 4px 1fr auto; gap: 14px;
+    background: var(--bg-card, #15151a); border-radius: 10px;
+    padding: 14px 16px; align-items: center;
+  }
+  .nx-app.paused { opacity: 0.6; }
+  .nx-app-mark {
+    width: 4px; align-self: stretch; border-radius: 2px;
+    background: var(--nim-green, #00ff9f);
+  }
+  .nx-app.paused .nx-app-mark { background: var(--fg-5, #5a5a62); }
+
+  .nx-app-body { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .nx-app-top { display: flex; align-items: center; gap: 10px; }
+  .nx-app-name { font-size: 14px; color: var(--fg, #f0f0f0); font-weight: 500; }
+  .nx-app-badge { display: inline-flex; align-items: center; gap: 6px; }
+
+  .nx-app-route {
+    font-size: 11px; color: var(--fg-3, #9c9ca4);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .nx-arrow { color: var(--fg-5, #5a5a62); margin: 0 4px; }
+
+  .nx-app-cert { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--fg-3, #9c9ca4); }
+  .nx-cert-icon { font-size: 10px; }
+  .nx-cert-sep { color: var(--fg-5, #5a5a62); }
+  .nx-cert-warn { color: var(--st-warn, #ffc857); }
+
+  .nx-app-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .nx-act {
+    font-family: ui-monospace, monospace; font-size: 10px; padding: 5px 10px;
+    background: transparent; color: var(--fg-3, #9c9ca4);
+    border: 1px solid var(--bd-3, #2a2a32); border-radius: 5px; cursor: pointer;
+    letter-spacing: 0.3px; transition: all 0.12s;
+  }
+  .nx-act:hover:not(:disabled) { border-color: #4a4a52; color: var(--fg-2, #d0d0d4); }
+  .nx-act.danger:hover:not(:disabled) { border-color: var(--st-crit, #ff5a5a); color: var(--st-crit, #ff5a5a); }
+  .nx-act:disabled { opacity: 0.4; cursor: default; }
+
+  .nx-msg {
+    margin-top: 12px; font-size: 12px; color: var(--fg-3, #9c9ca4);
+    font-family: ui-monospace, monospace;
+  }
+</style>
