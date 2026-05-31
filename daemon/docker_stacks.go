@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -153,6 +154,32 @@ func dockerStackDeploy(w http.ResponseWriter, r *http.Request) {
 	// El user nunca tiene que tocar esto · totalmente transparente.
 	envFilePath := filepath.Join(stackPath, ".env")
 	autoEnv = resolveRandomPlaceholders(autoEnv, envFilePath)
+
+	// APP-067 · Default seguro para variables ${VAR} no resueltas.
+	//
+	// Bug navidrome (descubierto 28/05, bloqueante 31/05): el compose usa
+	// ${MUSIC_PATH}:/music:ro pero MUSIC_PATH no es canónica (CONFIG_PATH,
+	// HOST_IP, TZ) ni viene en body.env. Queda sin definir → docker-compose
+	// la expande a "" → spec ":/music:ro" → "empty section between colons"
+	// → deploy FALLA con 500.
+	//
+	// Sin este fix, CUALQUIER app cuyo compose use una variable de path que
+	// NimOS no conozca (MUSIC_PATH, PHOTOS_PATH, MEDIA_PATH, ...) rompería el
+	// deploy con un error críptico.
+	//
+	// Solución: escanear el compose por ${VAR} (y ${VAR:-default}), y para
+	// cada una que NO esté ya en autoEnv NI tenga default en el propio
+	// compose, asignar un default seguro bajo CONFIG_PATH:
+	//   MUSIC_PATH → {containerPath}/music
+	//
+	// La app SIEMPRE arranca con una carpeta vacía bajo su config. El usuario
+	// puede luego apuntar la variable a su biblioteca real (editar .env y
+	// recrear, o reinstalar con el valor en body.env · que tiene prioridad).
+	//
+	// NO toca variables que YA tienen default en el compose (${VAR:-/x}) ·
+	// docker-compose las resuelve solo. NO toca las canónicas ni las de
+	// body.env (ya están en autoEnv).
+	autoEnv = fillUnresolvedPathVars(compose, autoEnv, containerPath)
 
 	var lines []string
 	for k, v := range autoEnv {
@@ -349,3 +376,76 @@ func dockerStackDelete(w http.ResponseWriter, r *http.Request, id string) {
 // dockerPull · GET /api/docker/pull/{image}
 //
 // Wrapper sync/async sobre runDockerPullWork.
+
+// composeVarPattern captura referencias a variables en un compose:
+//   ${VAR}        → grupo 1 = "VAR", grupo 2 = ""        (sin default)
+//   ${VAR:-foo}   → grupo 1 = "VAR", grupo 2 = ":-foo"   (con default · NO tocar)
+//   ${VAR-foo}    → grupo 1 = "VAR", grupo 2 = "-foo"    (con default · NO tocar)
+//   $VAR          → grupo 1 = "VAR", grupo 2 = ""        (forma sin llaves)
+var composeVarPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(:?-[^}]*)?\}|\$([A-Za-z_][A-Za-z0-9_]*)`)
+
+// fillUnresolvedPathVars escanea el texto del compose buscando variables
+// ${VAR} que NO estén ya definidas en autoEnv y que NO tengan un default
+// inline en el propio compose (${VAR:-x}). Para cada una, asigna un default
+// seguro bajo containerPath: {containerPath}/{var_en_minúsculas}.
+//
+// Esto evita que un compose con una variable de path desconocida (MUSIC_PATH,
+// PHOTOS_PATH, etc.) rompa el deploy con "empty section between colons".
+//
+// Reglas:
+//   - Si la var YA está en autoEnv (canónica o body.env) → no se toca.
+//   - Si la var tiene default inline ${VAR:-x} → no se toca (compose lo resuelve).
+//   - El nombre del directorio default es el nombre de la var en minúsculas,
+//     quitando sufijos comunes "_PATH"/"_DIR" para que quede limpio:
+//       MUSIC_PATH  → {containerPath}/music
+//       PHOTOS_DIR  → {containerPath}/photos
+//       DATA        → {containerPath}/data
+//
+// Devuelve autoEnv modificado (mismo mapa).
+func fillUnresolvedPathVars(compose string, autoEnv map[string]interface{}, containerPath string) map[string]interface{} {
+	matches := composeVarPattern.FindAllStringSubmatch(compose, -1)
+	for _, m := range matches {
+		// m[1] = nombre con llaves · m[2] = default inline (si hay) · m[3] = nombre sin llaves
+		varName := m[1]
+		hasInlineDefault := m[2] != ""
+		if varName == "" {
+			varName = m[3] // forma $VAR sin llaves
+		}
+		if varName == "" {
+			continue
+		}
+		// Ya definida → no tocar
+		if _, exists := autoEnv[varName]; exists {
+			continue
+		}
+		// Tiene default inline en el compose → docker-compose lo resuelve solo
+		if hasInlineDefault {
+			continue
+		}
+		// Variable sin resolver · asignar default seguro bajo containerPath
+		dirName := defaultDirNameForVar(varName)
+		defaultPath := filepath.Join(containerPath, dirName)
+		// Crear el directorio · si no existe, Docker lo crearía como root con
+		// permisos restrictivos. Lo creamos nosotros con permisos abiertos
+		// para que la app (PUID/PGID) pueda escribir y el usuario navegar.
+		os.MkdirAll(defaultPath, 0775)
+		autoEnv[varName] = defaultPath
+		logMsg("docker: stack · variable %q sin definir, default seguro → %s "+
+			"(el usuario puede cambiarla luego)", varName, defaultPath)
+	}
+	return autoEnv
+}
+
+// defaultDirNameForVar deriva un nombre de directorio limpio del nombre de una
+// variable: minúsculas y sin sufijos _PATH/_DIR/_LOCATION.
+//   MUSIC_PATH → "music"  ·  PHOTOS_DIR → "photos"  ·  MEDIA → "media"
+func defaultDirNameForVar(varName string) string {
+	n := strings.ToLower(varName)
+	for _, suffix := range []string{"_path", "_dir", "_location", "_folder"} {
+		n = strings.TrimSuffix(n, suffix)
+	}
+	if n == "" {
+		n = strings.ToLower(varName)
+	}
+	return n
+}
