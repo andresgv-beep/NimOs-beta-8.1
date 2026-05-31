@@ -1,0 +1,351 @@
+// docker_stacks.go — Stacks docker-compose (Beta 8.1)
+//
+// Stacks = aplicaciones multi-container con docker-compose.yml.
+// Usado principalmente por el AppStore para apps del catálogo (Jellyfin,
+// Immich, VS Code Server, etc).
+//
+// Endpoints:
+//   POST   /api/docker/stack        · deploy nuevo stack (compose + .env)
+//   DELETE /api/docker/stack/<id>   · elimina stack completo
+//
+// Variables canónicas inyectadas automáticamente en .env de cada stack:
+//   CONFIG_PATH · {dockerPath}/containers/{stackId}
+//   HOST_IP     · IP local del NAS (getStackHostIP en docker_async.go)
+//   TZ          · timezone del host (getStackTimezone en docker_async.go)
+//
+// Tras escribir .env se expanden referencias ${VAR} recursivamente con
+// expandStackEnvRefs (máximo 4 pasadas anti-loop). Esto permite al catálogo
+// definir vars compuestas como PROJECTS_PATH=${CONFIG_PATH}/projects.
+
+package main
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+)
+
+func dockerStackDeploy(w http.ResponseWriter, r *http.Request) {
+	session := requireAuth(w, r)
+	if session == nil {
+		return
+	}
+	if !hasDockerPermission(session) {
+		jsonError(w, 403, "No permission to manage Docker")
+		return
+	}
+	if !isDockerInstalledGo() {
+		jsonError(w, 400, "Docker not installed")
+		return
+	}
+
+	body, _ := readBody(r)
+	id := sanitizeDockerNameGo(bodyStr(body, "id"))
+	compose := bodyStr(body, "compose")
+	if id == "" || compose == "" {
+		jsonError(w, 400, "Missing stack info")
+		return
+	}
+
+	conf := getDockerConfigGo()
+	dockerPath, _ := conf["path"].(string)
+	if dockerPath == "" {
+		dp, err := getDockerPath()
+		if err != nil {
+			jsonError(w, 400, "Docker not configured — install Docker from App Store first")
+			return
+		}
+		dockerPath = dp
+	}
+	stackPath := filepath.Join(dockerPath, "stacks", id)
+	os.MkdirAll(stackPath, 0755)
+
+	// Create container config directory (used by CONFIG_PATH in compose)
+	containerPath := filepath.Join(dockerPath, "containers", id)
+	os.MkdirAll(containerPath, 0775)
+	// Set permissions so admin can read/write configs
+	runSafe("chmod", "-R", "775", containerPath)
+
+	// Write compose file
+	composePath := filepath.Join(stackPath, "docker-compose.yml")
+
+	// Fase 2 (Beta 8.2) · inyectar labels com.nimos.* en cada servicio del
+	// compose ANTES de escribirlo a disco. Los labels de un container Docker
+	// son inmutables tras `docker create`, por lo que la única vía robusta
+	// es modificar el YAML antes del `compose up -d`.
+	//
+	// Permite identificación robusta de containers gestionados por NimOS
+	// (Fase 3 reconciler) sin depender de matching por nombre.
+	//
+	// Si la inyección falla (compose mal formado, etc.) el deploy continúa
+	// con el compose original · NO bloqueante para no romper installs por
+	// problemas en el catálogo.
+	stackLabels := NewNimOSLabels(id, bodyStr(body, "appVersion"), session.Username, true)
+	composeWithLabels, lerr := injectNimOSLabelsIntoCompose(compose, stackLabels)
+	if lerr != nil {
+		logMsg("docker: stack %s · inyección de labels falló (%v) · usando compose original", id, lerr)
+		composeWithLabels = compose
+	} else {
+		logMsg("docker: stack %s · labels com.nimos.* inyectados en compose", id)
+	}
+	os.WriteFile(composePath, []byte(composeWithLabels), 0644)
+
+	// APP-064 · Inyección automática de variables canónicas en .env del stack.
+	//
+	// Los composes del catálogo NimOS Appstore usan placeholders estándar
+	// que el backend conoce pero el frontend no:
+	//
+	//   CONFIG_PATH · ruta del directorio de configuración del container
+	//                 (montado como volumen para persistencia de configs).
+	//                 = {dockerPath}/containers/{stackId}
+	//
+	//   HOST_IP     · IP local del NAS · usada por apps que generan URLs
+	//                 absolutas (e.g. Jellyfin PublishedServerUrl).
+	//
+	//   TZ          · timezone del host (e.g. "Europe/Madrid"). Apps con
+	//                 cron interno o logs timestamp lo necesitan. Si no
+	//                 se puede determinar, queda "UTC".
+	//
+	// Estas vars se inyectan SIEMPRE antes de escribir .env. Si el body del
+	// frontend manda también values en body.env, esos prevalecen (override).
+	//
+	// Tras el merge, expandimos referencias ${OTRA_VAR} dentro de los values
+	// recursivamente · permite que el catálogo defina vars compuestas como
+	// `PROJECTS_PATH = ${CONFIG_PATH}/projects` y que se resuelvan al path
+	// completo antes de que docker-compose lo lea. Sin esta expansión, las
+	// vars del .env no se interpolan entre sí (limitación de docker-compose).
+	autoEnv := map[string]interface{}{
+		"CONFIG_PATH": containerPath,
+		"HOST_IP":     getStackHostIP(),
+		"TZ":          getStackTimezone(),
+	}
+	// Merge body.env encima · permitir override desde el catálogo si hace falta
+	if env, ok := body["env"].(map[string]interface{}); ok {
+		for k, v := range env {
+			autoEnv[k] = v
+		}
+	}
+	// Expandir referencias ${KEY} dentro de values · max 4 pasadas para evitar
+	// loops infinitos en caso de referencia circular (raro, pero defensivo).
+	autoEnv = expandStackEnvRefs(autoEnv, 4)
+
+	// APP-066 · Resolver placeholders {RANDOM} con persistencia idempotente.
+	//
+	// Algunos catálogos declaran credenciales internas del stack como literal
+	// "{RANDOM}" (ejemplo: Immich · DB_PASSWORD entre immich-server y su
+	// Postgres interno). El user nunca ve esos valores · son comunicación
+	// máquina-a-máquina dentro de la red Docker del stack.
+	//
+	// Sin resolución, el valor llega literal a docker-compose y Postgres se
+	// inicializa con la cadena "{RANDOM}" como password · funcional pero
+	// inseguro (todos los Immich del mundo tendrían misma pass).
+	//
+	// La función es IDEMPOTENTE por construcción · lee el .env previo si
+	// existe y reusa valores ya generados. Esto significa:
+	//   · Primera instalación · genera 24 chars aleatorios
+	//   · Reinstalación con .env previo · mantiene valor previo (no rompe
+	//     Postgres data dir que tiene el hash del valor anterior)
+	//
+	// El user nunca tiene que tocar esto · totalmente transparente.
+	envFilePath := filepath.Join(stackPath, ".env")
+	autoEnv = resolveRandomPlaceholders(autoEnv, envFilePath)
+
+	var lines []string
+	for k, v := range autoEnv {
+		lines = append(lines, fmt.Sprintf("%s=%v", k, v))
+	}
+	os.WriteFile(envFilePath, []byte(strings.Join(lines, "\n")+"\n"), 0644)
+
+	// Deploy
+	cmd := exec.Command("docker", "compose", "-f", composePath, "up", "-d")
+	cmd.Dir = stackPath
+	if out, err := cmd.CombinedOutput(); err != nil {
+		jsonError(w, 500, fmt.Sprintf("Failed to deploy stack: %s", string(out)))
+		return
+	}
+
+	// Fix permissions on container config dir after deploy
+	// Set group to nimos-share-docker-apps so FileManager can browse
+	runSafe("chown", "-R", "root:nimos-share-docker-apps", containerPath)
+	runSafe("chmod", "-R", "2775", containerPath)
+	runSafe("setfacl", "-R", "-d", "-m", "g:nimos-share-docker-apps:rwx", containerPath)
+	runSafe("chmod", "-R", "775", stackPath)
+
+	// Register stack
+	stackPort := 0
+	if p, ok := body["port"].(float64); ok {
+		stackPort = int(p)
+	}
+	openMode := "internal"
+	if ext, ok := body["external"].(bool); ok && ext {
+		openMode = "external"
+	}
+	app := &DBDockerApp{
+		ID:          id,
+		Name:        bodyStr(body, "name"),
+		Icon:        bodyStr(body, "icon"),
+		Image:       "stack",
+		Color:       bodyStr(body, "color"),
+		Type:        "stack",
+		OpenMode:    openMode,
+		Port:        stackPort,
+		InstalledBy: session.Username,
+	}
+	// BUG-FIX (Nextcloud install · 26/05/2026): usar context.Background() en lugar
+	// de r.Context() porque el frontend puede dar timeout durante descargas pesadas
+	// (Nextcloud ~1GB, Immich varios GB · 5-15min). Si el HTTP context se cancela,
+	// `compose up` (subprocess externo) continúa hasta terminar PERO el INSERT a
+	// docker_apps usaría un contexto cancelado y abortaría silenciosamente · resultado:
+	// container vivo pero NimOS sin registro = invisible en AppStore/NimShield.
+	//
+	// Síntoma del bug original: Nextcloud apareció en docker ps + en docker_app_images
+	// (poblada por goroutine con context.Background()) pero NO en docker_apps.
+	if err := appsRepo.CreateOrUpdateDockerApp(context.Background(), app); err != nil {
+		logMsg("docker: stack install register failed for %s: %v", id, err)
+	}
+
+	// Sprint Updates · poblar docker_app_images con los servicios del stack.
+	// No bloqueante: si falla, se logea pero el deploy se considera OK.
+	// Update-check posterior puede refrescar lo que falte.
+	go populateAppImagesAfterDeploy(context.Background(), id, composePath, stackPath)
+
+	// APP-034 · invalidación inmediata de cache de NimHealth (sync, ~150ms en Pi).
+	// Sin esto, la app no aparece en /api/services hasta el siguiente tick (≤30s).
+	// También usamos context.Background() · misma razón.
+	ForceDockerCacheRefresh(context.Background())
+
+	jsonOk(w, map[string]interface{}{"ok": true, "stack": id, "path": stackPath})
+}
+// dockerStackDelete · DELETE /api/docker/stack/<id>[?wipe=true]
+//
+// Dos modos de operación según query param `wipe`:
+//
+//   wipe=false (default · recomendado para el user) · "DESINSTALACIÓN SUAVE"
+//     · docker compose down --remove-orphans · containers fuera
+//     · NO se borran volúmenes Docker (-v) · datos en containers/{id} intactos
+//     · NO se borra stackPath ni containers/{id} · compose YAML, .env y datos
+//       de la app se conservan
+//     · Resultado: si reinstalas la app más tarde, todo vuelve donde estaba.
+//       Postgres encuentra su data dir, Immich su BD, Jellyfin su biblioteca.
+//
+//   wipe=true · "DESINSTALACIÓN COMPLETA · DESTRUCTIVA"
+//     · docker compose down -v --remove-orphans · containers + volúmenes Docker
+//     · Borra stackPath (docker-compose.yml + .env)
+//     · Borra containers/{id} (uploads, postgres data, configs de la app)
+//     · NO se puede deshacer.
+//
+// En ambos casos: la row en docker_apps se elimina · la app deja de aparecer
+// como instalada en el AppStore.
+func dockerStackDelete(w http.ResponseWriter, r *http.Request, id string) {
+	session := requireAuth(w, r)
+	if session == nil {
+		return
+	}
+	if !hasDockerPermission(session) {
+		jsonError(w, 403, "No permission")
+		return
+	}
+	safeId := sanitizeDockerNameGo(id)
+	if safeId == "" {
+		jsonError(w, 400, "Invalid stack ID")
+		return
+	}
+
+	// Detectar modo · default es suave (preservar datos)
+	wipe := r.URL.Query().Get("wipe") == "true"
+
+	// APP-031 · race-free uninstall (mismo flujo que dockerContainerDelete).
+	// commitContext() · debe persistir aunque cliente se desconecte (el cleanup
+	// en goroutine ya está lanzado, la BD debe quedar consistente).
+	if err := appsRepo.MarkDockerAppDeleting(commitContext(), safeId); err != nil {
+		logMsg("docker: stack uninstall mark-deleting failed for %s: %v", safeId, err)
+	}
+
+	conf := getDockerConfigGo()
+	dockerPath, _ := conf["path"].(string)
+	if dockerPath == "" {
+		if dp, err := getDockerPath(); err == nil {
+			dockerPath = dp
+		} else {
+			// Sin path · borramos la row directamente, no hay nada de stack que limpiar.
+			// commitContext() · borrado final debe persistir.
+			if delErr := appsRepo.DeleteDockerApp(commitContext(), safeId); delErr != nil {
+				logMsg("docker: stack uninstall row delete failed for %s: %v", safeId, delErr)
+			}
+			jsonOk(w, map[string]interface{}{"ok": true})
+			return
+		}
+	}
+	stackPath := filepath.Join(dockerPath, "stacks", safeId)
+	composePath := filepath.Join(stackPath, "docker-compose.yml")
+
+	// Cleanup en background + DELETE final tras compose down.
+	idCapture := safeId
+	wipeCapture := wipe
+	dockerPathCapture := dockerPath
+	go func() {
+		// En modo wipe · capturar las imágenes del stack ANTES del down
+		// (necesita los containers vivos para listarlas). Se borran después.
+		// Usa el label com.nimos.app_id · inmune a variables sin definir en
+		// el compose (bug navidrome/MUSIC_PATH).
+		var stackImages []string
+		if wipeCapture {
+			stackImages = getStackImages(context.Background(), idCapture)
+		}
+
+		if _, err := os.Stat(composePath); err == nil {
+			// Argumentos de compose down · siempre --remove-orphans, solo añade -v
+			// en modo wipe (destruir volúmenes Docker)
+			downArgs := []string{"compose", "-f", composePath, "down", "--remove-orphans"}
+			if wipeCapture {
+				downArgs = append(downArgs[:len(downArgs)-1], "-v", "--remove-orphans")
+			}
+			cmd := exec.Command("docker", downArgs...)
+			cmd.Dir = stackPath
+			cmd.Run()
+		}
+
+		// En modo wipe · borrar stack path (compose YAML + .env) y datos
+		if wipeCapture {
+			os.RemoveAll(stackPath)
+			os.RemoveAll(filepath.Join(dockerPathCapture, "containers", idCapture))
+			logMsg("docker: stack %s uninstalled in WIPE mode · all data removed", idCapture)
+
+			// Borrar las imágenes del stack (capturadas antes del down).
+			// docker rmi SIN -f · seguro entre apps: si otra app usa una imagen
+			// compartida, Docker la protege y no se borra.
+			if len(stackImages) > 0 {
+				n := removeAppImages(context.Background(), stackImages)
+				logMsg("docker: stack %s · %d/%d imágenes borradas (wipe)", idCapture, n, len(stackImages))
+			}
+		} else {
+			logMsg("docker: stack %s uninstalled in SOFT mode · data preserved at %s/containers/%s", idCapture, dockerPathCapture, idCapture)
+		}
+
+		// DELETE final libera la row de BD (en ambos modos)
+		if err := appsRepo.DeleteDockerApp(context.Background(), idCapture); err != nil {
+			logMsg("docker: stack uninstall final DB delete failed for %s: %v", idCapture, err)
+		}
+		// Sprint Updates · limpiar también las imágenes tracked.
+		// Tanto modo soft como wipe: la app deja de aparecer instalada · sus
+		// imágenes no necesitan tracking. Si reinstala, populateAppImagesAfterDeploy
+		// las recreará con los digests actuales.
+		if appImagesRepo != nil {
+			if err := appImagesRepo.DeleteByApp(context.Background(), idCapture); err != nil {
+				logMsg("docker: app images cleanup failed for %s: %v", idCapture, err)
+			}
+		}
+		// APP-034 · refresh cache tras cleanup completo.
+		ForceDockerCacheRefresh(context.Background())
+	}()
+
+	jsonOk(w, map[string]interface{}{"ok": true, "wipe": wipe})
+}
+
+// dockerPull · GET /api/docker/pull/{image}
+//
+// Wrapper sync/async sobre runDockerPullWork.
