@@ -25,6 +25,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"strings"
+	"time"
 )
 
 // validPoolName valida nombres de pool en Beta 8.1.
@@ -642,6 +644,20 @@ func (s *StorageService) CreatePool(ctx context.Context, req CreatePoolRequest) 
 	if err := s.btrfs.MountFilesystem(ctx, byIDPaths[0], mountPoint); err != nil {
 		s.markOperationFailed(ctx, op.ID, err.Error(), ErrCodeMountFailed)
 		return s.repo.GetOperation(ctx, op.ID)
+	}
+
+	// ─── Persistir en /etc/fstab para que sobreviva al reinicio ──────────
+	// Simétrico con importPoolBtrfs (storage_btrfs_import.go), que ya lo hace.
+	// SIN esto el pool no se remonta al arrancar y udisks2 (auto-mount del
+	// escritorio) lo monta en /media/<user>/, dejándolo fuera de /nimos/pools/
+	// → NimOS no lo encuentra y los servicios dependientes entran en error.
+	// appendFstab ya incluye `nofail` (no rompe el boot si falta el disco).
+	appendFstab(fsInfo.BtrfsUUID, mountPoint, "btrfs")
+
+	// Validar que la entrada no rompió fstab (un fstab malformado puede
+	// impedir el siguiente arranque). Si falla, lo dejamos registrado.
+	if vr, verr := runCmd("findmnt", []string{"--verify"}, CmdOptions{Timeout: 10 * time.Second}); verr != nil || strings.TrimSpace(vr.Stderr) != "" {
+		logMsg("CreatePool: WARNING findmnt --verify tras appendFstab: err=%v stderr=%s", verr, strings.TrimSpace(vr.Stderr))
 	}
 
 	// ─── Persistir en DB (pool + devices + capabilities) ───────────────
