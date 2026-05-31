@@ -108,8 +108,6 @@ install_deps() {
     gdisk parted \
     samba \
     vsftpd \
-    nginx \
-    certbot python3-certbot-nginx \
     ufw \
     avahi-daemon \
     acl
@@ -484,75 +482,108 @@ EOF
 }
 
 # ── Configure Nginx ──
-setup_nginx() {
-  step "Configuring Nginx (Reverse Proxy)"
+setup_caddy() {
+  step "Configuring Caddy (Reverse Proxy + HTTPS)"
 
+  # nginx/apache fuera: Caddy es el único reverse proxy (puertos 80/443).
   systemctl stop apache2 2>/dev/null || true
   systemctl disable apache2 2>/dev/null || true
+  systemctl stop nginx 2>/dev/null || true
+  systemctl disable nginx 2>/dev/null || true
 
-  # Hide nginx version globally (only if not already set)
-  grep -q 'server_tokens off' /etc/nginx/nginx.conf 2>/dev/null || \
-    sed -i '/http {/a \\tserver_tokens off;' /etc/nginx/nginx.conf 2>/dev/null || true
+  # ── Instalar Caddy desde el repo oficial (si no está) ──
+  if ! command -v caddy &>/dev/null; then
+    log "Installing Caddy from official repo..."
+    apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https curl
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+      | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+      > /etc/apt/sources.list.d/caddy-stable.list 2>/dev/null
+    apt-get update -qq
+    apt-get install -y -qq caddy
+    ok "Caddy installed"
+  else
+    ok "Caddy already present"
+  fi
 
-  # LOGIC-039: Add rate limit zone for auth endpoints (brute force protection)
-  grep -q 'limit_req_zone' /etc/nginx/nginx.conf 2>/dev/null || \
-    sed -i '/http {/a \\tlimit_req_zone $binary_remote_addr zone=auth:10m rate=5r/s;' /etc/nginx/nginx.conf 2>/dev/null || true
-
-  cat > /etc/nginx/sites-available/nimos << EOF
-server {
-    listen 80 default_server;
-    server_name _;
-
-    # ── Block hidden files (.env, .git, .htaccess, etc.) ──
-    location ~ /\\. {
-        deny all;
-        return 404;
+  # ── Config base de Caddy (JSON nativo, NO Caddyfile) ──
+  # MODELO 1: el panel de NimOS vive aquí, en el config base. El daemon NO
+  # lo gestiona — solo añade/quita rutas de APPS bajo el grupo @id
+  # "nimos_apps". Así el panel sigue accesible aunque el daemon falle.
+  #
+  # El server "nimos" tiene dos rutas, en orden:
+  #   1. Subroute @id "nimos_apps" (vacío al inicio) → lo llena el daemon
+  #      con las apps expuestas. Va PRIMERO para que un subdominio de app
+  #      tenga prioridad sobre el catch-all del panel.
+  #   2. Catch-all → reverse proxy al panel NimOS (:NIMOS_PORT).
+  #
+  # Caddy gestiona los certs ACME automáticamente para cualquier host que
+  # aparezca en un match (incluidas las apps que añada el daemon).
+  mkdir -p /etc/caddy
+  cat > /etc/caddy/caddy.json << EOF
+{
+  "admin": {
+    "listen": "127.0.0.1:2019"
+  },
+  "apps": {
+    "http": {
+      "servers": {
+        "nimos": {
+          "listen": [":80", ":443"],
+          "routes": [
+            {
+              "@id": "nimos_apps",
+              "handle": [
+                {
+                  "handler": "subroute",
+                  "routes": []
+                }
+              ]
+            },
+            {
+              "handle": [
+                {
+                  "handler": "headers",
+                  "response": {
+                    "set": {
+                      "Referrer-Policy": ["strict-origin-when-cross-origin"],
+                      "Permissions-Policy": ["camera=(), microphone=(), geolocation=(), payment=()"]
+                    }
+                  }
+                },
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [{ "dial": "127.0.0.1:$NIMOS_PORT" }],
+                  "flush_interval": -1
+                }
+              ]
+            }
+          ]
+        }
+      }
     }
-
-    # ── Block sensitive paths ──
-    location = /server-status { deny all; return 404; }
-    location = /server-info   { deny all; return 404; }
-
-    # ── Security headers (Nginx layer — extra on top of daemon) ──
-    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
-
-    # ── Rate limit on auth endpoints (LOGIC-039) ──
-    location /api/auth/login {
-        limit_req zone=auth burst=10 nodelay;
-        proxy_pass http://127.0.0.1:$NIMOS_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-
-    # ── Proxy to NimOS daemon ──
-    location / {
-        proxy_pass http://127.0.0.1:$NIMOS_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_read_timeout 120s;
-        proxy_send_timeout 120s;
-        client_max_body_size 0;
-        proxy_request_buffering off;
-        proxy_buffering off;
-    }
+  }
 }
 EOF
 
-  ln -sf /etc/nginx/sites-available/nimos /etc/nginx/sites-enabled/nimos
-  rm -f /etc/nginx/sites-enabled/default
-  nginx -t 2>/dev/null && systemctl restart nginx
-  systemctl enable nginx
+  # ── Servicio systemd usando el JSON nativo ──
+  # Sobrescribimos el ExecStart por defecto de Caddy para que cargue nuestro
+  # config JSON y lo persista/reanude (--resume mantiene cambios del daemon
+  # tras reinicios de Caddy).
+  mkdir -p /etc/systemd/system/caddy.service.d
+  cat > /etc/systemd/system/caddy.service.d/nimos.conf << EOF
+[Service]
+ExecStart=
+ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/caddy.json --resume
+ExecReload=
+ExecReload=/usr/bin/caddy reload --config /etc/caddy/caddy.json --force
+EOF
 
-  ok "Nginx configured (hardened — hidden files blocked)"
+  systemctl daemon-reload
+  systemctl enable caddy 2>/dev/null || true
+  systemctl restart caddy
+
+  ok "Caddy configured (panel served + apps group ready · HTTPS automatic)"
 }
 
 # ── Configure Avahi ──
@@ -720,7 +751,7 @@ main() {
   setup_firewall
   setup_samba
   setup_ftp
-  setup_nginx
+  setup_caddy
   setup_avahi
   start_nimos
   print_summary
