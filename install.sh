@@ -567,17 +567,29 @@ setup_caddy() {
 EOF
 
   # ── Servicio systemd usando el JSON nativo ──
-  # Sobrescribimos el ExecStart por defecto de Caddy para que cargue nuestro
-  # config JSON y lo persista/reanude (--resume mantiene cambios del daemon
-  # tras reinicios de Caddy).
+  # Sobrescribimos el ExecStart por defecto de Caddy (que usa Caddyfile) para
+  # que cargue SIEMPRE nuestro config JSON al arrancar.
+  #
+  # IMPORTANTE: NO usamos --resume. Con --resume, Caddy reanudaría el último
+  # estado autoguardado en lugar de cargar nuestro --config, lo que provoca
+  # que cargue el Caddyfile por defecto (srv0) en vez del nuestro. Sin
+  # --resume, Caddy carga nuestro JSON base cada arranque, de forma
+  # determinista. Las rutas de apps que inyecta el daemon NO se pierden de
+  # forma permanente: el reconciler las re-sincroniza cada 30s, así que si
+  # Caddy reinicia, las apps vuelven solas (modelo declarativo autorreparable).
   mkdir -p /etc/systemd/system/caddy.service.d
   cat > /etc/systemd/system/caddy.service.d/nimos.conf << EOF
 [Service]
 ExecStart=
-ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/caddy.json --resume
+ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/caddy.json
 ExecReload=
 ExecReload=/usr/bin/caddy reload --config /etc/caddy/caddy.json --force
 EOF
+
+  # Borrar cualquier autosave previo del Caddyfile por defecto, para que no
+  # interfiera (Caddy lo crea al arrancar la primera vez tras apt install).
+  rm -f /var/lib/caddy/.config/caddy/autosave.json 2>/dev/null || true
+  rm -f /root/.config/caddy/autosave.json 2>/dev/null || true
 
   systemctl daemon-reload
   systemctl enable caddy 2>/dev/null || true
