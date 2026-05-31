@@ -212,7 +212,7 @@
         </div>
       {/if}
       <slot name="toolbar" />
-      <div class="content">
+      <div class="content" class:no-header={!$$slots['page-header'] && !$$slots['toolbar']}>
         <slot />
       </div>
       <slot name="footer-raw" />
@@ -480,6 +480,12 @@
     flex: 1;
     overflow: auto;
     min-height: 0;
+  }
+  /* Sin page-header ni toolbar, el contenido empieza pegado arriba y
+     quedaría bajo los controles de ventana flotantes (top:12 right:14).
+     Reservamos una franja superior para que no se solapen. */
+  .content.no-header {
+    padding-top: 40px;
   }
 
   /* Page header opcional · título y descripción (sin titlebar encima) */
