@@ -404,33 +404,49 @@ func dockerStackDelete(w http.ResponseWriter, r *http.Request, id string) {
 //   $VAR          → grupo 1 = "VAR", grupo 2 = ""        (forma sin llaves)
 var composeVarPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(:?-[^}]*)?\}|\$([A-Za-z_][A-Za-z0-9_]*)`)
 
-// fillUnresolvedPathVars escanea el texto del compose buscando variables
-// ${VAR} que NO estén ya definidas en autoEnv y que NO tengan un default
-// inline en el propio compose (${VAR:-x}). Para cada una, asigna un default
-// seguro bajo containerPath: {containerPath}/{var_en_minúsculas}.
+// volumeHostVarPattern captura SOLO variables usadas en el lado-host de un
+// bind mount de volumen. El patrón busca ${VAR} (o $VAR) seguido de ":/"
+// (separador host:container con ruta absoluta en el container).
 //
-// Esto evita que un compose con una variable de path desconocida (MUSIC_PATH,
-// PHOTOS_PATH, etc.) rompa el deploy con "empty section between colons".
+// Ejemplos que captura:
+//   - ${MUSIC_PATH}:/music         → MUSIC_PATH
+//   - ${CONFIG_PATH}/data:/var/lib → (CONFIG_PATH ya definida, se ignora luego)
+//   - ${UPLOAD_LOCATION}:/usr/src  → UPLOAD_LOCATION
+//
+// Lo que NO captura (y antes rompía Immich):
+//   - POSTGRES_USER: ${DB_USERNAME}   (environment · no es :/)
+//   - command: '...$$user...'         (command · no es :/)
+//   - ${DB_PASSWORD}                   (environment)
+//
+// El sufijo (:?/...) exige que tras la variable venga ":" + "/" (inicio de
+// la ruta del container) o "/...:/ " (subruta + separador). Esto restringe
+// las coincidencias al contexto de volumen.
+var volumeHostVarPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(:?-[^}]*)?\}(?:/[^:\s]*)?:/`)
+
+// fillUnresolvedPathVars escanea SOLO los volúmenes del compose buscando
+// variables ${VAR} en el lado-host que NO estén ya definidas en autoEnv y
+// que NO tengan default inline. Para cada una, asigna un default seguro
+// bajo containerPath.
+//
+// IMPORTANTE (fix 01/06): antes esta función escaneaba TODO el compose con un
+// patrón amplio que capturaba ${VAR} en cualquier contexto · incluido
+// environment: (POSTGRES_USER, DB_NAME) y command: ($$user de postgres). Eso
+// convertía esas variables en rutas absurdas y rompía Immich (postgres no
+// arrancaba con usuario "/nimos/pools/.../postgres_user"). Ahora SOLO mira
+// variables en el lado-host de volúmenes (${VAR}:/...), que son las únicas
+// que de verdad necesitan un path por defecto.
 //
 // Reglas:
-//   - Si la var YA está en autoEnv (canónica o body.env) → no se toca.
-//   - Si la var tiene default inline ${VAR:-x} → no se toca (compose lo resuelve).
-//   - El nombre del directorio default es el nombre de la var en minúsculas,
-//     quitando sufijos comunes "_PATH"/"_DIR" para que quede limpio:
-//       MUSIC_PATH  → {containerPath}/music
-//       PHOTOS_DIR  → {containerPath}/photos
-//       DATA        → {containerPath}/data
+//   - Solo variables en contexto de volumen (${VAR}:/container/path)
+//   - Si la var YA está en autoEnv → no se toca
+//   - Si tiene default inline ${VAR:-x} → no se toca (compose lo resuelve)
 //
 // Devuelve autoEnv modificado (mismo mapa).
 func fillUnresolvedPathVars(compose string, autoEnv map[string]interface{}, containerPath string) map[string]interface{} {
-	matches := composeVarPattern.FindAllStringSubmatch(compose, -1)
+	matches := volumeHostVarPattern.FindAllStringSubmatch(compose, -1)
 	for _, m := range matches {
-		// m[1] = nombre con llaves · m[2] = default inline (si hay) · m[3] = nombre sin llaves
 		varName := m[1]
 		hasInlineDefault := m[2] != ""
-		if varName == "" {
-			varName = m[3] // forma $VAR sin llaves
-		}
 		if varName == "" {
 			continue
 		}
@@ -442,15 +458,12 @@ func fillUnresolvedPathVars(compose string, autoEnv map[string]interface{}, cont
 		if hasInlineDefault {
 			continue
 		}
-		// Variable sin resolver · asignar default seguro bajo containerPath
+		// Variable de path sin resolver · asignar default seguro bajo containerPath
 		dirName := defaultDirNameForVar(varName)
 		defaultPath := filepath.Join(containerPath, dirName)
-		// Crear el directorio · si no existe, Docker lo crearía como root con
-		// permisos restrictivos. Lo creamos nosotros con permisos abiertos
-		// para que la app (PUID/PGID) pueda escribir y el usuario navegar.
 		os.MkdirAll(defaultPath, 0775)
 		autoEnv[varName] = defaultPath
-		logMsg("docker: stack · variable %q sin definir, default seguro → %s "+
+		logMsg("docker: stack · variable de volumen %q sin definir, default → %s "+
 			"(el usuario puede cambiarla luego)", varName, defaultPath)
 	}
 	return autoEnv

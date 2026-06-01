@@ -143,6 +143,77 @@ func TestFillUnresolvedPathVars_NoVars(t *testing.T) {
 	}
 }
 
+// TestFillUnresolvedPathVars_IgnoresEnvAndCommand · EL FIX CRÍTICO (01/06).
+// Variables en environment: y command: NO deben tocarse · solo las de
+// volúmenes. Antes, el fix convertía POSTGRES_USER y $$user de postgres en
+// rutas y rompía Immich.
+func TestFillUnresolvedPathVars_IgnoresEnvAndCommand(t *testing.T) {
+	// Compose tipo Immich postgres · variables en environment y command
+	compose := `services:
+  database:
+    image: tensorchord/pgvecto-rs:pg14
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_DB: ${DB_DATABASE_NAME}
+    volumes:
+      - ${DB_DATA_LOCATION}:/var/lib/postgresql/data
+    command: postgres -c 'search_path="$$user", public, vectors'
+`
+	autoEnv := map[string]interface{}{
+		"CONFIG_PATH":      testContainerPath,
+		"DB_PASSWORD":      "secret",
+		"DB_USERNAME":      "postgres",
+		"DB_DATABASE_NAME": "immich",
+		"DB_DATA_LOCATION": testContainerPath + "/postgres",
+	}
+
+	result := fillUnresolvedPathVars(compose, autoEnv, testContainerPath)
+
+	// NINGUNA de estas debe haberse añadido/modificado como ruta:
+	forbidden := []string{"POSTGRES_USER", "POSTGRES_DB", "POSTGRES_PASSWORD", "user"}
+	for _, name := range forbidden {
+		if v, ok := result[name]; ok {
+			t.Errorf("variable %q NO debería tocarse (está en environment/command), pero se asignó %v", name, v)
+		}
+	}
+
+	// Las ya definidas se conservan con su valor original
+	if result["DB_USERNAME"] != "postgres" {
+		t.Errorf("DB_USERNAME se modificó: %v", result["DB_USERNAME"])
+	}
+	if result["DB_DATA_LOCATION"] != testContainerPath+"/postgres" {
+		t.Errorf("DB_DATA_LOCATION se modificó: %v", result["DB_DATA_LOCATION"])
+	}
+}
+
+// TestFillUnresolvedPathVars_OnlyVolumeVars · una var sin definir en un
+// volumen SÍ se rellena, pero la misma forma en environment NO.
+func TestFillUnresolvedPathVars_OnlyVolumeVars(t *testing.T) {
+	compose := `services:
+  app:
+    image: someapp:latest
+    environment:
+      SOME_CONFIG: ${SOME_CONFIG}
+    volumes:
+      - ${MEDIA_PATH}:/media
+`
+	autoEnv := map[string]interface{}{
+		"CONFIG_PATH": testContainerPath,
+	}
+
+	result := fillUnresolvedPathVars(compose, autoEnv, testContainerPath)
+
+	// MEDIA_PATH (en volumen) SÍ debe rellenarse
+	if _, ok := result["MEDIA_PATH"]; !ok {
+		t.Error("MEDIA_PATH (en volumen) debería rellenarse")
+	}
+	// SOME_CONFIG (en environment) NO debe tocarse
+	if _, ok := result["SOME_CONFIG"]; ok {
+		t.Error("SOME_CONFIG (en environment) NO debería tocarse")
+	}
+}
+
 // TestDefaultDirNameForVar · derivación de nombre de directorio.
 func TestDefaultDirNameForVar(t *testing.T) {
 	cases := map[string]string{
