@@ -28,6 +28,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 func dockerStackDeploy(w http.ResponseWriter, r *http.Request) {
@@ -187,6 +189,22 @@ func dockerStackDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	os.WriteFile(envFilePath, []byte(strings.Join(lines, "\n")+"\n"), 0644)
 
+	// APP-068 · Pull de imágenes ANTES del up · necesario para poder
+	// inspeccionar el UID de cada imagen y aplicar permisos correctos a los
+	// volúmenes de apps con UID propio (Grafana=472, Postgres=999, ...).
+	pullCmd := exec.Command("docker", "compose", "-f", composePath, "pull")
+	pullCmd.Dir = stackPath
+	if out, err := pullCmd.CombinedOutput(); err != nil {
+		// El pull puede fallar por imágenes que no soportan pull (build local)
+		// o problemas de red · no abortamos, el up reintentará el pull.
+		logMsg("docker: compose pull para %s devolvió: %s (continuando)", id, string(out))
+	}
+
+	// APP-068 · Aplicar ACLs por UID de imagen a los volúmenes ANTES del up.
+	// Apps con UID propio (no PUID/PGID) necesitan poder escribir en su
+	// volumen al arrancar. Genérico · lee el UID de cada imagen, sin hardcode.
+	applyUIDPermissions(compose, autoEnv)
+
 	// Deploy
 	cmd := exec.Command("docker", "compose", "-f", composePath, "up", "-d")
 	cmd.Dir = stackPath
@@ -196,7 +214,9 @@ func dockerStackDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fix permissions on container config dir after deploy
-	// Set group to nimos-share-docker-apps so FileManager can browse
+	// Set group to nimos-share-docker-apps so FileManager can browse.
+	// NOTA: esto añade el grupo, pero NO pisa las ACLs de UID puestas arriba
+	// (setfacl -m añade, no reemplaza · ambas conviven).
 	runSafe("chown", "-R", "root:nimos-share-docker-apps", containerPath)
 	runSafe("chmod", "-R", "2775", containerPath)
 	runSafe("setfacl", "-R", "-d", "-m", "g:nimos-share-docker-apps:rwx", containerPath)
@@ -448,4 +468,140 @@ func defaultDirNameForVar(varName string) string {
 		n = strings.ToLower(varName)
 	}
 	return n
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// APP-068 · Permisos de volúmenes para apps con UID propio
+// ─────────────────────────────────────────────────────────────────────────
+//
+// Problema: NimOS crea los volúmenes como root:nimos-share-docker-apps. Las
+// apps linuxserver.io (PUID/PGID) funcionan, pero las que corren con un UID
+// fijo propio (Grafana=472, PostgreSQL=999, ...) NO pueden escribir en su
+// volumen → "permission denied" → la app falla al arrancar.
+//
+// Solución: detectar el UID de la imagen de cada servicio y añadir una ACL
+// (setfacl) para ese UID sobre SUS volúmenes. Genérico · lee el UID de la
+// imagen, no de una lista hardcodeada de apps. No cambia el dueño/grupo (el
+// modelo de permisos por share de NimOS queda intacto · la ACL solo añade
+// al proceso interno del container, no a ningún usuario humano).
+//
+// Debe ejecutarse ANTES del `compose up` · grafana/postgres escriben al
+// arrancar, necesitan los permisos ya puestos.
+
+// composeForPerms es una vista mínima del compose para extraer servicios,
+// sus imágenes y sus volúmenes (bind mounts).
+type composeForPerms struct {
+	Services map[string]struct {
+		Image   string   `yaml:"image"`
+		Volumes []string `yaml:"volumes"`
+	} `yaml:"services"`
+}
+
+// applyUIDPermissions parsea el compose, y para cada servicio cuya imagen
+// declare un UID propio no-root, aplica una ACL a los volúmenes de ese
+// servicio que residan bajo el pool.
+//
+//   compose      · texto del compose (con variables aún sin expandir)
+//   envVars      · el .env ya resuelto (para expandir ${VAR} en los volúmenes)
+//   pulledImages · si las imágenes ya están (para poder inspeccionar su UID)
+//
+// No falla la instalación si algo va mal · solo loguea. Mejor instalar con
+// un posible permiso de menos (que el workaround manual arregla) que abortar.
+func applyUIDPermissions(compose string, envVars map[string]interface{}) {
+	var parsed composeForPerms
+	if err := yaml.Unmarshal([]byte(compose), &parsed); err != nil {
+		logMsg("docker: applyUIDPermissions · no se pudo parsear compose: %v (se omite)", err)
+		return
+	}
+
+	for svcName, svc := range parsed.Services {
+		if svc.Image == "" {
+			continue
+		}
+		// UID que usa la imagen · docker inspect lee Config.User de la imagen.
+		uid := imageUID(svc.Image)
+		if uid == "" || uid == "0" || uid == "root" {
+			// Sin UID propio (corre como root) o linuxserver (PUID/PGID) ·
+			// no necesita ACL especial.
+			continue
+		}
+
+		// Para cada volumen tipo "host:container[:opts]", si el lado host
+		// (tras expandir variables) está bajo el pool, aplicar ACL.
+		for _, vol := range svc.Volumes {
+			hostPath := resolveVolumeHostPath(vol, envVars)
+			if hostPath == "" {
+				continue
+			}
+			if !strings.HasPrefix(hostPath, nimosPoolsRoot()) {
+				continue // volumen fuera del pool (ej. /etc/localtime) · no tocar
+			}
+			// Crear el dir si no existe (Docker lo crearía como root si no)
+			os.MkdirAll(hostPath, 0775)
+			// ACL para el UID del servicio · no cambia dueño/grupo.
+			runSafe("setfacl", "-R", "-m", "u:"+uid+":rwx", hostPath)
+			runSafe("setfacl", "-R", "-d", "-m", "u:"+uid+":rwx", hostPath)
+			logMsg("docker: applyUIDPermissions · ACL u:%s:rwx en %s (servicio %s)",
+				uid, hostPath, svcName)
+		}
+	}
+}
+
+// imageUID devuelve el UID (o nombre de usuario) que la imagen declara en
+// Config.User. Vacío si corre como root o no se puede determinar.
+func imageUID(image string) string {
+	out, ok := runSafe("docker", "inspect", image, "--format", "{{.Config.User}}")
+	if !ok {
+		return ""
+	}
+	user := strings.TrimSpace(out)
+	// Formatos posibles: "472", "472:472", "grafana", "postgres", "".
+	// Nos quedamos con la parte antes de ":" (el usuario/uid).
+	if idx := strings.IndexByte(user, ':'); idx >= 0 {
+		user = user[:idx]
+	}
+	return user
+}
+
+// resolveVolumeHostPath extrae el lado host de un volumen "host:container[:opts]"
+// y expande las variables ${VAR} usando envVars. Devuelve "" si es un volumen
+// con nombre (no bind mount) o no se puede resolver.
+func resolveVolumeHostPath(vol string, envVars map[string]interface{}) string {
+	parts := strings.SplitN(vol, ":", 2)
+	if len(parts) < 2 {
+		return "" // volumen con nombre (ej. "model-cache:/cache") · no bind mount
+	}
+	host := strings.TrimSpace(parts[0])
+	// Expandir ${VAR} y $VAR con envVars
+	host = expandComposeVars(host, envVars)
+	// Si tras expandir sigue teniendo $ o está vacío, no es resoluble
+	if host == "" || strings.Contains(host, "$") {
+		return ""
+	}
+	// Solo rutas absolutas (bind mounts), no volúmenes con nombre
+	if !strings.HasPrefix(host, "/") {
+		return ""
+	}
+	return host
+}
+
+// expandComposeVars sustituye ${VAR} y $VAR en s usando envVars.
+func expandComposeVars(s string, envVars map[string]interface{}) string {
+	return composeVarPattern.ReplaceAllStringFunc(s, func(match string) string {
+		m := composeVarPattern.FindStringSubmatch(match)
+		name := m[1]
+		if name == "" {
+			name = m[3]
+		}
+		if val, ok := envVars[name]; ok {
+			return fmt.Sprintf("%v", val)
+		}
+		return match // no resuelta · dejar tal cual (se filtrará luego)
+	})
+}
+
+// nimosPoolsRoot devuelve el prefijo de los pools para validar que un volumen
+// está dentro del área gestionada por NimOS.
+func nimosPoolsRoot() string {
+	return "/nimos/pools/"
 }

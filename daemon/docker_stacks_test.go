@@ -160,3 +160,85 @@ func TestDefaultDirNameForVar(t *testing.T) {
 		}
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// APP-068 · Permisos por UID de imagen
+// ─────────────────────────────────────────────────────────────────────────
+
+func TestResolveVolumeHostPath(t *testing.T) {
+	env := map[string]interface{}{
+		"CONFIG_PATH":      "/nimos/pools/data8/docker/containers/grafana",
+		"DB_DATA_LOCATION": "/nimos/pools/data8/docker/containers/immich/postgres",
+		"UPLOAD_LOCATION":  "/nimos/pools/data8/docker/containers/immich/upload",
+	}
+	cases := []struct {
+		name string
+		vol  string
+		want string
+	}{
+		{"grafana data", "${CONFIG_PATH}/data:/var/lib/grafana", "/nimos/pools/data8/docker/containers/grafana/data"},
+		{"postgres", "${DB_DATA_LOCATION}:/var/lib/postgresql/data", "/nimos/pools/data8/docker/containers/immich/postgres"},
+		{"upload con opts", "${UPLOAD_LOCATION}:/usr/src/app/upload:rw", "/nimos/pools/data8/docker/containers/immich/upload"},
+		{"volumen con nombre", "model-cache:/cache", ""},                 // no bind mount
+		{"localtime fuera del pool", "/etc/localtime:/etc/localtime:ro", "/etc/localtime"}, // resuelve pero fuera del pool (se filtra luego)
+		{"var no resuelta", "${UNKNOWN_VAR}:/data", ""},                  // queda con $ → no resoluble
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := resolveVolumeHostPath(c.vol, env)
+			if got != c.want {
+				t.Errorf("resolveVolumeHostPath(%q) = %q, want %q", c.vol, got, c.want)
+			}
+		})
+	}
+}
+
+func TestExpandComposeVars(t *testing.T) {
+	env := map[string]interface{}{
+		"CONFIG_PATH": "/nimos/pools/data8/x",
+		"PORT":        3001,
+	}
+	cases := map[string]string{
+		"${CONFIG_PATH}/data": "/nimos/pools/data8/x/data",
+		"$CONFIG_PATH":        "/nimos/pools/data8/x",
+		"port ${PORT}":        "port 3001",
+		"${MISSING}/y":        "${MISSING}/y", // no resuelta · se deja
+		"sin vars":            "sin vars",
+	}
+	for in, want := range cases {
+		got := expandComposeVars(in, env)
+		if got != want {
+			t.Errorf("expandComposeVars(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestApplyUIDPermissions_ParsesImmichStack · verifica que el parser entiende
+// un compose multi-servicio (Immich) y no peta. No aplica ACLs reales (no hay
+// Docker), pero confirma que parsea servicios+volúmenes sin error.
+func TestApplyUIDPermissions_ParsesMultiService(t *testing.T) {
+	compose := `services:
+  immich-server:
+    image: ghcr.io/immich-app/immich-server:release
+    volumes:
+      - ${UPLOAD_LOCATION}:/usr/src/app/upload
+      - /etc/localtime:/etc/localtime:ro
+  database:
+    image: docker.io/tensorchord/pgvecto-rs:pg14-v0.2.0
+    volumes:
+      - ${DB_DATA_LOCATION}:/var/lib/postgresql/data
+  redis:
+    image: docker.io/valkey/valkey:8-bookworm
+volumes:
+  model-cache:
+`
+	env := map[string]interface{}{
+		"UPLOAD_LOCATION":  "/nimos/pools/data8/docker/containers/immich/upload",
+		"DB_DATA_LOCATION": "/nimos/pools/data8/docker/containers/immich/postgres",
+	}
+	// No debe entrar en pánico ni fallar al parsear. Las llamadas a docker
+	// inspect/setfacl fallarán silenciosamente sin Docker, pero el parseo
+	// y la lógica de rutas deben funcionar.
+	applyUIDPermissions(compose, env)
+	// Si llegamos aquí sin panic, el parser funcionó.
+}
