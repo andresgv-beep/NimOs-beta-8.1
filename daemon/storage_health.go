@@ -313,11 +313,37 @@ func CollectDiagnostics(input DiagnosticInput) []Diagnostic {
 	}
 
 	// ── Pool-level checks ──
-	// Beta 8.1: el check ZFS FAULTED (basado en ZpoolHealth) fue eliminado.
-	// BTRFS no tiene un equivalente directo; el estado degradado se infiere
-	// de errores per-disk + missing devices, que ya están cubiertos arriba.
+	// El estado degradado por errores per-disk + missing devices ya está
+	// cubierto arriba. Aquí añadimos la detección de read-only.
+
+	// R2: pool montado en read-only.
+	// BTRFS se remonta solo en `ro` cuando detecta errores de I/O, para
+	// protegerse. La UI seguía intentando escribir y chocaba con EIO crípticos.
+	// Lo reportamos como diagnóstico claro para que el health lo marque degradado.
+	if input.MountPoint != "" && poolMountIsReadOnly(input.MountPoint) {
+		diagnostics = append(diagnostics, Diagnostic{
+			Code:     "pool_readonly",
+			Severity: 3,
+			Detail:   "Pool montado en solo-lectura (posibles errores de I/O). Revisa el estado SMART del disco y los logs del kernel (dmesg).",
+		})
+	}
 
 	return diagnostics
+}
+
+// poolMountIsReadOnly comprueba si el mountpoint está montado en modo `ro`.
+// Storage solo mira el estado real del kernel vía findmnt.
+func poolMountIsReadOnly(mountPoint string) bool {
+	out, ok := runSafe("findmnt", "-n", "-o", "OPTIONS", "--target", mountPoint)
+	if !ok {
+		return false
+	}
+	for _, o := range strings.Split(strings.TrimSpace(out), ",") {
+		if o == "ro" {
+			return true
+		}
+	}
+	return false
 }
 
 // ─── ComputePoolHealth ───────────────────────────────────────────────────────
@@ -398,6 +424,14 @@ func ComputePoolHealth(
 		status = "critical"
 		reasonCode = "pool_faulted"
 		reasonMessage = "Pool inaccesible — estado FAULTED"
+
+	case hasCodes["pool_readonly"]:
+		// R2: un pool en read-only no acepta escrituras. Es grave — el usuario
+		// no puede crear shares ni los servicios escribir. BTRFS suele entrar
+		// en ro tras errores de I/O, así que se trata como crítico con causa clara.
+		status = "critical"
+		reasonCode = "pool_readonly"
+		reasonMessage = "Pool en solo-lectura — no acepta escrituras. Posibles errores de disco; revisa SMART y dmesg."
 
 	case effective < 0:
 		status = "critical"

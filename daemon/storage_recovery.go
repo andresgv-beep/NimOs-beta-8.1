@@ -123,6 +123,8 @@ func (s *StorageService) resolveOrphanOperation(ctx context.Context, op *Operati
 		return s.resolveOrphanCreatePool(ctx, op)
 	case OpTypeDestroyPool:
 		return s.resolveOrphanDestroyPool(ctx, op)
+	case OpTypeImportPool:
+		return s.resolveOrphanImportPool(ctx, op)
 	case OpTypeAddDevice, OpTypeRemoveDevice, OpTypeReplaceDevice, OpTypeConvertProfile:
 		// Estas ops mutan un pool existente. Sin un mecanismo más fino
 		// (que es Beta 9), no podemos saber si terminó o no. Inconclusive.
@@ -230,6 +232,50 @@ func (s *StorageService) resolveOrphanDestroyPool(ctx context.Context, op *Opera
 	return inconclusiveOutcome(fmt.Sprintf(
 		"destroy_pool: BTRFS filesystem '%s' still exists on disk. "+
 			"Manual cleanup required.", data.BtrfsUUID))
+}
+
+// resolveOrphanImportPool — caso import_pool interrumpido.
+//
+// Import adopta un filesystem BTRFS ya existente en disco como pool managed:
+// NO toca el filesystem (no mkfs, no wipe), solo lo registra en la DB y lo
+// monta. Por eso la recuperación es segura y determinista:
+//
+//   - El FS de origen NUNCA se daña (import no es destructivo).
+//   - Si el pool quedó persistido en la DB → import completó → completed.
+//   - Si el pool NO está en la DB → el registro no se completó. Como el FS
+//     sigue intacto en disco, es seguro marcar rolled_back: el usuario puede
+//     reintentar el import sin riesgo (aparecerá de nuevo como observado).
+func (s *StorageService) resolveOrphanImportPool(ctx context.Context, op *Operation) recoveryOutcome {
+	var data struct {
+		Name      string `json:"name"`
+		BtrfsUUID string `json:"btrfs_uuid"`
+		UUID      string `json:"uuid"`
+	}
+	if err := json.Unmarshal(op.Data, &data); err != nil {
+		return inconclusiveOutcome(fmt.Sprintf("import_pool data unmarshal: %v", err))
+	}
+	uuid := data.BtrfsUUID
+	if uuid == "" {
+		uuid = data.UUID
+	}
+	if uuid == "" {
+		return inconclusiveOutcome("import_pool: empty uuid in operation data")
+	}
+
+	// ¿El pool quedó registrado en la DB?
+	pool, err := s.repo.GetPoolByBtrfsUUID(ctx, uuid)
+	if err == nil && pool != nil {
+		// Import completó: el pool existe en la DB. Completed.
+		return completedOutcome()
+	}
+
+	// El pool no está en la DB. Como import NO daña el FS de origen, es seguro
+	// marcar rolled_back: el FS sigue intacto en disco y reaparecerá como
+	// observado para reintentarlo. Sin riesgo de pérdida de datos.
+	return rolledBackOutcome(fmt.Sprintf(
+		"import_pool '%s' (uuid %s) rolled back: no quedó registrado en la BD. "+
+			"El filesystem sigue intacto en disco; reaparecerá como observado para reimportar.",
+		data.Name, uuid))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -132,31 +132,41 @@ func cleanOrphanPoolDirs() {
 		}
 		dirPath := filepath.Join(nimosPoolsDir, e.Name())
 
-		// Skip known pools
+		// Regla 1: saltar pools conocidos (en la BD)
 		if knownMounts[dirPath] {
 			continue
 		}
 
-		// Skip if something real is mounted here
+		// Regla 2: saltar si hay algo montado aquí (pool vivo)
 		if isPathOnMountedPool(dirPath) {
 			continue
 		}
 
-		// Extra safety: only delete if directory is EMPTY. If it has
-		// content, log it — could be data the user wants to recover.
-		subEntries, err := os.ReadDir(dirPath)
-		if err == nil && len(subEntries) > 0 {
-			logMsg("cleanOrphanPoolDirs: skipping non-empty orphan %s (%d items inside)",
-				dirPath, len(subEntries))
-			continue
+		// Regla 3 (grace period): no borrar carpetas recién creadas — podría
+		// ser un pool en proceso de creación (carpeta existe pero aún no está
+		// montada ni en la BD por unos segundos). Evita una race con CreatePool.
+		if info, err := e.Info(); err == nil {
+			if time.Since(info.ModTime()) < 5*time.Minute {
+				logMsg("cleanOrphanPoolDirs: skip '%s' — creada hace <5min (grace period)", dirPath)
+				continue
+			}
 		}
 
-		// Orphan AND empty AND nothing mounted — safe to remove.
-		if err := os.Remove(dirPath); err != nil {
+		// Pasó las reglas: es una carpeta huérfana confirmada (no es pool
+		// conocido, no está montada, no es reciente). Decisión de diseño
+		// (Andrés, 01/06): destruir un pool = dejarlo limpio. Una huérfana con
+		// contenido es basura de un pool ya destruido (Docker escribe al pool,
+		// no a la SD, desde el fix de data-root). Se borra con contenido y todo.
+		subEntries, _ := os.ReadDir(dirPath)
+		if len(subEntries) > 0 {
+			logMsg("cleanOrphanPoolDirs: borrando huérfana '%s' con %d items (basura de pool destruido)",
+				dirPath, len(subEntries))
+		}
+		if err := os.RemoveAll(dirPath); err != nil {
 			logMsg("cleanOrphanPoolDirs: failed to remove %s: %v", dirPath, err)
 			continue
 		}
-		logMsg("Cleaned empty orphan directory: %s", dirPath)
+		logMsg("Cleaned orphan directory: %s", dirPath)
 	}
 }
 

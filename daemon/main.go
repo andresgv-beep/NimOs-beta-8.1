@@ -781,10 +781,23 @@ func main() {
 		logMsg("Storage observer disabled by NIMOS_NO_STORAGE_OBSERVER=1")
 	}
 
-	// FIRST: Mount all pools before anything else touches storage.
-	// Beta 8: ZFS no longer supported; only BTRFS auto-mount.
-	btrfsAutoMountOnStartup()
+	// FIRST: Reconciliar estado de montaje antes de que nada toque storage.
+	// Fase R1: monta pools no montados, desapila capas, reubica pools en
+	// sitio equivocado (/media/ por udisks2), detecta read-only.
+	// Sustituye al antiguo btrfsAutoMountOnStartup (que solo montaba a ciegas).
+	if mr, err := reconcileMountState(context.Background()); err != nil {
+		logMsg("startup: reconcileMountState error: %v", err)
+		// Fallback: el auto-mount simple de siempre, por si reconcile falla
+		btrfsAutoMountOnStartup()
+	} else if mr.Failed > 0 {
+		logMsg("startup: WARNING — %d pools no se pudieron reconciliar (ver logs)", mr.Failed)
+	}
 	startupStorage()
+
+	// R3: limpiar mount-points huérfanos al arrancar (carpetas de pools
+	// destruidos que quedaron en /nimos/pools/). Tras reconcileMountState,
+	// así los pools válidos ya están montados y NO se confunden con huérfanos.
+	cleanOrphanPoolDirs()
 
 	// THEN: Start monitoring (cleanOrphanMountPoints runs here, AFTER pools are mounted)
 	startStorageMonitoring()
