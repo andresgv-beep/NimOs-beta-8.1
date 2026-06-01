@@ -117,8 +117,8 @@ func TestCaddyClient_SyncSuccess(t *testing.T) {
 	if err := client.SyncAppRoutes(context.Background(), routes); err != nil {
 		t.Fatalf("SyncAppRoutes: %v", err)
 	}
-	if receivedMethod != http.MethodPut {
-		t.Errorf("method = %q, want PUT", receivedMethod)
+	if receivedMethod != http.MethodPatch {
+		t.Errorf("method = %q, want PATCH", receivedMethod)
 	}
 	if !strings.Contains(receivedPath, "nimos_apps") {
 		t.Errorf("path = %q, want to contain nimos_apps", receivedPath)
