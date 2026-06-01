@@ -200,10 +200,11 @@ func dockerStackDeploy(w http.ResponseWriter, r *http.Request) {
 		logMsg("docker: compose pull para %s devolvió: %s (continuando)", id, string(out))
 	}
 
-	// APP-068 · Aplicar ACLs por UID de imagen a los volúmenes ANTES del up.
-	// Apps con UID propio (no PUID/PGID) necesitan poder escribir en su
-	// volumen al arrancar. Genérico · lee el UID de cada imagen, sin hardcode.
-	applyUIDPermissions(compose, autoEnv)
+	// APP-068 · Aplicar permisos por volumen ANTES del up.
+	//   - Volúmenes de BD (postgres, etc.) → 0700 exclusivo (devueltos en dbVols)
+	//   - Volúmenes de apps con UID propio (Grafana) → ACL
+	// Las BBDD escriben al arrancar, necesitan los permisos ya puestos.
+	dbVols := applyUIDPermissions(compose, autoEnv)
 
 	// Deploy
 	cmd := exec.Command("docker", "compose", "-f", composePath, "up", "-d")
@@ -213,13 +214,13 @@ func dockerStackDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fix permissions on container config dir after deploy
+	// Fix permissions on container config dir after deploy.
 	// Set group to nimos-share-docker-apps so FileManager can browse.
-	// NOTA: esto añade el grupo, pero NO pisa las ACLs de UID puestas arriba
-	// (setfacl -m añade, no reemplaza · ambas conviven).
-	runSafe("chown", "-R", "root:nimos-share-docker-apps", containerPath)
-	runSafe("chmod", "-R", "2775", containerPath)
-	runSafe("setfacl", "-R", "-d", "-m", "g:nimos-share-docker-apps:rwx", containerPath)
+	//
+	// CRÍTICO: los volúmenes de BD (dbVols) se EXCLUYEN de este modelo · postgres
+	// y otras BBDD exigen 0700 sin setgid/grupo/ACL, y este chmod -R los rompería.
+	// applyUIDPermissions ya les puso 0700 exclusivo; aquí NO los tocamos.
+	applySharePermsExcluding(containerPath, dbVols)
 	runSafe("chmod", "-R", "775", stackPath)
 
 	// Register stack
@@ -510,37 +511,70 @@ type composeForPerms struct {
 	} `yaml:"services"`
 }
 
-// applyUIDPermissions parsea el compose, y para cada servicio cuya imagen
-// declare un UID propio no-root, aplica una ACL a los volúmenes de ese
-// servicio que residan bajo el pool.
+// dbContainerPaths son rutas DENTRO del container donde las bases de datos
+// guardan sus datos. Un volumen que monte a una de estas rutas es un volumen
+// de BD y necesita permisos 0700 exclusivos (NO el modelo de shares de NimOS).
 //
-//   compose      · texto del compose (con variables aún sin expandir)
-//   envVars      · el .env ya resuelto (para expandir ${VAR} en los volúmenes)
-//   pulledImages · si las imágenes ya están (para poder inspeccionar su UID)
+// PostgreSQL, MariaDB/MySQL, MongoDB y similares EXIGEN que su directorio de
+// datos sea 0700, propiedad de su UID, SIN setgid/grupo/ACL. El modelo normal
+// de NimOS (chmod 2775 + grupo + ACL para que el FileManager navegue) ROMPE
+// estas bases de datos (postgres entra en PANIC). Por eso se detectan y se les
+// da trato especial.
+var dbContainerPaths = []string{
+	"/var/lib/postgresql/data", // PostgreSQL
+	"/var/lib/mysql",           // MySQL / MariaDB
+	"/var/lib/mariadb",         // MariaDB (alternativa)
+	"/data/db",                 // MongoDB
+	"/bitnami/postgresql",      // imágenes bitnami postgres
+	"/bitnami/mariadb",         // imágenes bitnami mariadb
+}
+
+// isDBContainerPath indica si una ruta-container corresponde al directorio de
+// datos de una base de datos (que necesita 0700 exclusivo).
+func isDBContainerPath(containerPath string) bool {
+	cp := strings.TrimRight(strings.TrimSpace(containerPath), "/")
+	for _, dbPath := range dbContainerPaths {
+		if cp == dbPath {
+			return true
+		}
+	}
+	return false
+}
+
+// applyUIDPermissions parsea el compose y, para cada volumen bajo el pool,
+// aplica los permisos correctos según su tipo:
 //
-// No falla la instalación si algo va mal · solo loguea. Mejor instalar con
-// un posible permiso de menos (que el workaround manual arregla) que abortar.
-func applyUIDPermissions(compose string, envVars map[string]interface{}) {
+//   - Volumen de BD (monta a /var/lib/postgresql/data, etc.): permisos 0700
+//     EXCLUSIVOS del UID de la imagen, SIN setgid/grupo/ACL. Las BBDD lo exigen
+//     (postgres entra en PANIC con setgid/ACL). Estos volúmenes se DEVUELVEN en
+//     la lista para que el modelo de shares recursivo posterior los EXCLUYA.
+//
+//   - Volumen normal de app con UID propio (Grafana=472, etc.): ACL para ese
+//     UID, sin cambiar dueño/grupo (el modelo de shares de NimOS sigue activo
+//     y el FileManager puede navegar).
+//
+//   compose · texto del compose · envVars · el .env ya resuelto
+//
+// Devuelve las rutas-host de los volúmenes de BD (para excluirlas del
+// chmod -R / setfacl -R del modelo de shares).
+//
+// Debe ejecutarse ANTES del `compose up` · las BBDD escriben al arrancar.
+// No falla la instalación si algo va mal · solo loguea.
+func applyUIDPermissions(compose string, envVars map[string]interface{}) []string {
+	var dbVolumes []string
+
 	var parsed composeForPerms
 	if err := yaml.Unmarshal([]byte(compose), &parsed); err != nil {
 		logMsg("docker: applyUIDPermissions · no se pudo parsear compose: %v (se omite)", err)
-		return
+		return dbVolumes
 	}
 
 	for svcName, svc := range parsed.Services {
 		if svc.Image == "" {
 			continue
 		}
-		// UID que usa la imagen · docker inspect lee Config.User de la imagen.
 		uid := imageUID(svc.Image)
-		if uid == "" || uid == "0" || uid == "root" {
-			// Sin UID propio (corre como root) o linuxserver (PUID/PGID) ·
-			// no necesita ACL especial.
-			continue
-		}
 
-		// Para cada volumen tipo "host:container[:opts]", si el lado host
-		// (tras expandir variables) está bajo el pool, aplicar ACL.
 		for _, vol := range svc.Volumes {
 			hostPath := resolveVolumeHostPath(vol, envVars)
 			if hostPath == "" {
@@ -549,15 +583,44 @@ func applyUIDPermissions(compose string, envVars map[string]interface{}) {
 			if !strings.HasPrefix(hostPath, nimosPoolsRoot()) {
 				continue // volumen fuera del pool (ej. /etc/localtime) · no tocar
 			}
-			// Crear el dir si no existe (Docker lo crearía como root si no)
+
+			containerPath := volumeContainerPath(vol)
+
+			if isDBContainerPath(containerPath) {
+				// ── Volumen de BASE DE DATOS · 0700 exclusivo del UID ──
+				// postgres/mariadb/mongo exigen su dir 0700, dueño = su UID,
+				// sin setgid/grupo/ACL. El modelo de shares los rompe.
+				dbUID := uid
+				if dbUID == "" || dbUID == "0" || dbUID == "root" {
+					// Si la imagen no declara UID (algunas BBDD), default 999
+					// (postgres/mariadb/mongo usan 999 casi universalmente).
+					dbUID = "999"
+				}
+				os.MkdirAll(hostPath, 0700)
+				// Quitar CUALQUIER ACL heredada (postgres rechaza ACLs)
+				runSafe("setfacl", "-R", "-b", hostPath)
+				// Dueño exclusivo = UID de la BD, sin grupo compartido
+				runSafe("chown", "-R", dbUID+":"+dbUID, hostPath)
+				// 0700 · solo el dueño, sin setgid
+				runSafe("chmod", "-R", "700", hostPath)
+				dbVolumes = append(dbVolumes, hostPath)
+				logMsg("docker: applyUIDPermissions · volumen BD %s → 0700 dueño %s "+
+					"(servicio %s · excluido del modelo de shares)", hostPath, dbUID, svcName)
+				continue
+			}
+
+			// ── Volumen normal con UID propio (Grafana, etc.) · ACL ──
+			if uid == "" || uid == "0" || uid == "root" {
+				continue // root o linuxserver (PUID/PGID) · no necesita ACL
+			}
 			os.MkdirAll(hostPath, 0775)
-			// ACL para el UID del servicio · no cambia dueño/grupo.
 			runSafe("setfacl", "-R", "-m", "u:"+uid+":rwx", hostPath)
 			runSafe("setfacl", "-R", "-d", "-m", "u:"+uid+":rwx", hostPath)
 			logMsg("docker: applyUIDPermissions · ACL u:%s:rwx en %s (servicio %s)",
 				uid, hostPath, svcName)
 		}
 	}
+	return dbVolumes
 }
 
 // imageUID devuelve el UID (o nombre de usuario) que la imagen declara en
@@ -574,6 +637,20 @@ func imageUID(image string) string {
 		user = user[:idx]
 	}
 	return user
+}
+
+// volumeContainerPath extrae el lado-container de un volumen
+// "host:container[:opts]". Devuelve "" si no se puede determinar.
+//   "${DB_DATA}:/var/lib/postgresql/data"     → "/var/lib/postgresql/data"
+//   "${CONFIG}/data:/var/lib/grafana"          → "/var/lib/grafana"
+//   "${UPLOAD}:/usr/src/app/upload:rw"         → "/usr/src/app/upload"
+func volumeContainerPath(vol string) string {
+	parts := strings.Split(vol, ":")
+	if len(parts) < 2 {
+		return ""
+	}
+	// parts[0] = host · parts[1] = container · parts[2..] = opciones (ro, rw)
+	return strings.TrimSpace(parts[1])
 }
 
 // resolveVolumeHostPath extrae el lado host de un volumen "host:container[:opts]"
@@ -617,4 +694,55 @@ func expandComposeVars(s string, envVars map[string]interface{}) string {
 // está dentro del área gestionada por NimOS.
 func nimosPoolsRoot() string {
 	return "/nimos/pools/"
+}
+
+// applySharePermsExcluding aplica el modelo de permisos de shares de NimOS
+// (grupo nimos-share-docker-apps + setgid + ACL, para que el FileManager
+// navegue) a las entradas de containerPath, EXCLUYENDO por completo los
+// volúmenes de BD · que NUNCA deben recibir setgid/grupo/ACL.
+//
+// CLAVE: NO usamos `chmod -R containerPath` (arrasaría con los volúmenes de BD,
+// corrompiendo postgres a media inicialización · era el bug original). En su
+// lugar, recorremos las entradas de primer nivel y aplicamos el modelo solo a
+// las que NO son volúmenes de BD, descendiendo recursivamente en cada una.
+//
+// dbVolumes son rutas-host absolutas de los volúmenes de BD a excluir.
+func applySharePermsExcluding(containerPath string, dbVolumes []string) {
+	// Conjunto de rutas de BD para comparación rápida
+	isDBVol := func(path string) bool {
+		clean := strings.TrimRight(path, "/")
+		for _, db := range dbVolumes {
+			if strings.TrimRight(db, "/") == clean {
+				return true
+			}
+		}
+		return false
+	}
+
+	entries, err := os.ReadDir(containerPath)
+	if err != nil {
+		// Si no podemos listar, aplicar el modelo a la raíz solamente (sin -R)
+		// para no arriesgar tocar volúmenes de BD recursivamente.
+		runSafe("chown", "root:nimos-share-docker-apps", containerPath)
+		runSafe("chmod", "2775", containerPath)
+		return
+	}
+
+	// La raíz de la app sí lleva el modelo (no es volumen de BD)
+	runSafe("chown", "root:nimos-share-docker-apps", containerPath)
+	runSafe("chmod", "2775", containerPath)
+	runSafe("setfacl", "-d", "-m", "g:nimos-share-docker-apps:rwx", containerPath)
+
+	// Cada entrada de primer nivel: si NO es volumen de BD, aplicar el modelo
+	// recursivamente. Si ES de BD, NO tocarla (ya tiene su 0700 exclusivo).
+	for _, e := range entries {
+		full := filepath.Join(containerPath, e.Name())
+		if isDBVol(full) {
+			logMsg("docker: applySharePerms · saltando volumen BD %s (conserva 0700)", full)
+			continue
+		}
+		runSafe("chown", "-R", "root:nimos-share-docker-apps", full)
+		runSafe("chmod", "-R", "2775", full)
+		runSafe("setfacl", "-R", "-d", "-m", "g:nimos-share-docker-apps:rwx", full)
+	}
 }

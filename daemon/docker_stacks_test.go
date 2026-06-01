@@ -7,6 +7,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -284,9 +285,8 @@ func TestExpandComposeVars(t *testing.T) {
 	}
 }
 
-// TestApplyUIDPermissions_ParsesImmichStack · verifica que el parser entiende
-// un compose multi-servicio (Immich) y no peta. No aplica ACLs reales (no hay
-// Docker), pero confirma que parsea servicios+volúmenes sin error.
+// TestApplyUIDPermissions_ParsesMultiService · verifica que el parser entiende
+// un compose multi-servicio (Immich) y detecta el volumen de BD.
 func TestApplyUIDPermissions_ParsesMultiService(t *testing.T) {
 	compose := `services:
   immich-server:
@@ -295,7 +295,7 @@ func TestApplyUIDPermissions_ParsesMultiService(t *testing.T) {
       - ${UPLOAD_LOCATION}:/usr/src/app/upload
       - /etc/localtime:/etc/localtime:ro
   database:
-    image: docker.io/tensorchord/pgvecto-rs:pg14-v0.2.0
+    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0
     volumes:
       - ${DB_DATA_LOCATION}:/var/lib/postgresql/data
   redis:
@@ -307,9 +307,61 @@ volumes:
 		"UPLOAD_LOCATION":  "/nimos/pools/data8/docker/containers/immich/upload",
 		"DB_DATA_LOCATION": "/nimos/pools/data8/docker/containers/immich/postgres",
 	}
-	// No debe entrar en pánico ni fallar al parsear. Las llamadas a docker
-	// inspect/setfacl fallarán silenciosamente sin Docker, pero el parseo
-	// y la lógica de rutas deben funcionar.
-	applyUIDPermissions(compose, env)
-	// Si llegamos aquí sin panic, el parser funcionó.
+	// Sin Docker real, docker inspect/setfacl fallan silenciosamente, pero la
+	// detección de volúmenes de BD (por ruta-container) SÍ debe funcionar.
+	dbVols := applyUIDPermissions(compose, env)
+
+	// El volumen de postgres (/var/lib/postgresql/data) debe detectarse como BD
+	found := false
+	for _, v := range dbVols {
+		if v == "/nimos/pools/data8/docker/containers/immich/postgres" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("el volumen de postgres debería detectarse como BD · dbVols = %v", dbVols)
+	}
+	// El volumen de upload NO es de BD · no debe estar en la lista
+	for _, v := range dbVols {
+		if strings.Contains(v, "upload") {
+			t.Errorf("el volumen upload NO es de BD pero está en dbVols: %v", dbVols)
+		}
+	}
+}
+
+// TestIsDBContainerPath · verifica la detección de rutas de BD.
+func TestIsDBContainerPath(t *testing.T) {
+	dbPaths := map[string]bool{
+		"/var/lib/postgresql/data":  true,
+		"/var/lib/postgresql/data/": true,  // con barra final
+		"/var/lib/mysql":            true,
+		"/var/lib/mariadb":          true,
+		"/data/db":                  true,
+		"/usr/src/app/upload":       false, // immich upload · no es BD
+		"/var/lib/grafana":          false, // grafana · no es BD
+		"/config":                   false, // linuxserver · no es BD
+		"/media":                    false,
+	}
+	for path, want := range dbPaths {
+		if got := isDBContainerPath(path); got != want {
+			t.Errorf("isDBContainerPath(%q) = %v, want %v", path, got, want)
+		}
+	}
+}
+
+// TestVolumeContainerPath · extracción del lado-container del volumen.
+func TestVolumeContainerPath(t *testing.T) {
+	cases := map[string]string{
+		"${DB_DATA}:/var/lib/postgresql/data":   "/var/lib/postgresql/data",
+		"${CONFIG}/data:/var/lib/grafana":        "/var/lib/grafana",
+		"${UPLOAD}:/usr/src/app/upload:rw":       "/usr/src/app/upload",
+		"model-cache:/cache":                     "/cache",
+		"/etc/localtime:/etc/localtime:ro":       "/etc/localtime",
+		"singlepart":                             "",
+	}
+	for vol, want := range cases {
+		if got := volumeContainerPath(vol); got != want {
+			t.Errorf("volumeContainerPath(%q) = %q, want %q", vol, got, want)
+		}
+	}
 }
