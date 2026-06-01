@@ -28,17 +28,45 @@ func openDB() error {
 	}
 
 	var err error
-	db, err = sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=10000&_foreign_keys=ON")
+	// IMPORTANTE: usamos _pragma= (sintaxis de modernc.org/sqlite) en vez de
+	// _busy_timeout= (sintaxis del driver CGO mattn, que este driver IGNORA).
+	// Cada _pragma se ejecuta en CADA conexión nueva del pool · crítico para
+	// que busy_timeout aplique a las 8 conexiones, no solo a una. Sin esto,
+	// las conexiones sin timeout fallan con "database is locked" al instante.
+	//
+	//   journal_mode(WAL)    · lectores concurrentes + un escritor
+	//   busy_timeout(10000)  · esperar 10s si hay contención, en vez de fallar
+	//   foreign_keys(1)      · CASCADE/RESTRICT en tablas storage_*
+	//   synchronous(NORMAL)  · seguro en WAL, escrituras más rápidas (menos lock)
+	dsn := dbPath + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)" +
+		"&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
+	db, err = sql.Open("sqlite", dsn)
 	if err != nil {
 		return fmt.Errorf("cannot open database: %v", err)
 	}
 
-	// SQLite only supports one writer at a time. Using a single connection
-	// serializes all DB operations through Go's connection pool, preventing
-	// "database is locked" errors entirely.
-	// WAL mode allows concurrent readers but still only one writer.
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
+	// ── Pool de conexiones · concurrencia con WAL ──
+	//
+	// Beta 8.2 (01/06/2026) · fix del cuello de botella de BD.
+	//
+	// PROBLEMA RESUELTO: antes había SetMaxOpenConns(1) · UNA sola conexión
+	// para todo el daemon. Eso serializaba TODAS las operaciones de BD ·
+	// lecturas incluidas. Durante operaciones largas (instalar app, scan de
+	// devices cada 30s), NimHealth y los reconcilers se bloqueaban esperando
+	// la única conexión. Síntomas en producción: "NimHealth muerto durante
+	// instalaciones", apps colgadas en "Instalando...", ListPools con
+	// "context canceled", y el daemon llegando a caerse bajo carga.
+	//
+	// SOLUCIÓN: WAL permite MÚLTIPLES LECTORES concurrentes + UN escritor.
+	// Subimos MaxOpenConns para aprovecharlo · las lecturas (la mayoría de las
+	// ops) corren en paralelo. Las escrituras las serializa SQLite (un
+	// escritor) y busy_timeout=10s hace que esperen en vez de fallar.
+	//
+	// Los PRAGMAs van en el DSN (_pragma=) para que se apliquen a CADA
+	// conexión del pool, no solo a una.
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(4)
+	db.SetConnMaxLifetime(0) // conexiones a archivo local · no reciclar
 
 	// Force foreign_keys ON explicitly. The query string `?_foreign_keys=ON`
 	// is not honored by modernc.org/sqlite, so we set it via PRAGMA after
