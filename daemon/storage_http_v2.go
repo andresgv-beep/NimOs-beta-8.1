@@ -937,9 +937,8 @@ func (h *StorageHTTPHandler) handleScrubStatus(w http.ResponseWriter, r *http.Re
 // GET  ?pool=NAME   → lista snapshots (delegado a listSnapshots, BTRFS nativo)
 // POST {pool,name}  → crea snapshot (delegado a createSnapshot, BTRFS nativo)
 //
-// Beta 8: listSnapshots devuelve {snapshots: []}, BTRFS subvolume listing
-// pendiente Beta 9. createSnapshot sí está implementado en BTRFS.
-// Ambas funciones viven en storage_btrfs_features.go.
+// Snapshots implementados sobre subvolúmenes BTRFS read-only en
+// <mountpoint>/.snapshots/. Funciones en storage_btrfs_features.go.
 
 func (h *StorageHTTPHandler) handleSnapshots(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {

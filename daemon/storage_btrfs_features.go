@@ -13,6 +13,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -42,29 +44,144 @@ func btrfsSnapshotDestroy(snapPath string) (string, error) {
 	return "", nil
 }
 
-// ─── Snapshot endpoints (BTRFS subvolume implementation pending Beta 9) ──────
+// ─── Snapshot endpoints (BTRFS subvolumes) ──────────────────────────────────
+//
+// Los snapshots viven en <mountpoint>/.snapshots/<nombre>. Son snapshots
+// read-only de subvolumen (btrfs subvolume snapshot -r), baratos en BTRFS
+// (copy-on-write, no duplican datos hasta que divergen).
 
-// listSnapshots returns snapshots for a pool.
-// Beta 8: returns empty array. BTRFS snapshot listing via subvolumes is
-// pending in Beta 9 (requires walking the subvolume tree).
+const snapshotsSubdir = ".snapshots"
+
+// listSnapshots devuelve los snapshots existentes de un pool, leyendo el
+// directorio .snapshots de su mountpoint.
 func listSnapshots(poolName string) map[string]interface{} {
-	return map[string]interface{}{"snapshots": []interface{}{}}
+	mp := resolveMountPointByName(poolName)
+	snapDir := filepath.Join(mp, snapshotsSubdir)
+
+	entries, err := os.ReadDir(snapDir)
+	if err != nil {
+		// Si no existe el dir .snapshots, no hay snapshots (no es error).
+		return map[string]interface{}{"snapshots": []interface{}{}}
+	}
+
+	snapshots := []interface{}{}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		info, ierr := e.Info()
+		created := ""
+		if ierr == nil {
+			created = info.ModTime().UTC().Format(time.RFC3339)
+		}
+		snapshots = append(snapshots, map[string]interface{}{
+			"name":    e.Name(),
+			"path":    filepath.Join(snapDir, e.Name()),
+			"created": created,
+		})
+	}
+	return map[string]interface{}{"snapshots": snapshots}
 }
 
-// createSnapshot stub. Beta 8: not supported.
+// createSnapshot crea un snapshot read-only del pool. Body: {pool, name}.
 func createSnapshot(body map[string]interface{}) map[string]interface{} {
+	poolName, _ := body["pool"].(string)
+	snapName, _ := body["name"].(string)
+	if poolName == "" || snapName == "" {
+		return map[string]interface{}{"ok": false, "error": "pool y name son requeridos"}
+	}
+	if !isValidSnapshotName(snapName) {
+		return map[string]interface{}{"ok": false, "error": "nombre de snapshot inválido (solo a-z, 0-9, _, -)"}
+	}
+
+	mp := resolveMountPointByName(poolName)
+	snapDir := filepath.Join(mp, snapshotsSubdir)
+	if err := os.MkdirAll(snapDir, 0755); err != nil {
+		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("no se pudo crear .snapshots: %v", err)}
+	}
+
+	snapPath := filepath.Join(snapDir, snapName)
+	if _, err := os.Stat(snapPath); err == nil {
+		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("ya existe un snapshot llamado %q", snapName)}
+	}
+
+	// Snapshot read-only del subvolumen raíz del pool (el mountpoint).
+	if stderr, err := btrfsSnapshotCreate(mp, snapPath); err != nil {
+		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("btrfs snapshot falló: %s", stderr)}
+	}
+
+	logMsg("Snapshot creado: pool=%s name=%s path=%s", poolName, snapName, snapPath)
+	return map[string]interface{}{"ok": true, "name": snapName, "path": snapPath}
+}
+
+// rollbackSnapshot revierte el pool al estado de un snapshot. Body: {pool, name}.
+//
+// OPERACIÓN DELICADA: toca datos vivos. BTRFS no tiene un "rollback" atómico
+// nativo para el subvolumen raíz montado, así que la estrategia segura es:
+//   1. Verificar que el snapshot existe.
+//   2. Crear un snapshot de seguridad del estado ACTUAL antes de revertir
+//      (red de seguridad: si el rollback sale mal, el usuario puede volver).
+//   3. Sincronizar a disco (sync).
+// El "swap" real del subvolumen requiere remontar y es disruptivo; en 8.1
+// dejamos el rollback como "restaurable vía snapshot de seguridad + aviso",
+// que es honesto y no arriesga datos. El swap completo es Beta 8.2.
+func rollbackSnapshot(body map[string]interface{}) map[string]interface{} {
+	poolName, _ := body["pool"].(string)
+	snapName, _ := body["name"].(string)
+	if poolName == "" || snapName == "" {
+		return map[string]interface{}{"ok": false, "error": "pool y name son requeridos"}
+	}
+	if !isValidSnapshotName(snapName) {
+		return map[string]interface{}{"ok": false, "error": "nombre de snapshot inválido"}
+	}
+
+	mp := resolveMountPointByName(poolName)
+	snapDir := filepath.Join(mp, snapshotsSubdir)
+	snapPath := filepath.Join(snapDir, snapName)
+
+	// 1. El snapshot debe existir.
+	if _, err := os.Stat(snapPath); err != nil {
+		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("el snapshot %q no existe", snapName)}
+	}
+
+	// 2. Red de seguridad: snapshot del estado actual antes de revertir.
+	safetyName := fmt.Sprintf("pre-rollback-%s-%d", snapName, time.Now().Unix())
+	safetyPath := filepath.Join(snapDir, safetyName)
+	if stderr, err := btrfsSnapshotCreate(mp, safetyPath); err != nil {
+		return map[string]interface{}{
+			"ok":    false,
+			"error": fmt.Sprintf("no se pudo crear snapshot de seguridad antes del rollback: %s", stderr),
+		}
+	}
+
+	// 3. Sincronizar a disco.
+	runCmd("sync", []string{}, CmdOptions{Timeout: 30 * time.Second})
+
+	logMsg("Rollback preparado: pool=%s snapshot=%s, seguridad=%s", poolName, snapName, safetyName)
 	return map[string]interface{}{
-		"ok":    false,
-		"error": "snapshot management not yet implemented for BTRFS (pending Beta 9)",
+		"ok":             true,
+		"snapshot":       snapName,
+		"safety_snapshot": safetyName,
+		"note": "Estado actual guardado en snapshot de seguridad. El intercambio " +
+			"completo del subvolumen activo (rollback total) requiere remontar el " +
+			"pool y se aplicará en Beta 8.2; por ahora los datos del snapshot están " +
+			"accesibles en " + snapPath + " para restauración manual.",
 	}
 }
 
-// rollbackSnapshot stub. Beta 8: not supported.
-func rollbackSnapshot(body map[string]interface{}) map[string]interface{} {
-	return map[string]interface{}{
-		"ok":    false,
-		"error": "snapshot rollback not yet implemented for BTRFS (pending Beta 9)",
+// isValidSnapshotName valida el nombre de un snapshot (evita inyección de path).
+func isValidSnapshotName(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
 	}
+	for _, r := range name {
+		ok := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_' || r == '-'
+		if !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // ─── SCRUB ───────────────────────────────────────────────────────────────────
