@@ -119,21 +119,65 @@ setup_usb_disk() {
   assert_safe_target "$TEST_DISK"
 }
 
-# teardown_disk: desmonta todo, libera loop, borra img. Idempotente.
-teardown_disk() {
-  # Desapilar cualquier mount sobre TEST_MNT
-  local n=0
-  while findmnt "$TEST_MNT" >/dev/null 2>&1 && [[ $n -lt 10 ]]; do
-    umount "$TEST_MNT" 2>/dev/null || umount -l "$TEST_MNT" 2>/dev/null
+# unmount_hard <mountpoint>: desmonta a conciencia — mata procesos que lo
+# ocupen (como los shims que vimos en producción), reintenta, y usa lazy como
+# último recurso. Deja el mountpoint libre o lo intenta con todas.
+unmount_hard() {
+  local mp="$1" n=0
+  while findmnt "$mp" >/dev/null 2>&1 && [[ $n -lt 10 ]]; do
+    # Si hay procesos con archivos abiertos ahí, matarlos (es un test, no prod)
+    fuser -km "$mp" 2>/dev/null || true
+    umount "$mp" 2>/dev/null || umount -l "$mp" 2>/dev/null
+    sleep 0.3
     n=$((n+1))
   done
-  rmdir "$TEST_MNT" 2>/dev/null || true
+  rmdir "$mp" 2>/dev/null || true
+}
 
+# free_loop <device>: libera un loop device a conciencia (reintenta).
+free_loop() {
+  local dev="$1"
+  [[ "$dev" == /dev/loop* ]] || return 0
+  local n=0
+  while losetup "$dev" >/dev/null 2>&1 && [[ $n -lt 5 ]]; do
+    losetup -d "$dev" 2>/dev/null || true
+    sleep 0.3
+    n=$((n+1))
+  done
+}
+
+# teardown_disk: desmonta todo, libera loop, borra img. Idempotente y robusto.
+teardown_disk() {
+  unmount_hard "$TEST_MNT"
   if [[ -n "$TEST_DISK" && "$TEST_DISK" == /dev/loop* ]]; then
-    losetup -d "$TEST_DISK" 2>/dev/null || true
+    free_loop "$TEST_DISK"
   fi
   [[ -n "$TEST_IMG" && -f "$TEST_IMG" ]] && rm -f "$TEST_IMG"
   TEST_DISK=""; TEST_IMG=""
+}
+
+# cleanup_test_residue: barre TODO residuo de tests anteriores que pudiera
+# haber quedado de una corrida que petó a medias. Solo toca cosas con los
+# prefijos de test (_t10, _destrtest) y loops asociados a .img de test.
+# NUNCA toca pools de producción (los prefijos son inequívocos).
+cleanup_test_residue() {
+  # 1. Desmontar cualquier mountpoint de test bajo /nimos/pools
+  while read -r mp; do
+    [[ -n "$mp" ]] && unmount_hard "$mp"
+  done < <(findmnt -rno TARGET 2>/dev/null | grep -E "/nimos/pools/(_t10|_destrtest)")
+
+  # 2. Liberar loops asociados a imágenes de test
+  while read -r dev backing; do
+    if [[ "$backing" == *destrtest_* || "$backing" == *t10_* ]]; then
+      free_loop "$dev"
+    fi
+  done < <(losetup -l -n -O NAME,BACK-FILE 2>/dev/null)
+
+  # 3. Borrar imágenes de test sueltas
+  rm -f /tmp/destrtest_*.img /tmp/t10_*.img 2>/dev/null
+
+  # 4. Borrar mount points de test vacíos
+  rmdir /nimos/pools/_t10_* /nimos/pools/_destrtest* 2>/dev/null || true
 }
 
 # make_btrfs <profile>: formatea TEST_DISK como BTRFS y lo monta en TEST_MNT.

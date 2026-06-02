@@ -8,6 +8,7 @@
 #   sudo ./run_all.sh                    # todos los tests, sobre loop devices
 #   sudo ./run_all.sh T02 T04            # solo los tests indicados
 #   sudo ALLOW_USB=1 USB_DISK=/dev/sdX ./run_all.sh   # permitir disco USB real
+#   sudo ./run_all.sh --clean            # barre residuos de corridas anteriores
 #
 # SEGURIDAD: por defecto solo usa loop devices (cero hardware real). Para usar
 # un disco USB real hay que pasar ALLOW_USB=1 explícitamente; aun así, los
@@ -20,6 +21,20 @@ if [[ $EUID -ne 0 ]]; then
   echo "Los tests de destrucción requieren root. Usa: sudo $0" >&2
   exit 1
 fi
+
+# --clean: barre cualquier residuo de tests anteriores (mounts _t10/_destrtest,
+# loops e .img de test) y sale. Útil si una corrida petó a medias o tras un
+# reinicio con residuos colgando. Solo toca cosas con prefijos de test.
+if [[ "${1:-}" == "--clean" ]]; then
+  source "$HERE/lib/common.sh"
+  echo "Barriendo residuos de tests de destrucción..."
+  cleanup_test_residue
+  echo "Hecho. Estado actual:"
+  echo "  mounts de test:  $(findmnt -rno TARGET 2>/dev/null | grep -cE '/nimos/pools/(_t10|_destrtest)') restantes"
+  echo "  loops de test:   $(losetup -l -n -O BACK-FILE 2>/dev/null | grep -cE 'destrtest_|t10_') restantes"
+  exit 0
+fi
+
 
 # Colores
 if [[ -t 1 ]]; then
