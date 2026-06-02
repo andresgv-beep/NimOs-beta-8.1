@@ -799,6 +799,15 @@ func main() {
 	// así los pools válidos ya están montados y NO se confunden con huérfanos.
 	cleanOrphanPoolDirs()
 
+	// STOR-01-A: detectar drift de layout (BD vs realidad BTRFS) tras un crash
+	// durante una op de layout. Solo detecta y marca el pool en recovery; no
+	// toca el layout. Requiere pools montados → va tras reconcileMountState.
+	if ld, err := detectLayoutDrift(context.Background()); err != nil {
+		logMsg("startup: detectLayoutDrift error: %v", err)
+	} else if ld.Drifted > 0 {
+		logMsg("startup: %d pools con drift de layout marcados en recovery", ld.Drifted)
+	}
+
 	// THEN: Start monitoring (cleanOrphanMountPoints runs here, AFTER pools are mounted)
 	startStorageMonitoring()
 	// Beta 8: ZFS scheduler removed. BTRFS scrub scheduling is handled by

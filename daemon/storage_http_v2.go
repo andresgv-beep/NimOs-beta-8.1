@@ -146,7 +146,8 @@ func httpStatusForCode(code string) int {
 		ErrCodeMinDisksReached,
 		ErrCodeDeviceNotEligible,
 		ErrCodeInsufficientDisks,
-		ErrCodeTransitionNotPermitted:
+		ErrCodeTransitionNotPermitted,
+		ErrCodePoolRecovery:
 		return http.StatusConflict
 	case ErrCodeBtrfsCommandFailed, ErrCodeMountFailed, ErrCodeInternal:
 		return http.StatusInternalServerError
@@ -344,6 +345,15 @@ func (h *StorageHTTPHandler) handlePoolByID(w http.ResponseWriter, r *http.Reque
 		}
 		h.convertProfile(w, r, id)
 
+	case rest == "recovery":
+		// STOR-01-C: resolución asistida de un pool en estado recovery.
+		// Body: {"action": "accept"} o {"action": "resume"}.
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w, "POST")
+			return
+		}
+		h.resolvePoolRecovery(w, r, id)
+
 	case rest == "devices":
 		if r.Method != http.MethodPost {
 			methodNotAllowed(w, "POST")
@@ -470,6 +480,41 @@ func (h *StorageHTTPHandler) convertProfile(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeData(w, http.StatusOK, op)
+}
+
+// ─── /pools/{id}/recovery ────────────────────────────────────────────────────
+// STOR-01-C: resolución asistida de un pool en estado recovery.
+
+type recoveryActionBody struct {
+	Action string `json:"action"` // "accept" | "resume"
+}
+
+func (h *StorageHTTPHandler) resolvePoolRecovery(w http.ResponseWriter, r *http.Request, id string) {
+	var body recoveryActionBody
+	if err := decodeJSONBody(r, &body); err != nil {
+		writeError(w, ErrCodeBadRequest, err.Error())
+		return
+	}
+
+	var err error
+	switch body.Action {
+	case "accept":
+		err = resolvePoolRecoveryAccept(r.Context(), id)
+	case "resume":
+		err = resolvePoolRecoveryResume(r.Context(), id)
+	default:
+		writeError(w, ErrCodeBadRequest, `action debe ser "accept" o "resume"`)
+		return
+	}
+
+	if err != nil {
+		writeError(w, ErrCodeInternal, err.Error())
+		return
+	}
+	writeData(w, http.StatusOK, map[string]interface{}{
+		"ok":     true,
+		"action": body.Action,
+	})
 }
 
 // ─── /pools/{id}/devices ──────────────────────────────────────────────────────
@@ -972,7 +1017,11 @@ func (h *StorageHTTPHandler) handlePoolDestroyByName(w http.ResponseWriter, r *h
 	}
 	result := destroyPoolBtrfs(req.Name)
 	if errStr, _ := result["error"].(string); errStr != "" {
-		writeError(w, ErrCodeBtrfsCommandFailed, errStr)
+		msg := errStr
+		if m, ok := result["message"].(string); ok && m != "" {
+			msg = m
+		}
+		writeError(w, errStr, msg)
 		return
 	}
 	writeData(w, http.StatusOK, result)

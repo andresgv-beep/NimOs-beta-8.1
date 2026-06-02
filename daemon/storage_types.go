@@ -321,6 +321,7 @@ const (
 	ErrCodePoolNotFound          = "pool_not_found"
 	ErrCodePoolNameTaken         = "pool_name_taken"
 	ErrCodePoolObserved          = "pool_observed"
+	ErrCodePoolRecovery          = "pool_recovery" // STOR-01-B: pool en recovery, solo ops de salida
 	ErrCodeCapabilityMissing     = "capability_missing"
 	ErrCodeOperationInProgress   = "operation_in_progress"
 	ErrCodeOperationNotFound     = "operation_not_found"

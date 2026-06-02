@@ -70,6 +70,20 @@ func (p *PolicyChecker) AllowsWithReason(pool *Pool, op OperationType) (bool, st
 		return false, ErrCodePoolNotFound
 	}
 
+	// STOR-01-B: un pool en estado `recovery` (drift de layout detectado tras
+	// crash) permite operaciones de "salida/gestión" — destruir, renombrar,
+	// cambiar control — para que el usuario pueda actuar sobre él. Pero NO
+	// permite nuevas operaciones de LAYOUT (add/remove/replace/convert): sería
+	// apilar otra mutación sobre un estado ya inconsistente.
+	if pool.ControlState == ControlStateRecovery {
+		switch op {
+		case OpTypeDestroyPool, OpTypeRenamePool, OpTypeControlChange:
+			return true, ""
+		default:
+			return false, ErrCodePoolRecovery
+		}
+	}
+
 	// Solo pools managed permiten mutaciones.
 	if pool.ControlState != ControlStateManaged {
 		return false, ErrCodePoolObserved

@@ -47,6 +47,20 @@ func destroyPoolBtrfs(poolName string) map[string]interface{} {
 		return map[string]interface{}{"error": fmt.Sprintf(`Pool "%s" not found`, poolName)}
 	}
 
+	// STOR-05: validar política antes de destruir. La ruta legacy (la que usa
+	// el frontend) no pasaba por la capa Service, así que se saltaba el
+	// checkPolicy — en concreto, la verificación de que el pool es `managed`
+	// y no `observed`. Sin esto, se podría destruir un pool que NimOS solo
+	// observa. Reutilizamos el policy del service (no duplicamos lógica).
+	if storageService != nil {
+		if err := storageService.checkPolicy(targetPool, OpTypeDestroyPool); err != nil {
+			return map[string]interface{}{
+				"error":   ErrCodePoolObserved,
+				"message": "No se puede destruir este pool: no está gestionado por NimOS (estado observado) o la operación no está permitida.",
+			}
+		}
+	}
+
 	mountPoint := targetPool.MountPoint
 	opts := CmdOptions{Timeout: 30 * time.Second}
 

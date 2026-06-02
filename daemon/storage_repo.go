@@ -297,6 +297,26 @@ func (r *StorageRepo) RenamePool(ctx context.Context, tx *sql.Tx, id, newName st
 	return err
 }
 
+// SetPoolProfile cambia el profile de un pool. Debe llamarse dentro de tx.
+// Añadido para STOR-07 (evitar UPDATE inline en el service) y STOR-01-C
+// (aceptar el profile real tras un drift).
+func (r *StorageRepo) SetPoolProfile(ctx context.Context, tx *sql.Tx, id string, profile Profile) error {
+	res, err := tx.ExecContext(ctx,
+		`UPDATE storage_pools
+		 SET profile = ?, generation = generation + 1
+		 WHERE id = ?`,
+		string(profile), id)
+	if err != nil {
+		return fmt.Errorf("SetPoolProfile: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return fmt.Errorf("SetPoolProfile: pool %q not found", id)
+	}
+	_, err = r.incrementGlobalGeneration(ctx, tx)
+	return err
+}
+
 // SetPoolControlState cambia el control_state de un pool.
 // Debe llamarse dentro de una transacción.
 func (r *StorageRepo) SetPoolControlState(ctx context.Context, tx *sql.Tx, id string, state ControlState) error {

@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -49,6 +50,24 @@ func (e *RealBtrfsExecutor) runCommand(ctx context.Context, name string, args ..
 	logMsg("BtrfsExecutor: %s %s", name, strings.Join(args, " "))
 
 	cmd := exec.CommandContext(cmdCtx, name, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("%s %s: %v: %s",
+			name, strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
+	return string(output), nil
+}
+
+// runCommandNoTimeout es como runCommand pero SIN el CmdTimeout de 30 min.
+// Para operaciones intrínsecamente largas (balance/convert) cuyo tiempo
+// depende del tamaño del array y puede ser de horas. Sigue respetando el
+// ctx del caller (si el daemon se apaga, el ctx se cancela y el comando
+// recibe la señal), pero no impone un límite artificial que mataría la
+// operación a la mitad. STOR-03.
+func (e *RealBtrfsExecutor) runCommandNoTimeout(ctx context.Context, name string, args ...string) (string, error) {
+	logMsg("BtrfsExecutor (long-op): %s %s", name, strings.Join(args, " "))
+
+	cmd := exec.CommandContext(ctx, name, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(output), fmt.Errorf("%s %s: %v: %s",
@@ -192,16 +211,38 @@ func (e *RealBtrfsExecutor) UnmountFilesystem(ctx context.Context, mountPoint st
 // ─────────────────────────────────────────────────────────────────────────────
 
 func (e *RealBtrfsExecutor) DestroyFilesystem(ctx context.Context, req DestroyFilesystemRequest) error {
-	// 1. Unmount
-	if req.Force {
-		_, _ = e.runCommand(ctx, "umount", "-l", req.MountPoint)
-	} else {
-		if err := e.UnmountFilesystem(ctx, req.MountPoint); err != nil {
-			return fmt.Errorf("DestroyFilesystem: unmount: %w", err)
+	// 1. Pre-check: ¿hay filesystems montados ENCIMA del pool? (overlays Docker,
+	//    binds...). Si los hay, el umount fallaría y dejaría un pool fantasma.
+	//    Solo miramos filesystem (findmnt -R), no consultamos otros módulos.
+	if req.MountPoint != "" {
+		out, _ := e.runCommand(ctx, "findmnt", "-R", "-n", "-o", "TARGET", req.MountPoint)
+		layers := 0
+		for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
+			if strings.TrimSpace(l) != "" {
+				layers++
+			}
+		}
+		if layers > 1 {
+			return fmt.Errorf("DestroyFilesystem: pool tiene %d filesystems montados encima (servicios activos); deténlos antes de destruir", layers-1)
 		}
 	}
 
-	// 2. Wipe each device
+	// 2. Unmount SIN lazy. El lazy (umount -l) desmonta del namespace pero deja
+	//    los inodos vivos → escrituras fantasma → el bug del 28/05. Si el unmount
+	//    falla, abortamos ANTES de wipear (wipear un FS montado lo corrompe).
+	//    Nota: se eliminó la rama req.Force con umount -l a propósito.
+	if req.MountPoint != "" {
+		if err := e.UnmountFilesystem(ctx, req.MountPoint); err != nil {
+			return fmt.Errorf("DestroyFilesystem: unmount: %w", err)
+		}
+		// Verificación post-unmount: findmnt debe devolver vacío.
+		check, _ := e.runCommand(ctx, "findmnt", "-n", "-o", "TARGET", req.MountPoint)
+		if strings.TrimSpace(check) != "" {
+			return fmt.Errorf("DestroyFilesystem: el pool sigue montado tras umount; hay procesos con archivos abiertos")
+		}
+	}
+
+	// 3. A partir de aquí el FS está confirmado desmontado. Seguro wipear.
 	for _, p := range req.ByIDPaths {
 		if err := e.WipeDevice(ctx, p); err != nil {
 			// No abortar — intentar limpiar todos los devices
@@ -209,7 +250,7 @@ func (e *RealBtrfsExecutor) DestroyFilesystem(ctx context.Context, req DestroyFi
 		}
 	}
 
-	// 3. Remove mount point if empty and under /nimos/pools
+	// 4. Remove mount point if empty and under /nimos/pools
 	if strings.HasPrefix(req.MountPoint, "/nimos/pools/") {
 		_ = os.Remove(req.MountPoint)
 	}
@@ -275,7 +316,13 @@ func (e *RealBtrfsExecutor) ConvertProfile(ctx context.Context, mountPoint strin
 		mountPoint,
 	}
 
-	_, err := e.runCommand(ctx, "btrfs", args...)
+	// STOR-03: un balance de conversión en un array grande supera de sobra los
+	// 30 min del CmdTimeout estándar (pensado para mkfs). Si dejáramos ese
+	// timeout, el context mataría el balance a media conversión, dejando el
+	// pool en estado intermedio. El balance de BTRFS es transaccional/resumible,
+	// pero matarlo genera un error innecesario. Usamos runCommandNoTimeout:
+	// el balance hace su propio control y termina cuando termina.
+	_, err := e.runCommandNoTimeout(ctx, "btrfs", args...)
 	if err != nil {
 		return fmt.Errorf("ConvertProfile: %w", err)
 	}
@@ -437,11 +484,131 @@ func isDeviceMounted(realPath string) bool {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func (e *RealBtrfsExecutor) GetFilesystemInfo(ctx context.Context, mountPoint string) (*FilesystemInfo, error) {
-	// Beta 8 nota: implementación completa pendiente de Bloque 3 cuando
-	// se conecte al scan real. Aquí dejamos el stub básico para que el
-	// service pueda llamarlo sin crashear.
-	// see docs/nimos_beta8_storage_plan.md fase 3 día 6
-	return &FilesystemInfo{}, nil
+	info := &FilesystemInfo{}
+
+	// ── 1. Total/Used desde `btrfs filesystem usage -b <mp>` ──────────────
+	// -b = bytes crudos (sin redondeo humano), parseable de forma fiable.
+	usageOut, err := e.runCommand(ctx, "btrfs", "filesystem", "usage", "-b", mountPoint)
+	if err == nil {
+		for _, line := range strings.Split(usageOut, "\n") {
+			line = strings.TrimSpace(line)
+			// "Device size:		  1000204886016"
+			if strings.HasPrefix(line, "Device size:") {
+				info.TotalBytes = parseTrailingInt(line)
+			}
+			// "Used:			   123456789"
+			if strings.HasPrefix(line, "Used:") {
+				info.UsedBytes = parseTrailingInt(line)
+			}
+		}
+	} else {
+		logMsg("GetFilesystemInfo: usage falló en %s: %v", mountPoint, err)
+	}
+
+	// ── 2. UUID + devices desde `btrfs filesystem show <mp>` ──────────────
+	showOut, err := e.runCommand(ctx, "btrfs", "filesystem", "show", mountPoint)
+	if err == nil {
+		for _, line := range strings.Split(showOut, "\n") {
+			line = strings.TrimSpace(line)
+			// "uuid: a0192857-..."
+			if idx := strings.Index(line, "uuid:"); idx >= 0 {
+				fields := strings.Fields(line[idx+len("uuid:"):])
+				if len(fields) > 0 && info.BtrfsUUID == "" {
+					info.BtrfsUUID = fields[0]
+				}
+			}
+			// "devid    1 size 111.79GiB used 5.02GiB path /dev/sda"
+			if strings.HasPrefix(line, "devid") {
+				dev := parseFsDevidLine(line)
+				if dev.DevicePath != "" {
+					info.Devices = append(info.Devices, dev)
+				}
+			}
+		}
+	} else {
+		logMsg("GetFilesystemInfo: show falló en %s: %v", mountPoint, err)
+	}
+
+	// ── 3. Errores por device desde `btrfs device stats <mp>` ─────────────
+	// Formato: "[/dev/sda].write_io_errs    22"
+	statsOut, err := e.runCommand(ctx, "btrfs", "device", "stats", mountPoint)
+	if err == nil {
+		errsByDev := parseDeviceStats(statsOut)
+		for i := range info.Devices {
+			if e, ok := errsByDev[info.Devices[i].DevicePath]; ok {
+				info.Devices[i].WriteErrors = e.write
+				info.Devices[i].ReadErrors = e.read
+				info.Devices[i].FlushErrors = e.flush
+			}
+		}
+	} else {
+		logMsg("GetFilesystemInfo: device stats falló en %s: %v", mountPoint, err)
+	}
+
+	return info, nil
+}
+
+// parseTrailingInt extrae el último entero de una línea (p.ej. "Used: 12345").
+func parseTrailingInt(line string) int64 {
+	fields := strings.Fields(line)
+	for i := len(fields) - 1; i >= 0; i-- {
+		if n, err := strconv.ParseInt(fields[i], 10, 64); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+// parseFsDevidLine parsea "devid N size X used Y path /dev/sdX" desde
+// `btrfs filesystem show`. Distinta de parseDevidLine (storage_btrfs_probe.go),
+// que usa formato --raw y devuelve *ObservedDevice.
+func parseFsDevidLine(line string) FilesystemDevice {
+	var dev FilesystemDevice
+	fields := strings.Fields(line)
+	for i := 0; i < len(fields)-1; i++ {
+		switch fields[i] {
+		case "devid":
+			if n, err := strconv.Atoi(fields[i+1]); err == nil {
+				dev.DeviceID = n
+			}
+		case "path":
+			dev.DevicePath = fields[i+1]
+		}
+	}
+	return dev
+}
+
+type devErrs struct{ write, read, flush int }
+
+// parseDeviceStats parsea la salida de `btrfs device stats`, devolviendo
+// los contadores de error indexados por device path.
+func parseDeviceStats(out string) map[string]devErrs {
+	result := map[string]devErrs{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		// "[/dev/sda].write_io_errs    22"
+		if !strings.HasPrefix(line, "[") {
+			continue
+		}
+		end := strings.Index(line, "]")
+		if end < 0 {
+			continue
+		}
+		devPath := line[1:end]
+		rest := strings.TrimSpace(line[end+1:])
+		val := parseTrailingInt(rest)
+		e := result[devPath]
+		switch {
+		case strings.HasPrefix(rest, ".write_io_errs"):
+			e.write = int(val)
+		case strings.HasPrefix(rest, ".read_io_errs"):
+			e.read = int(val)
+		case strings.HasPrefix(rest, ".flush_io_errs"):
+			e.flush = int(val)
+		}
+		result[devPath] = e
+	}
+	return result
 }
 
 // FilesystemExistsByUUID consulta `btrfs filesystem show` para ver si

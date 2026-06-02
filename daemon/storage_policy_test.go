@@ -22,6 +22,40 @@ import (
 // PolicyChecker.Allows
 // ─────────────────────────────────────────────────────────────────────────────
 
+// STOR-01-B: un pool en recovery permite salida (destroy/rename/control) pero
+// bloquea operaciones de layout.
+func TestStoragePolicyRecoveryAllowsExitBlocksLayout(t *testing.T) {
+	policy := NewPolicyChecker()
+	pool := &Pool{
+		ID:           "prec",
+		ControlState: ControlStateRecovery,
+		Capabilities: []string{"add_device", "remove_device", "convert_profile"},
+	}
+
+	// Validación: ops de salida PERMITIDAS
+	exitOps := []OperationType{OpTypeDestroyPool, OpTypeRenamePool, OpTypeControlChange}
+	for _, op := range exitOps {
+		allowed, code := policy.AllowsWithReason(pool, op)
+		if !allowed {
+			t.Errorf("%s en pool recovery: debería permitirse (salida), got code %q", op, code)
+		}
+	}
+
+	// Errores: ops de LAYOUT BLOQUEADAS con código pool_recovery
+	layoutOps := []OperationType{
+		OpTypeAddDevice, OpTypeRemoveDevice, OpTypeReplaceDevice, OpTypeConvertProfile,
+	}
+	for _, op := range layoutOps {
+		allowed, code := policy.AllowsWithReason(pool, op)
+		if allowed {
+			t.Errorf("%s en pool recovery: debería bloquearse (layout sobre estado inconsistente)", op)
+		}
+		if code != ErrCodePoolRecovery {
+			t.Errorf("%s en recovery: got code %q, want %q", op, code, ErrCodePoolRecovery)
+		}
+	}
+}
+
 func TestStoragePolicyAllowsObservedRejected(t *testing.T) {
 	policy := NewPolicyChecker()
 	pool := &Pool{
