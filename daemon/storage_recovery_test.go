@@ -335,6 +335,91 @@ func TestStorageRecoveryLayoutOpsAlwaysInconclusive(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// import_pool — recovery (STOR-01 R4)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Caso A: el pool quedó registrado en la BD → import completó → completed.
+func TestStorageRecoveryImportPoolCompleted(t *testing.T) {
+	service, _, cleanup := setupTestService(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// El pool SÍ está en la BD (el import llegó a persistir antes del crash).
+	tx, _ := service.db.BeginTx(ctx, nil)
+	poolID := newUUID()
+	service.repo.CreatePool(ctx, tx, &Pool{
+		ID:         poolID,
+		Name:       "imported-ok",
+		BtrfsUUID:  "uuid-import-done",
+		Profile:    ProfileSingle,
+		MountPoint: "/nimos/pools/imported-ok",
+	})
+	tx.Commit()
+
+	op := &Operation{
+		Type:   OpTypeImportPool,
+		PoolID: &poolID,
+		Status: OpStatusInProgress,
+		Data: rawJSON(map[string]interface{}{
+			"name":       "imported-ok",
+			"btrfs_uuid": "uuid-import-done",
+		}),
+	}
+	injectOrphanOp(t, service, op)
+
+	result, err := service.RecoverPendingOperations(ctx)
+	if err != nil {
+		t.Fatalf("RecoverPendingOperations: %v", err)
+	}
+	if result.Completed != 1 {
+		t.Errorf("Completed: got %d, want 1 (result: %+v)", result.Completed, result)
+	}
+
+	// El pool sigue en la BD (import completó, no se revierte)
+	pool, _ := service.repo.GetPool(ctx, poolID)
+	if pool == nil {
+		t.Error("pool should remain in DB after completed import recovery")
+	}
+}
+
+// Caso B: el pool NO está en la BD → import no completó → rolled_back.
+// Seguro porque import no daña el FS de origen (sigue intacto en disco).
+func TestStorageRecoveryImportPoolRolledBack(t *testing.T) {
+	service, _, cleanup := setupTestService(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// El pool NO está en la BD (el import murió antes de persistir).
+	op := &Operation{
+		Type:   OpTypeImportPool,
+		Status: OpStatusInProgress,
+		Data: rawJSON(map[string]interface{}{
+			"name":       "imported-fail",
+			"btrfs_uuid": "uuid-import-never-persisted",
+		}),
+	}
+	injectOrphanOp(t, service, op)
+
+	result, err := service.RecoverPendingOperations(ctx)
+	if err != nil {
+		t.Fatalf("RecoverPendingOperations: %v", err)
+	}
+	if result.RolledBack != 1 {
+		t.Errorf("RolledBack: got %d, want 1 (result: %+v)", result.RolledBack, result)
+	}
+
+	// El recovery marca la op como failed + ErrorCode=recovery_rolled_back
+	// (el contador RolledBack se deriva de ese código, no de un estado propio).
+	updated, _ := service.repo.GetOperation(ctx, op.ID)
+	if updated.Status != OpStatusFailed {
+		t.Errorf("status: got %q, want failed (rolled_back se marca vía ErrorCode)", updated.Status)
+	}
+	if updated.ErrorCode == nil || *updated.ErrorCode != ErrCodeRecoveryRolledBack {
+		t.Errorf("ErrorCode: got %v, want %q", updated.ErrorCode, ErrCodeRecoveryRolledBack)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Multiple operations en un solo recovery
 // ─────────────────────────────────────────────────────────────────────────────
 

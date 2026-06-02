@@ -799,6 +799,10 @@ func main() {
 	// así los pools válidos ya están montados y NO se confunden con huérfanos.
 	cleanOrphanPoolDirs()
 
+	// STOR-06: consumir el journal de wipe al arrancar. Si un wipe se
+	// interrumpió por un crash, lo reporta y limpia (el wipe es re-ejecutable).
+	journalRecoverOnBoot()
+
 	// STOR-01-A: detectar drift de layout (BD vs realidad BTRFS) tras un crash
 	// durante una op de layout. Solo detecta y marca el pool en recovery; no
 	// toca el layout. Requiere pools montados → va tras reconcileMountState.

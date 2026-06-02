@@ -195,7 +195,9 @@ const (
 	PhaseCompleted StepPhase = "completed"
 )
 
-const journalPath = "/var/lib/nimos/storage-journal.json"
+// journalPath es la ruta del journal de wipe. Es var (no const) para que los
+// tests puedan redirigirlo a un tmpdir; en producción usa el valor por defecto.
+var journalPath = "/var/lib/nimos/storage-journal.json"
 
 type JournalOp struct {
 	ID        string            `json:"id"`
@@ -239,6 +241,49 @@ func journalSave(op JournalOp) error {
 
 func journalClear() {
 	os.Remove(journalPath)
+}
+
+// journalRecoverOnBoot consume el journal de wipe al arrancar (STOR-06).
+// Si un wipe se interrumpió por un crash, el journal quedó con el último paso
+// alcanzado. Esta función lo lee, lo reporta con claridad (qué device, qué
+// paso) y lo limpia.
+//
+// Por qué solo limpiar y no "reanudar": un wipe es re-ejecutable desde cero
+// sin daño (borrar firmas dos veces es inocuo). Reanudar a media secuencia
+// sería más frágil que volver a empezar. Así que el consumidor deja el sistema
+// en estado conocido (sin journal pendiente) y, si el disco quedó a medio
+// wipear, el usuario simplemente relanza el wipe — que ahora parte limpio.
+//
+// Devuelve true si había un journal pendiente (hubo wipe interrumpido).
+func journalRecoverOnBoot() bool {
+	journalMu.Lock()
+	defer journalMu.Unlock()
+
+	data, err := os.ReadFile(journalPath)
+	if err != nil {
+		// No hay journal → no había wipe en curso. Caso normal.
+		return false
+	}
+
+	var op JournalOp
+	if e := json.Unmarshal(data, &op); e != nil {
+		// Journal corrupto: lo limpiamos igualmente para no arrastrarlo.
+		logMsg("StorageJournal: journal de wipe corrupto al arranque, limpiando: %v", e)
+		os.Remove(journalPath)
+		return true
+	}
+
+	devInfo := ""
+	if d, ok := op.Data["device"]; ok {
+		devInfo = fmt.Sprintf(" device=%s", d)
+	}
+	logMsg("StorageJournal: wipe interrumpido detectado al arranque "+
+		"(op=%s tipo=%s paso=%d fase=%s status=%s%s). "+
+		"El wipe es re-ejecutable; limpiando journal. Si el disco quedó a medias, relanza el wipe.",
+		op.ID, op.Type, op.Step, op.Phase, op.Status, devInfo)
+
+	os.Remove(journalPath)
+	return true
 }
 
 var storageLockFile *os.File

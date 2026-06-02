@@ -362,6 +362,18 @@ func (e *RealBtrfsExecutor) WipeDevice(ctx context.Context, byIDPath string) err
 		return fmt.Errorf("WipeDevice: refusing to wipe %s, currently mounted", realPath)
 	}
 
+	// STOR-09: cerrar la ventana TOCTOU. Entre el guard de arriba y el wipefs
+	// hay una ventana en la que el device podría montarse. La re-verificación
+	// inmediatamente antes del comando la reduce a microsegundos. Combinado con
+	// storageMu (que serializa las mutaciones de storage) y el hecho de que el
+	// daemon es el único actor, el riesgo queda prácticamente eliminado.
+	if isDeviceMounted(realPath) {
+		return fmt.Errorf("WipeDevice: %s se montó entre el check y el wipe (TOCTOU), abortando", realPath)
+	}
+	if isBootDisk(realPath) {
+		return fmt.Errorf("WipeDevice: %s detectado como boot disk en re-check, abortando", realPath)
+	}
+
 	// Solo entonces, wipefs
 	_, err = e.runCommand(ctx, "wipefs", "-a", byIDPath)
 	if err != nil {

@@ -777,14 +777,33 @@ func (s *StorageService) DestroyPool(ctx context.Context, poolID string) (*Opera
 // ─────────────────────────────────────────────────────────────────────────────
 
 // markOperationFailed actualiza la operation a failed con el código dado.
-// Best-effort: si la actualización falla, lo loggea pero no propaga.
+//
+// STOR-08: es best-effort POR DISEÑO, y es seguro por una garantía concreta:
+// si esta actualización falla (p.ej. la DB está momentáneamente bloqueada),
+// la operation queda en `in_progress`, y RecoverPendingOperations la recoge
+// en el siguiente arranque y la resuelve (storage_recovery.go). Es decir, el
+// peor caso de un fallo aquí es "la op se resuelve en el próximo boot en vez
+// de ahora", nunca una inconsistencia permanente.
+//
+// Hacemos un reintento corto para cerrar la ventana en el caso común (lock
+// transitorio), sin convertir esto en una operación que pueda bloquear.
 func (s *StorageService) markOperationFailed(ctx context.Context, opID, errMsg, errCode string) {
-	err := s.runInTx(ctx, func(tx *sql.Tx) error {
-		return s.repo.UpdateOperationStatus(ctx, tx, opID, OpStatusFailed, &errMsg, &errCode)
-	})
-	if err != nil {
-		logMsg("markOperationFailed: cannot update op %s: %v", opID, err)
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		err = s.runInTx(ctx, func(tx *sql.Tx) error {
+			return s.repo.UpdateOperationStatus(ctx, tx, opID, OpStatusFailed, &errMsg, &errCode)
+		})
+		if err == nil {
+			return
+		}
+		if attempt == 0 {
+			time.Sleep(50 * time.Millisecond) // breve, por si es un lock transitorio
+		}
 	}
+	// Tras el reintento sigue fallando: la op queda in_progress y el recovery
+	// la resolverá al próximo arranque. No propagamos (garantía documentada arriba).
+	logMsg("markOperationFailed: no se pudo marcar op %s tras reintento: %v "+
+		"(quedará para RecoverPendingOperations en el próximo boot)", opID, err)
 }
 
 // deviceIsAssigned devuelve true si el device está asignado a algún pool.
