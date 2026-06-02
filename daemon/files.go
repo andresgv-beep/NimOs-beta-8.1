@@ -46,16 +46,20 @@ func handleFilesRoutes(w http.ResponseWriter, r *http.Request) {
 	// CRIT-008: Generate short-lived download token (replaces session token in URLs)
 	if urlPath == "/api/files/download-token" && method == "POST" {
 		session := requireAuth(w, r)
-		if session == nil { return }
+		if session == nil {
+			return
+		}
 		body, _ := readBody(r)
 		share := bodyStr(body, "share")
 		path := bodyStr(body, "path")
 		if share == "" || path == "" {
-			jsonError(w, 400, "share and path required"); return
+			jsonError(w, 400, "share and path required")
+			return
 		}
 		token, err := dbDownloadTokenCreate(session.Username, session.Role, share, path)
 		if err != nil {
-			jsonError(w, 500, "Failed to create download token"); return
+			jsonError(w, 500, "Failed to create download token")
+			return
 		}
 		jsonOk(w, map[string]interface{}{"token": token})
 		return
@@ -151,39 +155,6 @@ func resolveShare(name string) (*ResolvedShare, error) {
 	}
 
 	return nil, fmt.Errorf("share not found: %s", name)
-}
-
-func validatePathWithinShare(sharePath, subPath string) (string, error) {
-	normalized := filepath.Clean(subPath)
-	// Remove leading ..
-	for strings.HasPrefix(normalized, "..") {
-		normalized = strings.TrimPrefix(normalized, "..")
-		normalized = strings.TrimPrefix(normalized, string(filepath.Separator))
-	}
-	full := filepath.Join(sharePath, normalized)
-	resolved, _ := filepath.Abs(full)
-	shareResolved, _ := filepath.Abs(sharePath)
-
-	// HARD-002: Resolve symlinks to prevent symlink escape attacks
-	// e.g. shares/photos/escape -> /etc/ would bypass prefix check without this
-	if evalResolved, err := filepath.EvalSymlinks(resolved); err == nil {
-		resolved = evalResolved
-	}
-	if evalShare, err := filepath.EvalSymlinks(shareResolved); err == nil {
-		shareResolved = evalShare
-	}
-
-	// HARD-003: prefix check must enforce a directory boundary. Without the
-	// separator, a sibling path with a prefix-matching name (e.g. share
-	// "/srv/media-secret" vs share "/srv/media") would be considered "inside"
-	// the share — strings.HasPrefix("/srv/media-secret/x", "/srv/media") is
-	// true. We require either an exact match (root of the share) or the next
-	// character after the share path to be a separator.
-	sep := string(filepath.Separator)
-	if resolved != shareResolved && !strings.HasPrefix(resolved, shareResolved+sep) {
-		return "", fmt.Errorf("invalid path: access denied")
-	}
-	return resolved, nil
 }
 
 // isPathOnMountedPool checks that the path is actually on a mounted pool,
@@ -318,14 +289,26 @@ func filesBrowse(w http.ResponseWriter, r *http.Request, session *DBSession) {
 		return
 	}
 
-	sharePath := share.Path
-	fullPath, err := validatePathWithinShare(sharePath, subPath)
+	rel, err := relWithinShare(subPath)
 	if err != nil {
 		jsonError(w, 400, err.Error())
 		return
 	}
 
-	entries, err := os.ReadDir(fullPath)
+	root, err := openRootAt(share.Path)
+	if err != nil {
+		jsonError(w, 500, "Cannot open share")
+		return
+	}
+	defer root.Close()
+
+	dir, err := root.Open(rel)
+	if err != nil {
+		jsonError(w, 400, "Cannot read directory")
+		return
+	}
+	entries, err := dir.ReadDir(-1)
+	dir.Close()
 	if err != nil {
 		jsonError(w, 400, "Cannot read directory")
 		return
@@ -402,14 +385,20 @@ func filesMkdir(w http.ResponseWriter, r *http.Request, session *DBSession) {
 		return
 	}
 
-	sharePath := share.Path
-	fullPath, err := validatePathWithinShare(sharePath, filepath.Join(dirPath, dirName))
+	rel, err := relWithinShare(filepath.Join(dirPath, dirName))
 	if err != nil {
 		jsonError(w, 400, err.Error())
 		return
 	}
 
-	if err := os.MkdirAll(fullPath, 0755); err != nil {
+	root, err := openRootAt(share.Path)
+	if err != nil {
+		jsonError(w, 500, "Cannot open share")
+		return
+	}
+	defer root.Close()
+
+	if err := mkdirAllIn(root, rel, 0755); err != nil {
 		jsonError(w, 500, err.Error())
 		return
 	}
@@ -443,24 +432,29 @@ func filesDelete(w http.ResponseWriter, r *http.Request, session *DBSession) {
 		return
 	}
 
-	sharePath := share.Path
-	fullPath, err := validatePathWithinShare(sharePath, filePath)
+	// Camino TOCTOU-safe: ruta relativa + os.Root anclado al share.
+	rel, err := relWithinShare(filePath)
 	if err != nil {
 		jsonError(w, 400, err.Error())
 		return
 	}
-
-	shareResolved, _ := filepath.Abs(sharePath)
-	if fullPath == shareResolved {
+	if rel == "." {
 		jsonError(w, 400, "Cannot delete share root")
 		return
 	}
 
-	if _, serr := os.Stat(fullPath); serr != nil {
+	root, err := openRootAt(share.Path)
+	if err != nil {
+		jsonError(w, 500, "Cannot open share")
+		return
+	}
+	defer root.Close()
+
+	if _, serr := root.Lstat(rel); serr != nil {
 		jsonError(w, 404, "File not found")
 		return
 	}
-	if err := os.RemoveAll(fullPath); err != nil {
+	if err := removeAllIn(root, rel); err != nil {
 		jsonError(w, 500, err.Error())
 		return
 	}
@@ -495,19 +489,29 @@ func filesRename(w http.ResponseWriter, r *http.Request, session *DBSession) {
 		return
 	}
 
-	sharePath := share.Path
-	fullOld, err := validatePathWithinShare(sharePath, oldPath)
+	relOld, err := relWithinShare(oldPath)
 	if err != nil {
 		jsonError(w, 400, err.Error())
 		return
 	}
-	fullNew, err := validatePathWithinShare(sharePath, newPath)
+	relNew, err := relWithinShare(newPath)
 	if err != nil {
 		jsonError(w, 400, err.Error())
+		return
+	}
+	if relOld == "." || relNew == "." {
+		jsonError(w, 400, "Cannot rename share root")
 		return
 	}
 
-	if err := os.Rename(fullOld, fullNew); err != nil {
+	root, err := openRootAt(share.Path)
+	if err != nil {
+		jsonError(w, 500, "Cannot open share")
+		return
+	}
+	defer root.Close()
+
+	if err := renameIn(root, relOld, relNew); err != nil {
 		jsonError(w, 500, err.Error())
 		return
 	}
@@ -551,74 +555,126 @@ func filesPaste(w http.ResponseWriter, r *http.Request, session *DBSession) {
 		return
 	}
 
-	srcSharePath := srcShare.Path
-	destSharePath := destShare.Path
-	fullSrc, err := validatePathWithinShare(srcSharePath, srcPath)
+	relSrc, err := relWithinShare(srcPath)
 	if err != nil {
 		jsonError(w, 400, err.Error())
 		return
 	}
-	fullDest, err := validatePathWithinShare(destSharePath, destPath)
+	relDest, err := relWithinShare(destPath)
 	if err != nil {
 		jsonError(w, 400, err.Error())
+		return
+	}
+	if relSrc == "." {
+		jsonError(w, 400, "Cannot move/copy share root")
 		return
 	}
 
+	srcRoot, err := openRootAt(srcShare.Path)
+	if err != nil {
+		jsonError(w, 500, "Cannot open source share")
+		return
+	}
+	defer srcRoot.Close()
+
+	sameShare := srcShare.Path == destShare.Path
+	var destRoot *os.Root
+	if sameShare {
+		destRoot = srcRoot
+	} else {
+		destRoot, err = openRootAt(destShare.Path)
+		if err != nil {
+			jsonError(w, 500, "Cannot open destination share")
+			return
+		}
+		defer destRoot.Close()
+	}
+
+	srcInfo, statErr := srcRoot.Lstat(relSrc)
+	if statErr != nil {
+		jsonError(w, 404, "Source not found")
+		return
+	}
+
+	// ── CUT (move) ──────────────────────────────────────────────────────
 	if action == "cut" {
-		if err := os.Rename(fullSrc, fullDest); err != nil {
-			// "invalid cross-device link" — different subvolumes, use cp + rm
-			if strings.Contains(err.Error(), "cross-device") || strings.Contains(err.Error(), "invalid cross") {
-				if _, ok := runSafe("cp", "-r", fullSrc, fullDest); !ok {
-					jsonError(w, 500, "Copy failed during cross-device move")
-					return
-				}
-				runSafe("rm", "-rf", fullSrc)
-			} else {
+		if sameShare {
+			// Mismo share/pool: rename atómico (mismo inode, instantáneo).
+			if err := renameIn(srcRoot, relSrc, relDest); err != nil {
 				jsonError(w, 500, err.Error())
 				return
 			}
+			jsonOk(w, map[string]interface{}{"ok": true})
+			return
+		}
+
+		// Cross-share: copia segura + borrado. Verificar espacio antes (SEC-3).
+		srcSize := pasteSrcSize(srcRoot, relSrc, srcInfo)
+		if !checkDestSpace(w, destShare.Path, srcSize) {
+			return
+		}
+		if err := crossRootCopyTree(srcRoot, relSrc, destRoot, relDest); err != nil {
+			// Limpieza parcial del destino ante fallo
+			removeAllIn(destRoot, relDest)
+			jsonError(w, 500, "Copy failed during cross-share move")
+			return
+		}
+		if err := removeAllIn(srcRoot, relSrc); err != nil {
+			logMsg("WARNING paste cut: copia OK pero borrado de origen falló: %s", err)
+		}
+		jsonOk(w, map[string]interface{}{"ok": true})
+		return
+	}
+
+	// ── COPY ────────────────────────────────────────────────────────────
+	srcSize := pasteSrcSize(srcRoot, relSrc, srcInfo)
+	if !checkDestSpace(w, destShare.Path, srcSize) {
+		return
+	}
+	if sameShare {
+		if err := copyTreeIn(srcRoot, relSrc, relDest); err != nil {
+			removeAllIn(srcRoot, relDest)
+			jsonError(w, 500, "Copy failed")
+			return
 		}
 	} else {
-		// Check available space on destination before copying
-		srcInfo, statErr := os.Stat(fullSrc)
-		if statErr != nil {
-			jsonError(w, 404, "Source not found")
-			return
-		}
-		var srcSize int64
-		if srcInfo.IsDir() {
-			// For directories, get total size with du
-			if out, ok := runSafe("du", "-sb", fullSrc); ok {
-				fields := strings.Fields(out)
-				if len(fields) >= 1 {
-					fmt.Sscanf(fields[0], "%d", &srcSize)
-				}
-			}
-		} else {
-			srcSize = srcInfo.Size()
-		}
-
-		availableBytes := getAvailableBytes(destSharePath)
-		logMsg("paste: src=%s size=%d dest=%s available=%d", fullSrc, srcSize, destSharePath, availableBytes)
-
-		if availableBytes == 0 {
-			jsonError(w, 507, "Disk quota exceeded — no space available on destination")
-			return
-		}
-		// availableBytes == -1 means unknown — allow the operation
-		if srcSize > 0 && availableBytes > 0 && srcSize > availableBytes {
-			jsonError(w, 507, fmt.Sprintf("Not enough space. Source: %s, Available: %s",
-				fmtSizeFiles(srcSize), fmtSizeFiles(availableBytes)))
-			return
-		}
-
-		// Copy recursively
-		if _, ok := runSafe("cp", "-r", fullSrc, fullDest); !ok {
+		if err := crossRootCopyTree(srcRoot, relSrc, destRoot, relDest); err != nil {
+			removeAllIn(destRoot, relDest)
 			jsonError(w, 500, "Copy failed")
 			return
 		}
 	}
 	jsonOk(w, map[string]interface{}{"ok": true})
+}
+
+// pasteSrcSize devuelve el tamaño del origen (fichero o árbol) de forma
+// TOCTOU-safe vía root, para los checks de quota. Reemplaza el shell-out a `du`.
+func pasteSrcSize(root *os.Root, rel string, info os.FileInfo) int64 {
+	if info.IsDir() {
+		sz, err := dirSizeIn(root, rel)
+		if err != nil {
+			return 0
+		}
+		return sz
+	}
+	return info.Size()
+}
+
+// checkDestSpace verifica que destSharePath tenga hueco para srcSize bytes.
+// Escribe el error HTTP y devuelve false si no cabe. availableBytes==-1
+// (desconocido) permite la operación.
+func checkDestSpace(w http.ResponseWriter, destSharePath string, srcSize int64) bool {
+	availableBytes := getAvailableBytes(destSharePath)
+	if availableBytes == 0 {
+		jsonError(w, 507, "Disk quota exceeded — no space available on destination")
+		return false
+	}
+	if srcSize > 0 && availableBytes > 0 && srcSize > availableBytes {
+		jsonError(w, 507, fmt.Sprintf("Not enough space. Source: %s, Available: %s",
+			fmtSizeFiles(srcSize), fmtSizeFiles(availableBytes)))
+		return false
+	}
+	return true
 }
 
 // ═══════════════════════════════════
@@ -697,11 +753,18 @@ func handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sharePath := share.Path
-	fullPath, err := validatePathWithinShare(sharePath, filepath.Join(uploadPath, fileName))
+	rel, err := relWithinShare(filepath.Join(uploadPath, fileName))
 	if err != nil {
 		jsonError(w, 400, err.Error())
 		return
 	}
+
+	root, err := openRootAt(sharePath)
+	if err != nil {
+		jsonError(w, 500, "Cannot open share")
+		return
+	}
+	defer root.Close()
 
 	// Check available space before writing
 	availableBytes := getAvailableBytes(sharePath)
@@ -728,10 +791,13 @@ func handleFileUpload(w http.ResponseWriter, r *http.Request) {
 		maxWrite = 500 * 1024 * 1024 // fallback 500MB if check fails
 	}
 
-	// Ensure parent dir exists
-	os.MkdirAll(filepath.Dir(fullPath), 0755)
+	// Ensure parent dir exists (vía root, TOCTOU-safe)
+	if err := mkdirAllIn(root, relDir(rel), 0755); err != nil {
+		jsonError(w, 500, err.Error())
+		return
+	}
 
-	dst, err := os.Create(fullPath)
+	dst, err := root.Create(rel)
 	if err != nil {
 		jsonError(w, 500, err.Error())
 		return
@@ -743,7 +809,7 @@ func handleFileUpload(w http.ResponseWriter, r *http.Request) {
 
 	if copyErr != nil && copyErr != io.EOF {
 		// Write failed — clean up partial file
-		os.Remove(fullPath)
+		root.Remove(rel)
 		jsonError(w, 507, "Write failed — disk full or quota exceeded")
 		return
 	}
@@ -751,7 +817,7 @@ func handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	// Check if the file was truncated (more data remains but we hit the limit)
 	if copyErr != io.EOF {
 		// We wrote maxWrite bytes but there's more data — file was too big
-		os.Remove(fullPath)
+		root.Remove(rel)
 		jsonError(w, 507, fmt.Sprintf("File too large for available space. Written: %s, Available: %s",
 			fmtSizeFiles(written), fmtSizeFiles(availableBytes)))
 		return
@@ -821,11 +887,18 @@ func handleChunkedUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sharePath := share.Path
-	fullPath, err := validatePathWithinShare(sharePath, filepath.Join(uploadPath, fileName))
+	rel, err := relWithinShare(filepath.Join(uploadPath, fileName))
 	if err != nil {
 		jsonError(w, 400, err.Error())
 		return
 	}
+
+	root, err := openRootAt(sharePath)
+	if err != nil {
+		jsonError(w, 500, "Cannot open share")
+		return
+	}
+	defer root.Close()
 
 	// On first chunk, check available space
 	if idx == 0 && totalSize > 0 {
@@ -841,13 +914,16 @@ func handleChunkedUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Store chunks on the destination pool (not system disk)
-	tmpDir := filepath.Join(sharePath, ".nimchunks", fmt.Sprintf("%x", hashStr(uploadPath+fileName)))
-	os.MkdirAll(tmpDir, 0755)
+	// Store chunks on the destination pool (not system disk), vía root.
+	tmpDirRel := joinRel(".nimchunks", fmt.Sprintf("%x", hashStr(uploadPath+fileName)))
+	if err := mkdirAllIn(root, tmpDirRel, 0755); err != nil {
+		jsonError(w, 500, "Cannot create chunk dir")
+		return
+	}
 
 	// Write this chunk to temp file
-	chunkFile := filepath.Join(tmpDir, fmt.Sprintf("chunk_%05d", idx))
-	dst, err := os.Create(chunkFile)
+	chunkRel := joinRel(tmpDirRel, fmt.Sprintf("chunk_%05d", idx))
+	dst, err := root.Create(chunkRel)
 	if err != nil {
 		jsonError(w, 500, "Cannot create chunk file")
 		return
@@ -855,27 +931,31 @@ func handleChunkedUpload(w http.ResponseWriter, r *http.Request) {
 	_, err = io.Copy(dst, r.Body)
 	dst.Close()
 	if err != nil {
-		os.Remove(chunkFile)
+		root.Remove(chunkRel)
 		jsonError(w, 500, "Chunk write failed")
 		return
 	}
 
 	// If this is the last chunk, assemble the file
 	if idx == total-1 {
-		os.MkdirAll(filepath.Dir(fullPath), 0755)
+		if err := mkdirAllIn(root, relDir(rel), 0755); err != nil {
+			jsonError(w, 500, err.Error())
+			removeAllIn(root, tmpDirRel)
+			return
+		}
 
-		finalFile, err := os.Create(fullPath)
+		finalFile, err := root.Create(rel)
 		if err != nil {
 			jsonError(w, 500, err.Error())
-			cleanupChunks(tmpDir)
+			removeAllIn(root, tmpDirRel)
 			return
 		}
 
 		// Concatenate all chunks in order
 		var writeErr error
 		for i := 0; i < total; i++ {
-			cf := filepath.Join(tmpDir, fmt.Sprintf("chunk_%05d", i))
-			chunk, err := os.Open(cf)
+			cfRel := joinRel(tmpDirRel, fmt.Sprintf("chunk_%05d", i))
+			chunk, err := root.Open(cfRel)
 			if err != nil {
 				writeErr = fmt.Errorf("missing chunk %d", i)
 				break
@@ -890,10 +970,10 @@ func handleChunkedUpload(w http.ResponseWriter, r *http.Request) {
 		finalFile.Close()
 
 		// Cleanup temp chunks
-		cleanupChunks(tmpDir)
+		removeAllIn(root, tmpDirRel)
 
 		if writeErr != nil {
-			os.Remove(fullPath)
+			root.Remove(rel)
 			jsonError(w, 500, writeErr.Error())
 			return
 		}
@@ -941,42 +1021,47 @@ func filesZip(w http.ResponseWriter, r *http.Request, session *DBSession) {
 		return
 	}
 
-	sharePath := share.Path
+	root, err := openRootAt(share.Path)
+	if err != nil {
+		jsonError(w, 500, "Cannot open share")
+		return
+	}
+	defer root.Close()
 
-	// Collect and validate paths
-	var absPaths []string
+	// Collect and validate paths (relativas al share)
+	var relPaths []string
 	var relNames []string
 	for _, rp := range rawPaths {
 		p, ok := rp.(string)
 		if !ok || p == "" {
 			continue
 		}
-		if strings.Contains(p, "..") {
-			jsonError(w, 400, "Invalid path")
-			return
-		}
-		abs, err := validatePathWithinShare(sharePath, p)
+		rel, err := relWithinShare(p)
 		if err != nil {
 			jsonError(w, 400, err.Error())
 			return
 		}
-		if _, err := os.Stat(abs); err != nil {
-			jsonError(w, 404, fmt.Sprintf("Not found: %s", filepath.Base(p)))
+		if rel == "." {
+			jsonError(w, 400, "Cannot zip share root")
 			return
 		}
-		absPaths = append(absPaths, abs)
-		relNames = append(relNames, filepath.Base(p))
+		if _, err := root.Lstat(rel); err != nil {
+			jsonError(w, 404, fmt.Sprintf("Not found: %s", relBase(rel)))
+			return
+		}
+		relPaths = append(relPaths, rel)
+		relNames = append(relNames, relBase(rel))
 	}
 
-	if len(absPaths) == 0 {
+	if len(relPaths) == 0 {
 		jsonError(w, 400, "No valid paths")
 		return
 	}
 
 	// Determine zip file destination (same dir as first path)
-	destDir := filepath.Dir(absPaths[0])
+	destDirRel := relDir(relPaths[0])
 	if zipName == "" {
-		if len(absPaths) == 1 {
+		if len(relPaths) == 1 {
 			zipName = relNames[0] + ".zip"
 		} else {
 			zipName = "archive.zip"
@@ -986,23 +1071,23 @@ func filesZip(w http.ResponseWriter, r *http.Request, session *DBSession) {
 		zipName += ".zip"
 	}
 	zipName = sanitizeFileName(zipName)
-	zipPath := filepath.Join(destDir, zipName)
+	zipRel := joinRel(destDirRel, zipName)
 
 	// Avoid overwriting — add suffix if exists
-	if _, err := os.Stat(zipPath); err == nil {
+	if _, err := root.Lstat(zipRel); err == nil {
 		base := strings.TrimSuffix(zipName, ".zip")
 		for i := 1; i < 100; i++ {
-			candidate := filepath.Join(destDir, fmt.Sprintf("%s (%d).zip", base, i))
-			if _, err := os.Stat(candidate); err != nil {
-				zipPath = candidate
-				zipName = filepath.Base(candidate)
+			candidate := joinRel(destDirRel, fmt.Sprintf("%s (%d).zip", base, i))
+			if _, err := root.Lstat(candidate); err != nil {
+				zipRel = candidate
+				zipName = relBase(candidate)
 				break
 			}
 		}
 	}
 
-	// Create zip file
-	zipFile, err := os.Create(zipPath)
+	// Create zip file (vía root)
+	zipFile, err := root.Create(zipRel)
 	if err != nil {
 		jsonError(w, 500, "Cannot create zip file")
 		return
@@ -1011,62 +1096,52 @@ func filesZip(w http.ResponseWriter, r *http.Request, session *DBSession) {
 	zw := zip.NewWriter(zipFile)
 
 	var walkErr error
-	for i, absPath := range absPaths {
-		info, _ := os.Stat(absPath)
+	for i, srcRel := range relPaths {
 		baseName := relNames[i]
 
-		if info.IsDir() {
-			// Walk directory
-			prefix := absPath
-			walkErr = filepath.Walk(absPath, func(path string, fi os.FileInfo, err error) error {
-				if err != nil {
-					return err
-				}
-				// Skip the zip file itself
-				if path == zipPath {
-					return nil
-				}
-				// Skip .nimchunks
-				if fi.IsDir() && fi.Name() == ".nimchunks" {
-					return filepath.SkipDir
-				}
+		entries, err := walkIn(root, srcRel)
+		if err != nil {
+			walkErr = err
+			break
+		}
 
-				relPath, _ := filepath.Rel(prefix, path)
-				entryName := filepath.Join(baseName, relPath)
+		for _, e := range entries {
+			// Skip symlinks (anti-fuga)
+			if e.Info.Mode()&os.ModeSymlink != 0 {
+				continue
+			}
+			// Skip the zip file itself
+			if e.Rel == zipRel {
+				continue
+			}
+			// Skip .nimchunks
+			if e.IsDir && relBase(e.Rel) == ".nimchunks" {
+				continue
+			}
 
-				if fi.IsDir() {
-					_, err := zw.Create(entryName + "/")
-					return err
-				}
+			// Nombre de entrada dentro del zip: baseName + ruta relativa al srcRel
+			var entryName string
+			if e.Rel == srcRel {
+				entryName = baseName
+			} else {
+				sub := strings.TrimPrefix(e.Rel, srcRel+"/")
+				entryName = baseName + "/" + sub
+			}
 
-				header, err := zip.FileInfoHeader(fi)
-				if err != nil {
-					return err
+			if e.IsDir {
+				if _, err := zw.Create(entryName + "/"); err != nil {
+					walkErr = err
+					break
 				}
-				header.Name = entryName
-				header.Method = zip.Deflate
+				continue
+			}
 
-				writer, err := zw.CreateHeader(header)
-				if err != nil {
-					return err
-				}
-
-				f, err := os.Open(path)
-				if err != nil {
-					return err
-				}
-				_, err = io.Copy(writer, f)
-				f.Close()
-				return err
-			})
-		} else {
-			// Single file
-			header, err := zip.FileInfoHeader(info)
+			header, err := zip.FileInfoHeader(e.Info)
 			if err != nil {
 				walkErr = err
 				break
 			}
-			header.Name = baseName
+			header.Name = entryName
 			header.Method = zip.Deflate
 
 			writer, err := zw.CreateHeader(header)
@@ -1075,7 +1150,7 @@ func filesZip(w http.ResponseWriter, r *http.Request, session *DBSession) {
 				break
 			}
 
-			f, err := os.Open(absPath)
+			f, err := root.Open(e.Rel)
 			if err != nil {
 				walkErr = err
 				break
@@ -1097,12 +1172,12 @@ func filesZip(w http.ResponseWriter, r *http.Request, session *DBSession) {
 	zipFile.Close()
 
 	if walkErr != nil {
-		os.Remove(zipPath)
+		root.Remove(zipRel)
 		jsonError(w, 500, fmt.Sprintf("Zip failed: %v", walkErr))
 		return
 	}
 
-	logMsg("zip: created %s", zipPath)
+	logMsg("zip: created %s in share %s", zipName, shareName)
 	jsonOk(w, map[string]interface{}{"ok": true, "name": zipName})
 }
 
@@ -1144,89 +1219,117 @@ func filesUnzip(w http.ResponseWriter, r *http.Request, session *DBSession) {
 		return
 	}
 
-	sharePath := share.Path
-	absPath, err := validatePathWithinShare(sharePath, filePath)
+	relZip, err := relWithinShare(filePath)
 	if err != nil {
 		jsonError(w, 400, err.Error())
 		return
 	}
 
 	// Verify it's a zip file
-	if !strings.HasSuffix(strings.ToLower(absPath), ".zip") {
+	if !strings.HasSuffix(strings.ToLower(relZip), ".zip") {
 		jsonError(w, 400, "Not a zip file")
 		return
 	}
 
-	zr, err := zip.OpenReader(absPath)
+	root, err := openRootAt(share.Path)
 	if err != nil {
+		jsonError(w, 500, "Cannot open share")
+		return
+	}
+	defer root.Close()
+
+	// Abrir el zip vía root (TOCTOU-safe) y leerlo como ReaderAt.
+	zf, err := root.Open(relZip)
+	if err != nil {
+		jsonError(w, 404, "Zip file not found")
+		return
+	}
+	zfStat, err := zf.Stat()
+	if err != nil {
+		zf.Close()
+		jsonError(w, 500, "Cannot stat zip")
+		return
+	}
+	zr, err := zip.NewReader(zf, zfStat.Size())
+	if err != nil {
+		zf.Close()
 		jsonError(w, 400, fmt.Sprintf("Cannot open zip: %v", err))
 		return
 	}
-	defer zr.Close()
+	defer zf.Close()
 
-	// Create destination folder
-	baseName := strings.TrimSuffix(filepath.Base(absPath), ".zip")
+	// Carpeta destino (relativa), evitando sobrescritura
+	baseName := strings.TrimSuffix(relBase(relZip), ".zip")
 	baseName = strings.TrimSuffix(baseName, ".ZIP")
-	destDir := filepath.Join(filepath.Dir(absPath), baseName)
+	parentRel := relDir(relZip)
+	destRel := joinRel(parentRel, baseName)
 
-	// Avoid overwriting existing folder
-	if _, err := os.Stat(destDir); err == nil {
+	if _, err := root.Lstat(destRel); err == nil {
 		for i := 1; i < 100; i++ {
-			candidate := filepath.Join(filepath.Dir(absPath), fmt.Sprintf("%s (%d)", baseName, i))
-			if _, err := os.Stat(candidate); err != nil {
-				destDir = candidate
+			candidate := joinRel(parentRel, fmt.Sprintf("%s (%d)", baseName, i))
+			if _, err := root.Lstat(candidate); err != nil {
+				destRel = candidate
 				break
 			}
 		}
 	}
 
-	os.MkdirAll(destDir, 0755)
+	if err := mkdirAllIn(root, destRel, 0755); err != nil {
+		jsonError(w, 500, "Cannot create destination folder")
+		return
+	}
 
-	var count int
+	var count, skipped int
 	for _, f := range zr.File {
-		// Security: prevent zip slip
-		name := f.Name
-		if strings.Contains(name, "..") {
-			continue
-		}
-
-		target := filepath.Join(destDir, name)
-
-		// Verify the target is within destDir
-		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(destDir)+string(os.PathSeparator)) && filepath.Clean(target) != filepath.Clean(destDir) {
+		// Defensa Zip Slip nivel 1: rechazar nombres con "..".
+		// (Nivel 2: os.Root ancla la escritura al share igualmente.)
+		entryRel, rerr := relWithinShare(joinRel(destRel, f.Name))
+		if rerr != nil {
+			skipped++
 			continue
 		}
 
 		if f.FileInfo().IsDir() {
-			os.MkdirAll(target, 0755)
+			if err := mkdirAllIn(root, entryRel, 0755); err != nil {
+				skipped++
+			}
 			continue
 		}
 
-		// Ensure parent exists
-		os.MkdirAll(filepath.Dir(target), 0755)
+		// Asegurar padre
+		if err := mkdirAllIn(root, relDir(entryRel), 0755); err != nil {
+			skipped++
+			continue
+		}
 
 		rc, err := f.Open()
 		if err != nil {
+			skipped++
 			continue
 		}
-
-		dst, err := os.Create(target)
+		dst, err := root.Create(entryRel)
 		if err != nil {
 			rc.Close()
+			skipped++
 			continue
 		}
-
-		_, err = io.Copy(dst, rc)
+		_, copyErr := io.Copy(dst, rc)
 		dst.Close()
 		rc.Close()
-
-		if err == nil {
-			count++
+		if copyErr != nil {
+			root.Remove(entryRel)
+			skipped++
+			continue
 		}
+		count++
 	}
 
-	logMsg("unzip: extracted %d files to %s", count, destDir)
-	jsonOk(w, map[string]interface{}{"ok": true, "count": count, "folder": filepath.Base(destDir)})
+	logMsg("unzip: extracted %d files (%d skipped) to %s in share %s", count, skipped, destRel, shareName)
+	resp := map[string]interface{}{"ok": true, "count": count, "folder": relBase(destRel)}
+	if skipped > 0 {
+		resp["skipped"] = skipped
+	}
+	jsonOk(w, resp)
 }
 
 func hashStr(s string) uint32 {
@@ -1235,10 +1338,6 @@ func hashStr(s string) uint32 {
 		h = h*31 + uint32(c)
 	}
 	return h
-}
-
-func cleanupChunks(dir string) {
-	os.RemoveAll(dir)
 }
 
 // GET /api/files/upload-status?share=X&path=Y&filename=Z
@@ -1263,11 +1362,28 @@ func handleUploadStatus(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, 404, "Share not found")
 		return
 	}
+	if getSharePermission(session, share) != "rw" {
+		jsonError(w, 403, "Write access denied")
+		return
+	}
 
-	tmpDir := filepath.Join(share.Path, ".nimchunks", fmt.Sprintf("%x", hashStr(uploadPath+fileName)))
-	entries, err := os.ReadDir(tmpDir)
+	root, err := openRootAt(share.Path)
+	if err != nil {
+		jsonOk(w, map[string]interface{}{"ok": true, "chunks": []int{}, "count": 0})
+		return
+	}
+	defer root.Close()
+
+	tmpDirRel := joinRel(".nimchunks", fmt.Sprintf("%x", hashStr(uploadPath+fileName)))
+	dir, err := root.Open(tmpDirRel)
 	if err != nil {
 		// No chunks exist — fresh upload
+		jsonOk(w, map[string]interface{}{"ok": true, "chunks": []int{}, "count": 0})
+		return
+	}
+	entries, err := dir.ReadDir(-1)
+	dir.Close()
+	if err != nil {
 		jsonOk(w, map[string]interface{}{"ok": true, "chunks": []int{}, "count": 0})
 		return
 	}
@@ -1314,8 +1430,15 @@ func handleUploadCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tmpDir := filepath.Join(share.Path, ".nimchunks", fmt.Sprintf("%x", hashStr(uploadPath+fileName)))
-	cleanupChunks(tmpDir)
+	root, err := openRootAt(share.Path)
+	if err != nil {
+		jsonOk(w, map[string]interface{}{"ok": true})
+		return
+	}
+	defer root.Close()
+
+	tmpDirRel := joinRel(".nimchunks", fmt.Sprintf("%x", hashStr(uploadPath+fileName)))
+	removeAllIn(root, tmpDirRel)
 
 	jsonOk(w, map[string]interface{}{"ok": true})
 }
@@ -1350,7 +1473,7 @@ func handleFileDownload(w http.ResponseWriter, r *http.Request) {
 	// CRIT-008: Try one-time download token first (short-lived, no browser history leak)
 	dlToken := r.URL.Query().Get("dl")
 	if dlToken != "" {
-		username, _, dlShare, dlPath, err := dbDownloadTokenConsume(dlToken)
+		username, role, dlShare, dlPath, err := dbDownloadTokenConsume(dlToken)
 		if err != nil {
 			jsonError(w, 401, "Invalid or expired download token")
 			return
@@ -1361,18 +1484,25 @@ func handleFileDownload(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, 404, "Share not found")
 			return
 		}
-		// Build a minimal session for permission check
-		tempSession := &DBSession{Username: username}
+		// SEC-2: preservar el role del token para que un admin conserve su
+		// acceso rw automático (antes se descartaba y caía al map de perms).
+		tempSession := &DBSession{Username: username, Role: role}
 		if getSharePermission(tempSession, share) == "none" {
 			jsonError(w, 403, "Access denied")
 			return
 		}
-		fullPath, pathErr := validatePathWithinShare(share.Path, dlPath)
+		rel, pathErr := relWithinShare(dlPath)
 		if pathErr != nil {
 			jsonError(w, 400, pathErr.Error())
 			return
 		}
-		serveFileDownload(w, r, fullPath)
+		root, oerr := openRootAt(share.Path)
+		if oerr != nil {
+			jsonError(w, 500, "Cannot open share")
+			return
+		}
+		defer root.Close()
+		serveFileDownload(w, r, root, rel)
 		return
 	}
 
@@ -1409,25 +1539,32 @@ func handleFileDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sharePath := share.Path
-	fullPath, pathErr := validatePathWithinShare(sharePath, filePath)
+	rel, pathErr := relWithinShare(filePath)
 	if pathErr != nil {
 		jsonError(w, 400, pathErr.Error())
 		return
 	}
 
-	serveFileDownload(w, r, fullPath)
+	root, oerr := openRootAt(share.Path)
+	if oerr != nil {
+		jsonError(w, 500, "Cannot open share")
+		return
+	}
+	defer root.Close()
+
+	serveFileDownload(w, r, root, rel)
 }
 
 // serveFileDownload sends a file to the client with appropriate headers.
-func serveFileDownload(w http.ResponseWriter, r *http.Request, fullPath string) {
-	stat, err := os.Stat(fullPath)
+// Opera vía os.Root: rel es la ruta relativa al share, ya validada.
+func serveFileDownload(w http.ResponseWriter, r *http.Request, root *os.Root, rel string) {
+	stat, err := root.Stat(rel)
 	if err != nil {
 		jsonError(w, 404, "File not found")
 		return
 	}
 
-	fileName := filepath.Base(fullPath)
+	fileName := relBase(rel)
 	ext := strings.ToLower(filepath.Ext(fileName))
 	if ext != "" {
 		ext = ext[1:] // remove dot
@@ -1472,7 +1609,7 @@ func serveFileDownload(w http.ResponseWriter, r *http.Request, fullPath string) 
 			}
 			chunkSize := end - start + 1
 
-			f, err := os.Open(fullPath)
+			f, err := root.Open(rel)
 			if err != nil {
 				jsonError(w, 500, "Cannot open file")
 				return
@@ -1499,7 +1636,7 @@ func serveFileDownload(w http.ResponseWriter, r *http.Request, fullPath string) 
 	}
 	w.WriteHeader(200)
 
-	f, err := os.Open(fullPath)
+	f, err := root.Open(rel)
 	if err != nil {
 		return
 	}
