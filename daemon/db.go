@@ -146,6 +146,28 @@ func createTables() error {
 		FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
 	);
 
+	CREATE TABLE IF NOT EXISTS managed_folders (
+		id            TEXT PRIMARY KEY,
+		share_name    TEXT NOT NULL,
+		rel_path      TEXT NOT NULL,
+		quota_bytes   INTEGER NOT NULL DEFAULT 0,
+		generation    INTEGER NOT NULL DEFAULT 0,
+		control_state TEXT NOT NULL DEFAULT 'active',
+		owner_user    TEXT NOT NULL,
+		created_by    TEXT NOT NULL,
+		created_at    TEXT NOT NULL,
+		UNIQUE (share_name, rel_path),
+		FOREIGN KEY (share_name) REFERENCES shares(name) ON DELETE CASCADE
+	);
+
+	CREATE TABLE IF NOT EXISTS managed_folder_permissions (
+		folder_id    TEXT NOT NULL,
+		username     TEXT NOT NULL,
+		permission   TEXT NOT NULL,
+		PRIMARY KEY (folder_id, username),
+		FOREIGN KEY (folder_id) REFERENCES managed_folders(id) ON DELETE CASCADE
+	);
+
 	CREATE TABLE IF NOT EXISTS preferences (
 		username     TEXT NOT NULL,
 		key          TEXT NOT NULL,
