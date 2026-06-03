@@ -23,6 +23,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // initStorageModule inicializa el módulo de storage Beta 8.
@@ -90,8 +91,17 @@ func runStorageStartupTasks(ctx context.Context) {
 
 	// 3. Habilitar quota BTRFS en todos los pools (idempotente).
 	//    Repara pools existentes que nunca tuvieron `btrfs quota enable`, sin
-	//    el cual las quotas de share/carpeta no se aplican. Va en background:
-	//    habilitar quota en un pool con datos dispara un rescan que puede
-	//    tardar, y no debe bloquear el resto del arranque.
-	go enableQuotaOnAllPools(ctx)
+	//    el cual las quotas de share/carpeta no se aplican.
+	//
+	//    Va en goroutine con su PROPIO contexto (no el `ctx` del arranque, que
+	//    se cancela al retornar esta función y mataría el barrido antes de
+	//    ejecutarlo). Un pequeño retardo da margen a que el storage service
+	//    quede plenamente operativo. Habilitar quota en un pool con datos
+	//    dispara un rescan asíncrono de BTRFS, así que esto no debe bloquear.
+	go func() {
+		time.Sleep(3 * time.Second)
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		enableQuotaOnAllPools(bgCtx)
+	}()
 }

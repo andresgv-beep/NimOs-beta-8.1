@@ -115,5 +115,10 @@ func enableQuotaOnAllPools(ctx context.Context) {
 	}
 	if enabled > 0 || failed > 0 {
 		logMsg("enableQuotaOnAllPools: habilitadas=%d ya_activas=%d fallidas=%d", enabled, skipped, failed)
+	} else {
+		// Siempre dejar constancia de que el barrido corrió, aunque no haya
+		// cambios (todos los pools ya tenían quota). Evita la duda de "¿se
+		// ejecutó o no?" al revisar logs.
+		logMsg("enableQuotaOnAllPools: barrido completado · todos los pools ya tenían quota (ya_activas=%d)", skipped)
 	}
 }
