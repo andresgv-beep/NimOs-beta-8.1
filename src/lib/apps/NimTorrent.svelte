@@ -138,27 +138,73 @@
   function pickShare(name) { selectedShare = name; shareMenuOpen = false; }
   $: selectedShareLabel = (shares.find(s => s.name === selectedShare)?.displayName) || selectedShare || '—';
 
-  // ─── Añadir torrent (magnet) ───
-  let showAdd = false;
-  let magnetInput = '';
+  // ─── Añadir torrent (subir fichero .torrent) ───
+  let showAdd = false;        // modal abierto
   let addError = '';
-  async function submitAdd() {
-    const magnet = magnetInput.trim();
-    if (!magnet) return;
-    if (!selectedShare) { addError = 'Elige una carpeta de destino'; return; }
+  let addFile = null;         // File seleccionado
+  let uploading = false;
+  let dragOver = false;
+  let fileInputEl;            // <input type=file> oculto
+
+  function openAdd() {
+    showAdd = true;
+    shareMenuOpen = false;
     addError = '';
-    const r = await fetch('/api/torrent/add', {
-      method: 'POST', headers: hdrs(),
-      body: JSON.stringify({ magnet, share: selectedShare }),
-    });
-    if (!r.ok) {
-      let msg = 'No se pudo añadir';
-      try { const e = await r.json(); if (e.error) msg = e.error; } catch {}
-      addError = msg;
+    addFile = null;
+  }
+  function closeAdd() {
+    showAdd = false;
+    addError = '';
+    addFile = null;
+    dragOver = false;
+  }
+  function pickFile() { fileInputEl?.click(); }
+  function onFileChosen(e) {
+    const f = e.target?.files?.[0];
+    if (f) setFile(f);
+  }
+  function onDrop(e) {
+    e.preventDefault();
+    dragOver = false;
+    const f = e.dataTransfer?.files?.[0];
+    if (f) setFile(f);
+  }
+  function setFile(f) {
+    if (!f.name.toLowerCase().endsWith('.torrent')) {
+      addError = 'El fichero debe ser .torrent';
       return;
     }
-    magnetInput = ''; showAdd = false;
-    await refresh();
+    addError = '';
+    addFile = f;
+  }
+
+  async function submitAdd() {
+    if (!addFile) { addError = 'Selecciona un fichero .torrent'; return; }
+    if (!selectedShare) { addError = 'Elige una carpeta de destino'; return; }
+    addError = '';
+    uploading = true;
+    try {
+      const fd = new FormData();
+      fd.append('torrent', addFile);
+      fd.append('share', selectedShare);   // el backend resuelve y valida el path
+      const r = await fetch('/api/torrent/upload', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${getToken()}` }, // sin Content-Type: lo pone el navegador con boundary
+        body: fd,
+      });
+      if (!r.ok) {
+        let msg = 'No se pudo subir el torrent';
+        try { const e = await r.json(); if (e.error) msg = e.error; } catch {}
+        addError = msg;
+        return;
+      }
+      closeAdd();
+      await refresh();
+    } catch {
+      addError = 'Error de red al subir el fichero';
+    } finally {
+      uploading = false;
+    }
   }
 
   // ─── Filtros ───
@@ -266,7 +312,7 @@
         </svg>
       </button>
 
-      <button class="btn-add" on:click={() => { showAdd = !showAdd; shareMenuOpen = false; addError = ''; }}>
+      <button class="btn-add" on:click={openAdd}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
           <line x1="12" y1="5" x2="12" y2="19"/>
           <line x1="5" y1="12" x2="19" y2="12"/>
@@ -279,26 +325,6 @@
   <!-- ═══ SPLIT · lista (arriba) + detalle (abajo) ═══ -->
   <!-- Contenedor del cuerpo · barra opcional (auto) + split (flex:1) -->
   <div class="nt-body">
-  <!-- Barra de añadir (magnet) · desplegable, fuera del grid split -->
-  {#if showAdd}
-    <div class="nt-add-bar">
-      <input
-        class="nt-add-input"
-        placeholder="magnet:?xt=urn:btih:…  o  pega un enlace magnet"
-        bind:value={magnetInput}
-        on:keydown={(e) => e.key === 'Enter' && submitAdd()}
-      />
-      <span class="nt-add-dest" title="Carpeta de destino (cámbiala arriba)">
-        → {selectedShareLabel}/torrents
-      </span>
-      <button class="nt-add-go" on:click={submitAdd}>Añadir</button>
-      <button class="nt-add-x" on:click={() => { showAdd = false; addError = ''; }} title="Cerrar">✕</button>
-    </div>
-    {#if addError}
-      <div class="nt-add-err">{addError}</div>
-    {/if}
-  {/if}
-
   <!-- ═══ SPLIT · lista (arriba) + detalle (abajo) ═══ -->
   <div class="nt-split">
 
@@ -442,6 +468,70 @@
   </div>
   </div>
 
+  <!-- ═══ MODAL · subir fichero .torrent ═══ -->
+  {#if showAdd}
+    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+    <div class="nt-modal-overlay" on:click={closeAdd}>
+      <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+      <div class="nt-modal" on:click|stopPropagation>
+        <div class="nt-modal-head">
+          <span class="nt-modal-title">Añadir torrent</span>
+          <button class="nt-modal-x" on:click={closeAdd} title="Cerrar">✕</button>
+        </div>
+
+        <!-- Dropzone / selector de fichero -->
+        <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+        <div
+          class="nt-drop"
+          class:over={dragOver}
+          class:has-file={addFile}
+          on:click={pickFile}
+          on:dragover|preventDefault={() => dragOver = true}
+          on:dragleave={() => dragOver = false}
+          on:drop={onDrop}
+        >
+          {#if addFile}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="nt-drop-ico ok">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><polyline points="9 15 11 17 15 13"/>
+            </svg>
+            <span class="nt-drop-name">{addFile.name}</span>
+            <span class="nt-drop-sub">Pulsa para elegir otro</span>
+          {:else}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="nt-drop-ico">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <span class="nt-drop-name">Arrastra un fichero .torrent</span>
+            <span class="nt-drop-sub">o pulsa para buscar</span>
+          {/if}
+        </div>
+        <input
+          bind:this={fileInputEl}
+          type="file"
+          accept=".torrent,application/x-bittorrent"
+          on:change={onFileChosen}
+          style="display:none"
+        />
+
+        <!-- Destino -->
+        <div class="nt-modal-dest">
+          <span class="nt-modal-dest-k">Destino</span>
+          <span class="nt-modal-dest-v">{selectedShareLabel}/torrents</span>
+        </div>
+
+        {#if addError}
+          <div class="nt-modal-err">{addError}</div>
+        {/if}
+
+        <div class="nt-modal-actions">
+          <button class="nt-modal-cancel" on:click={closeAdd} disabled={uploading}>Cancelar</button>
+          <button class="nt-modal-go" on:click={submitAdd} disabled={uploading || !addFile}>
+            {uploading ? 'Subiendo…' : 'Añadir torrent'}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   <!-- ═══ FOOTER · stats globales reales ═══ -->
   <svelte:fragment slot="footer">
     <span class="nt-foot-k">DL</span> <span class="nt-foot-v dl">↓ {fmtRate(stats.download_rate)}</span>
@@ -535,25 +625,6 @@
   .pool-menu-item:hover { background: rgba(255,255,255,0.04); color: var(--fg, #f0f0f0); }
   .pool-menu-item.active { background: var(--ui-select-bg, rgba(122,158,177,0.10)); color: var(--ui-select, #7a9eb1); }
   .pool-menu-empty { padding: 10px; font-size: 10px; color: var(--fg-5, #5a5a62); text-align: center; font-family: var(--font-mono); }
-
-  /* Destino mostrado en la barra de añadir */
-  .nt-add-dest {
-    flex-shrink: 0;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    color: var(--fg-4, #7a7a82);
-    white-space: nowrap;
-    max-width: 260px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .nt-add-err {
-    padding: 6px 24px 10px;
-    font-size: 11px;
-    color: var(--st-crit, #ff5a5a);
-    font-family: var(--font-mono);
-    background: var(--bg-inner, #101015);
-  }
 
   .icon-btn {
     width: 28px; height: 28px;
@@ -695,51 +766,113 @@
   .nt-foot-v.ul { color: var(--st-ok, #00ff9f); }
   .nt-foot-sep { color: var(--fg-5, #5a5a62); margin: 0 8px; }
 
-  /* ═══ Barra de añadir torrent (magnet) ═══ */
-  .nt-add-bar {
+  /* ═══ MODAL · subir fichero .torrent ═══ */
+  .nt-modal-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 10px 24px;
-    background: var(--bg-inner, #101015);
+    justify-content: center;
+    z-index: 100;
+    padding: 24px;
+  }
+  .nt-modal {
+    width: 100%;
+    max-width: 420px;
+    background: var(--bg-window, #16161a);
+    border: 1px solid var(--bd-3, #2a2a32);
+    border-radius: 12px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+  }
+  .nt-modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
     border-bottom: 1px solid var(--bd-2, #20202a);
-    flex-shrink: 0;
   }
-  .nt-add-input {
-    flex: 1;
-    min-width: 0;
-    background: var(--bg-card, #15151a);
-    border: 1px solid var(--bd-2, #20202a);
-    border-radius: 5px;
-    padding: 6px 10px;
-    color: var(--fg, #f0f0f0);
-    font-family: var(--font-mono);
+  .nt-modal-title { font-size: 13px; font-weight: 600; color: var(--fg, #f0f0f0); }
+  .nt-modal-x {
+    width: 26px; height: 26px;
+    border: none; background: transparent;
+    color: var(--fg-4, #7a7a82);
+    border-radius: 5px; cursor: pointer; font-size: 13px;
+  }
+  .nt-modal-x:hover { color: var(--fg, #f0f0f0); background: rgba(255,255,255,0.05); }
+
+  /* Dropzone */
+  .nt-drop {
+    margin: 16px;
+    padding: 28px 16px;
+    border: 1.5px dashed var(--bd-3, #2a2a32);
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    text-align: center;
+  }
+  .nt-drop:hover { border-color: var(--fg-4, #7a7a82); }
+  .nt-drop.over { border-color: var(--nim-green, #00ff9f); background: rgba(0,255,159,0.04); }
+  .nt-drop.has-file { border-style: solid; border-color: rgba(0,255,159,0.35); background: rgba(0,255,159,0.03); }
+  .nt-drop-ico { width: 30px; height: 30px; color: var(--fg-4, #7a7a82); }
+  .nt-drop-ico.ok { color: var(--nim-green, #00ff9f); }
+  .nt-drop-name { font-size: 12px; color: var(--fg-2, #d0d0d4); font-family: var(--font-mono); word-break: break-all; max-width: 320px; }
+  .nt-drop-sub { font-size: 10px; color: var(--fg-5, #5a5a62); }
+
+  /* Destino */
+  .nt-modal-dest {
+    margin: 0 16px;
+    padding: 10px 12px;
+    background: var(--bg-inner, #101015);
+    border-radius: 6px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .nt-modal-dest-k { font-size: 9px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--fg-4, #7a7a82); font-weight: 600; }
+  .nt-modal-dest-v { font-family: var(--font-mono); font-size: 11px; color: var(--fg-2, #d0d0d4); word-break: break-all; text-align: right; }
+
+  .nt-modal-err {
+    margin: 12px 16px 0;
     font-size: 11px;
-    outline: none;
+    color: var(--st-crit, #ff5a5a);
+    font-family: var(--font-mono);
   }
-  .nt-add-input:focus { border-color: var(--nim-green, #00ff9f); }
-  .nt-add-go {
-    padding: 6px 14px;
+
+  .nt-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 16px;
+  }
+  .nt-modal-cancel {
+    padding: 7px 14px;
+    border: 1px solid var(--bd-3, #2a2a32);
+    background: transparent;
+    border-radius: 6px;
+    color: var(--fg-3, #9c9ca4);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .nt-modal-cancel:hover { color: var(--fg, #f0f0f0); border-color: #4a4a52; }
+  .nt-modal-go {
+    padding: 7px 16px;
     border: none;
-    border-radius: 5px;
+    border-radius: 6px;
     background: var(--nim-green, #00ff9f);
     color: var(--bg-window, #16161a);
     font-size: 11px;
     font-weight: 600;
     cursor: pointer;
-    flex-shrink: 0;
   }
-  .nt-add-go:hover { filter: brightness(1.08); }
-  .nt-add-x {
-    width: 26px; height: 26px;
-    border: 1px solid var(--bd-2, #20202a);
-    background: transparent;
-    border-radius: 5px;
-    color: var(--fg-4, #7a7a82);
-    cursor: pointer;
-    flex-shrink: 0;
-  }
-  .nt-add-x:hover { color: var(--fg, #f0f0f0); border-color: var(--bd-3, #2a2a32); }
+  .nt-modal-go:hover { filter: brightness(1.08); }
+  .nt-modal-go:disabled, .nt-modal-cancel:disabled { opacity: 0.5; cursor: default; }
 
   /* ═══ Mensajes de estado de la lista ═══ */
   .nt-msg {
