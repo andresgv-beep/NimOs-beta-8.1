@@ -1,64 +1,146 @@
 <script>
   /**
-   * NimTorrent · Cliente de torrents (daemon C++/libtorrent)
-   * ────────────────────────────────────────────────────────
+   * NimTorrent · Cliente de torrents (daemon C++/libtorrent, puerto 9091)
+   * ────────────────────────────────────────────────────────────────────
    * Reconstruido sobre el lenguaje visual v3 a partir del mockup
-   * nimtorrent-mockup.html. Layout:
-   *   · Sidebar (AppShell) → filtros por estado con dot + count
-   *   · Header → pool selector + pausar todos + añadir torrent
-   *   · Split vertical → lista de torrents (arriba) + detalle (abajo)
-   *   · Footer del main → stats globales DL/UL
+   * nimtorrent-mockup.html, cableado al daemon REAL vía el proxy Go:
    *
-   * NOTA: los datos son de ejemplo (igual que el mockup). El backend
-   * (daemon Go/C++) expone las APIs; falta cablear fetch + acciones.
-   * Puntos de integración marcados con TODO(api).
+   *   GET  /api/torrent/torrents   → [{hash,name,state,progress,download_rate,
+   *                                    upload_rate,total_done,total_wanted,
+   *                                    peers,seeds,save_path,paused}]
+   *   GET  /api/torrent/stats      → {total,active,seeding,paused,
+   *                                    download_rate,upload_rate}
+   *   POST /api/torrent/add        → {magnet,save_path} | {file,save_path}
+   *   POST /api/torrent/pause      → {hash}
+   *   POST /api/torrent/resume     → {hash}
+   *   POST /api/torrent/remove     → {hash,delete_files}
+   *   POST /api/torrent/upload     → multipart {torrent, save_path}
+   *
+   * progress llega 0..1 (float). rates en bytes/s. tamaños en bytes.
    */
+  import { onMount, onDestroy } from 'svelte';
   import AppShell from '$lib/components/AppShell.svelte';
+  import { getToken, jsonHdrs as hdrs } from '$lib/stores/auth.js';
 
   let active = 'all';
-  let selectedId = 't1';
+  let selectedHash = null;
+  let torrents = [];
+  let stats = { total: 0, active: 0, seeding: 0, paused: 0, download_rate: 0, upload_rate: 0 };
+  let loading = true;
+  let error = null;
+  let pollInterval = null;
+  let busy = new Set();   // hashes con acción en curso
 
-  // ─── Datos de ejemplo (TODO(api): sustituir por fetch al daemon) ───
-  const torrents = [
-    { id: 't1', name: 'Ubuntu.24.10.desktop-amd64.iso', state: 'dl',
-      size: '4.8 GB', dl: '3.2 MB/s', ul: '142 KB/s', peers: '38', seeds: '124',
-      eta: '8m 12s', progress: 68 },
-    { id: 't2', name: 'Debian-13.0.0-amd64-DVD-1.iso', state: 'dl',
-      size: '3.7 GB', dl: '820 KB/s', ul: '—', peers: '12', seeds: '31',
-      eta: '52m', progress: 24 },
-    { id: 't3', name: 'Fedora-Workstation-Live-x86_64-41-1.4.iso', state: 'dl',
-      size: '2.1 GB', dl: '240 KB/s', ul: '—', peers: '4', seeds: '18',
-      eta: '1m 35s', progress: 91 },
-    { id: 't4', name: 'archlinux-2025.05.01-x86_64.iso', state: 'seeding',
-      size: '1.2 GB', dl: '—', ul: '512 KB/s', peers: '21', seeds: '—',
-      eta: '∞', progress: 100 },
-    { id: 't5', name: 'openSUSE-Leap-15.6-DVD-x86_64-Media.iso', state: 'seeding',
-      size: '4.5 GB', dl: '—', ul: '98 KB/s', peers: '8', seeds: '—',
-      eta: '∞', progress: 100 },
-    { id: 't6', name: 'linuxmint-22-cinnamon-64bit.iso', state: 'paused',
-      size: '2.8 GB', dl: '—', ul: '—', peers: '—', seeds: '—',
-      eta: '—', progress: 42 },
-    { id: 't7', name: 'manjaro-kde-24.0-stable-x86_64.iso', state: 'error',
-      size: '3.4 GB', dl: '—', ul: '—', peers: '0', seeds: '0',
-      eta: 'error', progress: 14 },
-    { id: 't8', name: 'popos_22.04_amd64_intel_22.iso', state: 'paused',
-      size: '2.6 GB', dl: '—', ul: '—', peers: '—', seeds: '—',
-      eta: '—', progress: 8 },
-  ];
+  // ─── Formateadores ───
+  function fmtBytes(b) {
+    if (b === null || b === undefined || b < 0) return '—';
+    if (b === 0) return '0 B';
+    if (b >= 1e12) return (b / 1e12).toFixed(1) + ' TB';
+    if (b >= 1e9)  return (b / 1e9).toFixed(1) + ' GB';
+    if (b >= 1e6)  return (b / 1e6).toFixed(1) + ' MB';
+    if (b >= 1e3)  return (b / 1e3).toFixed(1) + ' KB';
+    return b + ' B';
+  }
+  function fmtRate(b) {
+    if (!b || b < 1) return '—';
+    if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB/s';
+    if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB/s';
+    if (b >= 1e3) return (b / 1e3).toFixed(0) + ' KB/s';
+    return b.toFixed(0) + ' B/s';
+  }
+  function fmtETA(t) {
+    // ETA estimada: (wanted - done) / download_rate
+    if (t.state === 'seeding') return '∞';
+    if (t.state === 'paused') return '—';
+    if (t.state === 'error') return 'error';
+    const remaining = (t.total_wanted || 0) - (t.total_done || 0);
+    if (remaining <= 0) return '—';
+    if (!t.download_rate || t.download_rate < 1) return '∞';
+    let secs = Math.round(remaining / t.download_rate);
+    if (secs >= 86400) return Math.floor(secs / 86400) + 'd ' + Math.floor((secs % 86400) / 3600) + 'h';
+    if (secs >= 3600)  return Math.floor(secs / 3600) + 'h ' + Math.floor((secs % 3600) / 60) + 'm';
+    if (secs >= 60)    return Math.floor(secs / 60) + 'm ' + (secs % 60) + 's';
+    return secs + 's';
+  }
+  function pct(p) { return Math.round((p || 0) * 100); }
 
-  // ─── Filtros por estado ───
+  // ─── Carga de datos ───
+  async function loadTorrents() {
+    try {
+      const r = await fetch('/api/torrent/torrents', { headers: hdrs() });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      torrents = Array.isArray(data) ? data : [];
+      error = null;
+      // mantener selección válida; si no hay, seleccionar el primero
+      if (selectedHash && !torrents.some(t => t.hash === selectedHash)) selectedHash = null;
+      if (!selectedHash && torrents.length) selectedHash = torrents[0].hash;
+    } catch (e) {
+      error = 'Daemon de torrents no disponible';
+      torrents = [];
+    } finally {
+      loading = false;
+    }
+  }
+  async function loadStats() {
+    try {
+      const r = await fetch('/api/torrent/stats', { headers: hdrs() });
+      if (r.ok) stats = await r.json();
+    } catch { /* stats no crítico */ }
+  }
+  async function refresh() { await Promise.all([loadTorrents(), loadStats()]); }
+
+  // ─── Acciones reales ───
+  async function post(path, body) {
+    const r = await fetch('/api/torrent/' + path, {
+      method: 'POST', headers: hdrs(), body: JSON.stringify(body),
+    });
+    return r.ok;
+  }
+  async function togglePause(t) {
+    if (busy.has(t.hash)) return;
+    busy = new Set(busy).add(t.hash);
+    await post(t.paused ? 'resume' : 'pause', { hash: t.hash });
+    busy.delete(t.hash); busy = new Set(busy);
+    await refresh();
+  }
+  async function removeTorrent(t, deleteFiles = false) {
+    if (busy.has(t.hash)) return;
+    busy = new Set(busy).add(t.hash);
+    await post('remove', { hash: t.hash, delete_files: deleteFiles });
+    busy.delete(t.hash); busy = new Set(busy);
+    if (selectedHash === t.hash) selectedHash = null;
+    await refresh();
+  }
+  async function pauseAll() {
+    await Promise.all(torrents.filter(t => !t.paused).map(t => post('pause', { hash: t.hash })));
+    await refresh();
+  }
+
+  // ─── Añadir torrent (magnet por ahora; .torrent via upload luego) ───
+  let showAdd = false;
+  let magnetInput = '';
+  let savePathInput = '';
+  async function submitAdd() {
+    const magnet = magnetInput.trim();
+    if (!magnet) return;
+    await post('add', { magnet, save_path: savePathInput.trim() });
+    magnetInput = ''; savePathInput = ''; showAdd = false;
+    await refresh();
+  }
+
+  // ─── Filtros ───
   const stateMatch = {
     all:     () => true,
-    active:  t => t.state === 'dl' || t.state === 'seeding',
-    dl:      t => t.state === 'dl',
-    seeding: t => t.state === 'seeding',
-    paused:  t => t.state === 'paused',
+    active:  t => !t.paused && (t.state === 'downloading' || t.state === 'seeding' || t.state === 'metadata' || t.state === 'checking'),
+    dl:      t => !t.paused && (t.state === 'downloading' || t.state === 'metadata'),
+    seeding: t => !t.paused && t.state === 'seeding',
+    paused:  t => t.paused || t.state === 'paused',
     error:   t => t.state === 'error',
   };
   $: filtered = torrents.filter(stateMatch[active] || (() => true));
-  $: selected = torrents.find(t => t.id === selectedId) || null;
+  $: selected = torrents.find(t => t.hash === selectedHash) || null;
 
-  // counts por filtro
   $: counts = {
     all:     torrents.length,
     active:  torrents.filter(stateMatch.active).length,
@@ -68,32 +150,45 @@
     error:   torrents.filter(stateMatch.error).length,
   };
 
-  // dot de color por filtro (inline span, va como item.icon en AppShell)
+  // dot de color por filtro (va como item.icon en AppShell)
   const dot = (cls) => `<span class="nt-dot nt-dot-${cls}"></span>`;
-
   $: sections = [
     {
       label: 'Estado',
       items: [
-        { id: 'all',     label: 'Todos',         icon: dot('all'),     badge: counts.all },
-        { id: 'active',  label: 'Activos',        icon: dot('active'),  badge: counts.active },
-        { id: 'dl',      label: 'Descargando',    icon: dot('dl'),      badge: counts.dl },
-        { id: 'seeding', label: 'Compartiendo',   icon: dot('seeding'), badge: counts.seeding },
-        { id: 'paused',  label: 'Pausados',       icon: dot('paused'),  badge: counts.paused },
-        { id: 'error',   label: 'Con error',      icon: dot('error'),   badge: counts.error },
+        { id: 'all',     label: 'Todos',        icon: dot('all'),     badge: counts.all },
+        { id: 'active',  label: 'Activos',       icon: dot('active'),  badge: counts.active },
+        { id: 'dl',      label: 'Descargando',   icon: dot('dl'),      badge: counts.dl },
+        { id: 'seeding', label: 'Compartiendo',  icon: dot('seeding'), badge: counts.seeding },
+        { id: 'paused',  label: 'Pausados',      icon: dot('paused'),  badge: counts.paused },
+        { id: 'error',   label: 'Con error',     icon: dot('error'),   badge: counts.error },
       ],
     },
   ];
 
-  const stateLabel = { dl: 'Descargando', seeding: 'Compartiendo', paused: 'Pausado', error: 'Error', checking: 'Verificando' };
+  // normaliza el state del daemon → clase visual (led/bar)
+  function visState(t) {
+    if (t.paused || t.state === 'paused') return 'paused';
+    if (t.state === 'error') return 'error';
+    if (t.state === 'seeding') return 'seeding';
+    if (t.state === 'checking') return 'checking';
+    return 'dl'; // downloading / metadata / queued
+  }
+  const stateLabel = {
+    downloading: 'Descargando', metadata: 'Obteniendo metadatos', seeding: 'Compartiendo',
+    paused: 'Pausado', error: 'Error', checking: 'Verificando', queued: 'En cola',
+  };
 
-  function selectTorrent(id) { selectedId = id; }
+  function selectTorrent(hash) { selectedHash = hash; }
 
-  // ─── Acciones (TODO(api): cablear al daemon) ───
-  function pauseAll()    { /* TODO(api): POST /api/torrents/pause-all */ }
-  function addTorrent()  { /* TODO(api): abrir modal magnet/file */ }
-  function pauseOne()    { /* TODO(api): POST /api/torrents/:id/pause */ }
-  function removeOne()   { /* TODO(api): DELETE /api/torrents/:id */ }
+  // ─── Lifecycle: poll cada 2s ───
+  onMount(async () => {
+    let attempts = 0;
+    while (!getToken() && attempts < 10) { await new Promise(r => setTimeout(r, 200)); attempts++; }
+    await refresh();
+    pollInterval = setInterval(refresh, 2000);
+  });
+  onDestroy(() => { if (pollInterval) clearInterval(pollInterval); });
 </script>
 
 <AppShell
@@ -125,7 +220,7 @@
         </svg>
       </button>
 
-      <button class="btn-add" on:click={addTorrent}>
+      <button class="btn-add" on:click={() => showAdd = !showAdd}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
           <line x1="12" y1="5" x2="12" y2="19"/>
           <line x1="5" y1="12" x2="19" y2="12"/>
@@ -137,6 +232,26 @@
 
   <!-- ═══ SPLIT · lista (arriba) + detalle (abajo) ═══ -->
   <div class="nt-split">
+
+    <!-- Barra de añadir (magnet) · desplegable -->
+    {#if showAdd}
+      <div class="nt-add-bar">
+        <input
+          class="nt-add-input"
+          placeholder="magnet:?xt=urn:btih:…  o  pega un enlace magnet"
+          bind:value={magnetInput}
+          on:keydown={(e) => e.key === 'Enter' && submitAdd()}
+        />
+        <input
+          class="nt-add-input nt-add-path"
+          placeholder="ruta destino (opcional)"
+          bind:value={savePathInput}
+          on:keydown={(e) => e.key === 'Enter' && submitAdd()}
+        />
+        <button class="nt-add-go" on:click={submitAdd}>Añadir</button>
+        <button class="nt-add-x" on:click={() => showAdd = false} title="Cerrar">✕</button>
+      </div>
+    {/if}
 
     <!-- ─── LISTA ─── -->
     <div class="list-wrap">
@@ -151,22 +266,31 @@
         <span>ETA</span>
       </div>
       <div class="list-body">
-        {#each filtered as t (t.id)}
-          <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-          <div class="row" class:selected={t.id === selectedId} on:click={() => selectTorrent(t.id)}>
-            <span class="row-led {t.state}"></span>
-            <div class="row-name">
-              <span class="row-name-text">{t.name}</span>
-              <div class="row-bar"><div class="row-bar-fill {t.state}" style="width:{t.progress}%"></div></div>
+        {#if loading}
+          <div class="nt-msg">Cargando torrents…</div>
+        {:else if error}
+          <div class="nt-msg nt-msg-err">{error}</div>
+        {:else if filtered.length === 0}
+          <div class="nt-msg">{torrents.length === 0 ? 'No hay torrents. Añade uno con el botón de arriba.' : 'Ningún torrent en este filtro.'}</div>
+        {:else}
+          {#each filtered as t (t.hash)}
+            {@const vs = visState(t)}
+            <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+            <div class="row" class:selected={t.hash === selectedHash} on:click={() => selectTorrent(t.hash)}>
+              <span class="row-led {vs}"></span>
+              <div class="row-name">
+                <span class="row-name-text">{t.name}</span>
+                <div class="row-bar"><div class="row-bar-fill {vs}" style="width:{pct(t.progress)}%"></div></div>
+              </div>
+              <span class="row-cell" class:dim={vs === 'paused' || vs === 'error'}>{fmtBytes(t.total_wanted)}</span>
+              <span class="row-cell" class:dl={t.download_rate > 0} class:dim={!(t.download_rate > 0)}>{fmtRate(t.download_rate)}</span>
+              <span class="row-cell" class:ul={t.upload_rate > 0} class:dim={!(t.upload_rate > 0)}>{fmtRate(t.upload_rate)}</span>
+              <span class="row-cell" class:dim={vs === 'error'}>{t.peers ?? '—'}</span>
+              <span class="row-cell" class:dim={vs === 'error'}>{t.seeds ?? '—'}</span>
+              <span class="row-cell eta" class:dim={vs === 'paused' || vs === 'error'}>{fmtETA(t)}</span>
             </div>
-            <span class="row-cell" class:dim={t.state === 'paused' || t.state === 'error'}>{t.size}</span>
-            <span class="row-cell" class:dl={t.dl !== '—'} class:dim={t.dl === '—'}>{t.dl}</span>
-            <span class="row-cell" class:ul={t.ul !== '—'} class:dim={t.ul === '—'}>{t.ul}</span>
-            <span class="row-cell" class:dim={t.peers === '—' || t.state === 'error'}>{t.peers}</span>
-            <span class="row-cell" class:dim={t.seeds === '—' || t.state === 'error'}>{t.seeds}</span>
-            <span class="row-cell eta" class:dim={t.eta === '—' || t.eta === 'error'}>{t.eta}</span>
-          </div>
-        {/each}
+          {/each}
+        {/if}
       </div>
     </div>
 
@@ -177,21 +301,27 @@
           <div class="detail-head-info">
             <div class="detail-name">{selected.name}</div>
             <div class="detail-meta">
-              <span class="detail-state {selected.state}">{stateLabel[selected.state] || selected.state}</span>
-              <span>2 archivos</span>
+              <span class="detail-state {visState(selected)}">{stateLabel[selected.state] || selected.state}</span>
               <span class="sep">·</span>
-              <span>guardado en /multimedia/downloads/</span>
+              <span>{selected.save_path || '—'}</span>
             </div>
           </div>
           <div class="detail-actions">
-            <button class="detail-btn" on:click={pauseOne}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="6" y="4" width="4" height="16"/>
-                <rect x="14" y="4" width="4" height="16"/>
-              </svg>
-              Pausar
+            <button class="detail-btn" on:click={() => togglePause(selected)} disabled={busy.has(selected.hash)}>
+              {#if selected.paused || selected.state === 'paused'}
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polygon points="5 3 19 12 5 21 5 3"/>
+                </svg>
+                Reanudar
+              {:else}
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="6" y="4" width="4" height="16"/>
+                  <rect x="14" y="4" width="4" height="16"/>
+                </svg>
+                Pausar
+              {/if}
             </button>
-            <button class="detail-btn danger" on:click={removeOne}>
+            <button class="detail-btn danger" on:click={() => removeTorrent(selected)} disabled={busy.has(selected.hash)}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="3 6 5 6 21 6"/>
                 <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
@@ -204,49 +334,49 @@
         <div class="detail-body">
           <div class="detail-progress">
             <div class="detail-progress-head">
-              <span class="detail-progress-pct">{selected.progress}%</span>
-              <span class="detail-progress-bytes">3.26 GB <span class="of">/</span> {selected.size}</span>
+              <span class="detail-progress-pct">{pct(selected.progress)}%</span>
+              <span class="detail-progress-bytes">{fmtBytes(selected.total_done)} <span class="of">/</span> {fmtBytes(selected.total_wanted)}</span>
             </div>
             <div class="detail-bar">
-              <div class="detail-bar-fill {selected.state}" style="width:{selected.progress}%"></div>
+              <div class="detail-bar-fill {visState(selected)}" style="width:{pct(selected.progress)}%"></div>
             </div>
           </div>
 
           <div class="detail-stats">
             <div class="detail-stat">
               <div class="detail-stat-lbl">Velocidad ↓</div>
-              <div class="detail-stat-val dl">{selected.dl}</div>
+              <div class="detail-stat-val dl">{fmtRate(selected.download_rate)}</div>
             </div>
             <div class="detail-stat">
               <div class="detail-stat-lbl">Velocidad ↑</div>
-              <div class="detail-stat-val ul">{selected.ul}</div>
+              <div class="detail-stat-val ul">{fmtRate(selected.upload_rate)}</div>
             </div>
             <div class="detail-stat">
               <div class="detail-stat-lbl">Peers</div>
-              <div class="detail-stat-val">{selected.peers}<span class="unit">/ {selected.seeds} seeds</span></div>
+              <div class="detail-stat-val">{selected.peers ?? 0}<span class="unit">/ {selected.seeds ?? 0} seeds</span></div>
             </div>
             <div class="detail-stat">
               <div class="detail-stat-lbl">Tiempo restante</div>
-              <div class="detail-stat-val">{selected.eta}</div>
+              <div class="detail-stat-val">{fmtETA(selected)}</div>
             </div>
           </div>
 
           <div class="detail-info">
             <div class="detail-info-row">
               <span class="k">Ruta</span>
-              <span class="v">/nimos/pools/multimedia/downloads/</span>
+              <span class="v">{selected.save_path || '—'}</span>
             </div>
             <div class="detail-info-row">
               <span class="k">Hash</span>
-              <span class="v">a47b9c2e8f5d3a1c9b8e7f2d4a6c1e3b8d5f9a2c</span>
+              <span class="v">{selected.hash}</span>
             </div>
             <div class="detail-info-row">
-              <span class="k">Añadido</span>
-              <span class="v">hace 12 minutos</span>
+              <span class="k">Estado</span>
+              <span class="v">{stateLabel[selected.state] || selected.state}</span>
             </div>
             <div class="detail-info-row">
-              <span class="k">Ratio</span>
-              <span class="v">0.04 (43 MB / 3.26 GB)</span>
+              <span class="k">Completado</span>
+              <span class="v">{fmtBytes(selected.total_done)} / {fmtBytes(selected.total_wanted)} ({pct(selected.progress)}%)</span>
             </div>
           </div>
         </div>
@@ -262,14 +392,14 @@
     </div>
   </div>
 
-  <!-- ═══ FOOTER · stats globales ═══ -->
+  <!-- ═══ FOOTER · stats globales reales ═══ -->
   <svelte:fragment slot="footer">
-    <span class="nt-foot-k">DL</span> <span class="nt-foot-v dl">↓ 4.2 MB/s</span>
+    <span class="nt-foot-k">DL</span> <span class="nt-foot-v dl">↓ {fmtRate(stats.download_rate)}</span>
     <span class="nt-foot-sep">·</span>
-    <span class="nt-foot-k">UL</span> <span class="nt-foot-v ul">↑ 1.1 MB/s</span>
+    <span class="nt-foot-k">UL</span> <span class="nt-foot-v ul">↑ {fmtRate(stats.upload_rate)}</span>
   </svelte:fragment>
   <svelte:fragment slot="footer-right">
-    <span class="nt-foot-k">activos</span> <span class="nt-foot-v">{counts.active} / {torrents.length}</span>
+    <span class="nt-foot-k">activos</span> <span class="nt-foot-v">{stats.active} / {stats.total}</span>
   </svelte:fragment>
 </AppShell>
 
@@ -441,4 +571,63 @@
   .nt-foot-v.dl { color: var(--st-info, #4db8ff); }
   .nt-foot-v.ul { color: var(--st-ok, #00ff9f); }
   .nt-foot-sep { color: var(--fg-5, #5a5a62); margin: 0 8px; }
+
+  /* ═══ Barra de añadir torrent (magnet) ═══ */
+  .nt-add-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 24px;
+    background: var(--bg-inner, #101015);
+    border-bottom: 1px solid var(--bd-2, #20202a);
+    flex-shrink: 0;
+  }
+  .nt-add-input {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg-card, #15151a);
+    border: 1px solid var(--bd-2, #20202a);
+    border-radius: 5px;
+    padding: 6px 10px;
+    color: var(--fg, #f0f0f0);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    outline: none;
+  }
+  .nt-add-input:focus { border-color: var(--nim-green, #00ff9f); }
+  .nt-add-path { flex: 0 0 200px; }
+  .nt-add-go {
+    padding: 6px 14px;
+    border: none;
+    border-radius: 5px;
+    background: var(--nim-green, #00ff9f);
+    color: var(--bg-window, #16161a);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .nt-add-go:hover { filter: brightness(1.08); }
+  .nt-add-x {
+    width: 26px; height: 26px;
+    border: 1px solid var(--bd-2, #20202a);
+    background: transparent;
+    border-radius: 5px;
+    color: var(--fg-4, #7a7a82);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .nt-add-x:hover { color: var(--fg, #f0f0f0); border-color: var(--bd-3, #2a2a32); }
+
+  /* ═══ Mensajes de estado de la lista ═══ */
+  .nt-msg {
+    padding: 28px 24px;
+    text-align: center;
+    color: var(--fg-5, #5a5a62);
+    font-size: 12px;
+    font-family: var(--font-mono);
+  }
+  .nt-msg-err { color: var(--st-crit, #ff5a5a); }
+
+  .detail-btn:disabled { opacity: 0.5; cursor: default; }
 </style>
