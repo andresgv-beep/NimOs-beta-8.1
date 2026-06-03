@@ -151,7 +151,7 @@ func handleTorrentProxy(w http.ResponseWriter, r *http.Request) {
 
 	// Special: torrent file upload (multipart)
 	if urlPath == "/api/torrent/upload" && r.Method == "POST" {
-		handleTorrentUploadGo(w, r)
+		handleTorrentUploadGo(w, r, session)
 		return
 	}
 
@@ -168,6 +168,20 @@ func handleTorrentProxy(w http.ResponseWriter, r *http.Request) {
 
 	// Read body
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 1*1024*1024))
+
+	// ── SEGURIDAD: NimTorrent SOLO puede escribir dentro de carpetas
+	// compartidas existentes, NUNCA libre al disco del sistema. ──
+	// En /torrent/add el frontend manda `share` (nombre), no un path.
+	// Aquí lo resolvemos al path real, verificamos permiso rw y que esté
+	// en un pool montado, y reescribimos el body con el save_path real.
+	// Si el share no existe / no hay permiso / no está montado → 403/404.
+	if daemonPath == "/torrent/add" && len(body) > 0 {
+		newBody, ok := resolveTorrentSavePath(w, session, body)
+		if !ok {
+			return // resolveTorrentSavePath ya escribió el error
+		}
+		body = newBody
+	}
 
 	// Proxy to NimTorrent
 	client := &http.Client{Timeout: 30 * time.Second}
@@ -199,18 +213,105 @@ func handleTorrentProxy(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, resp.Body)
 }
 
+// resolveTorrentSavePath toma el body JSON de /torrent/add, lee el campo
+// `share` (nombre de carpeta compartida elegida en la UI), lo resuelve a su
+// path real en disco y reescribe el body con un `save_path` validado.
+//
+// SEGURIDAD (requisito de diseño): NimTorrent jamás escribe libre al disco
+// del sistema. El destino DEBE ser una carpeta compartida existente sobre la
+// que el usuario tiene permiso de escritura, y que esté en un pool montado.
+// Los torrents se guardan en <share>/torrents (subcarpeta creada si falta).
+//
+// Devuelve (nuevoBody, true) si todo valida; si no, escribe el error HTTP
+// apropiado y devuelve (nil, false).
+func resolveTorrentSavePath(w http.ResponseWriter, session *DBSession, body []byte) ([]byte, bool) {
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		jsonError(w, 400, "JSON inválido")
+		return nil, false
+	}
+
+	shareName, _ := req["share"].(string)
+	if shareName == "" {
+		jsonError(w, 400, "Falta la carpeta de destino (share)")
+		return nil, false
+	}
+
+	// Resolver share → path real
+	share, err := resolveShare(shareName)
+	if err != nil || share == nil {
+		jsonError(w, 404, "Carpeta compartida no encontrada")
+		return nil, false
+	}
+
+	// Permiso de escritura
+	if getSharePermission(session, share) != "rw" {
+		jsonError(w, 403, "Sin permiso de escritura en esa carpeta")
+		return nil, false
+	}
+
+	// Debe estar en un pool montado (no en el disco de sistema).
+	// Las carpetas remotas se permiten (ya validadas por el montaje NFS).
+	if !share.IsRemote() && !isPathOnMountedPool(share.Path) {
+		jsonError(w, 409, "La carpeta no está en un pool montado")
+		return nil, false
+	}
+
+	// Destino final: <share>/torrents — confinado dentro del share.
+	savePath := filepath.Join(share.Path, "torrents")
+	// Defensa en profundidad: tras Join+Clean, el destino debe seguir
+	// colgando del path del share (nunca escaparse con ../).
+	if savePath != share.Path && !strings.HasPrefix(savePath, share.Path+string(filepath.Separator)) {
+		jsonError(w, 400, "Ruta de destino inválida")
+		return nil, false
+	}
+	os.MkdirAll(savePath, 0755)
+
+	// Reescribir body: quitar `share`, fijar `save_path` real validado.
+	delete(req, "share")
+	req["save_path"] = savePath
+	out, err := json.Marshal(req)
+	if err != nil {
+		jsonError(w, 500, "Error serializando petición")
+		return nil, false
+	}
+	return out, true
+}
+
 // Torrent file upload: parse multipart, save .torrent to disk, forward as JSON to NimTorrent
-func handleTorrentUploadGo(w http.ResponseWriter, r *http.Request) {
+func handleTorrentUploadGo(w http.ResponseWriter, r *http.Request, session *DBSession) {
 	// Parse multipart (max 50MB)
 	if err := r.ParseMultipartForm(50 << 20); err != nil {
 		jsonError(w, 400, "Failed to parse upload")
 		return
 	}
 
-	savePath := r.FormValue("save_path")
-	if savePath == "" {
-		savePath = "/data/torrents"
+	// SEGURIDAD: el destino se deriva de la carpeta compartida elegida
+	// (campo `share`), nunca de un path libre. Mismas reglas que /add.
+	shareName := r.FormValue("share")
+	if shareName == "" {
+		jsonError(w, 400, "Falta la carpeta de destino (share)")
+		return
 	}
+	share, err := resolveShare(shareName)
+	if err != nil || share == nil {
+		jsonError(w, 404, "Carpeta compartida no encontrada")
+		return
+	}
+	if getSharePermission(session, share) != "rw" {
+		jsonError(w, 403, "Sin permiso de escritura en esa carpeta")
+		return
+	}
+	if !share.IsRemote() && !isPathOnMountedPool(share.Path) {
+		jsonError(w, 409, "La carpeta no está en un pool montado")
+		return
+	}
+	savePath := filepath.Join(share.Path, "torrents")
+	if savePath != share.Path && !strings.HasPrefix(savePath, share.Path+string(filepath.Separator)) {
+		jsonError(w, 400, "Ruta de destino inválida")
+		return
+	}
+	os.MkdirAll(savePath, 0755)
 
 	file, header, err := r.FormFile("torrent")
 	if err != nil {
