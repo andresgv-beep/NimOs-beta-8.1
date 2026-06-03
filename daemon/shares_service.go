@@ -211,8 +211,15 @@ func createBtrfsSubvolIfMissing(folderPath string, quotaBytes int64) error {
 	// Aplicar quota si se especificó
 	if quotaBytes > 0 {
 		quotaStr := fmt.Sprintf("%d", quotaBytes)
-		runCmd("btrfs", []string{"qgroup", "limit", quotaStr, folderPath}, opts)
-		logMsg("Set BTRFS quota %d bytes on subvolume '%s'", quotaBytes, folderPath)
+		res, qerr := runCmd("btrfs", []string{"qgroup", "limit", quotaStr, folderPath}, opts)
+		if qerr != nil || res.Code != 0 {
+			// No es fatal para la creación del subvol (ya existe), pero se
+			// registra de verdad en vez de tragarlo. El caller decide.
+			logMsg("WARNING: btrfs qgroup limit %d en '%s' falló: %v (stderr: %s) — ¿quota habilitada en el pool?",
+				quotaBytes, folderPath, qerr, res.Stderr)
+		} else {
+			logMsg("Set BTRFS quota %d bytes on subvolume '%s'", quotaBytes, folderPath)
+		}
 	}
 	return nil
 }
@@ -289,11 +296,23 @@ func updateBtrfsQuota(ctx context.Context, share *DBShare, target string, quotaB
 	subvolPath := filepath.Join(pool.MountPoint, "shares", target)
 	opts := CmdOptions{Timeout: 10 * time.Second}
 
+	// Garantizar que la quota está habilitada en el pool. Sin esto,
+	// `qgroup limit` falla con "quotas not enabled" (idempotente si ya está).
+	if err := ensureBtrfsQuotaEnabled(pool.MountPoint); err != nil {
+		return fmt.Errorf("no se pudo habilitar quota en el pool %s: %w", pool.Name, err)
+	}
+
 	if quotaBytes > 0 {
-		runCmd("btrfs", []string{"qgroup", "limit", fmt.Sprintf("%d", quotaBytes), subvolPath}, opts)
+		res, err := runCmd("btrfs", []string{"qgroup", "limit", fmt.Sprintf("%d", quotaBytes), subvolPath}, opts)
+		if err != nil || res.Code != 0 {
+			return fmt.Errorf("btrfs qgroup limit %d en %s falló: %v (stderr: %s)", quotaBytes, subvolPath, err, res.Stderr)
+		}
 		logMsg("Updated BTRFS quota to %d bytes on '%s'", quotaBytes, subvolPath)
 	} else {
-		runCmd("btrfs", []string{"qgroup", "limit", "none", subvolPath}, opts)
+		res, err := runCmd("btrfs", []string{"qgroup", "limit", "none", subvolPath}, opts)
+		if err != nil || res.Code != 0 {
+			return fmt.Errorf("btrfs qgroup limit none en %s falló: %v (stderr: %s)", subvolPath, err, res.Stderr)
+		}
 		logMsg("Removed BTRFS quota on '%s'", subvolPath)
 	}
 	return nil

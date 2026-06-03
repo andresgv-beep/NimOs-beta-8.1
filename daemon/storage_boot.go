@@ -87,4 +87,11 @@ func runStorageStartupTasks(ctx context.Context) {
 	if err := storageService.ReconcileDevicesAtBoot(ctx); err != nil {
 		logMsg("Storage boot reconciliation: ERROR (continuing anyway): %v", err)
 	}
+
+	// 3. Habilitar quota BTRFS en todos los pools (idempotente).
+	//    Repara pools existentes que nunca tuvieron `btrfs quota enable`, sin
+	//    el cual las quotas de share/carpeta no se aplican. Va en background:
+	//    habilitar quota en un pool con datos dispara un rescan que puede
+	//    tardar, y no debe bloquear el resto del arranque.
+	go enableQuotaOnAllPools(ctx)
 }
