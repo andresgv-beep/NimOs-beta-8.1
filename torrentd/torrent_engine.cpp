@@ -38,12 +38,12 @@ TorrentEngine::TorrentEngine(const std::string& config_path, const std::string& 
         }
     }
 
-    // Validate save path — must be under /nimbus/pools/ (not system disk)
+    // Validate save path — must be under /nimos/pools/ (not system disk)
     // If invalid or not mounted, use empty string (user must choose per-torrent)
     if (!default_save_path_.empty()) {
-        if (default_save_path_.find("/nimbus/pools/") != 0) {
+        if (default_save_path_.find("/nimos/pools/") != 0) {
             std::cerr << "[torrentd] WARNING: download_dir '" << default_save_path_ 
-                      << "' is not under /nimbus/pools/ — ignoring to protect system disk\n";
+                      << "' is not under /nimos/pools/ — ignoring to protect system disk\n";
             default_save_path_ = "";
         } else {
             // Check if the pool is actually mounted
@@ -281,7 +281,7 @@ void TorrentEngine::loadState() {
                 // OVERRIDE save_path: force to current pool, ignore stale paths
                 // This prevents writing to system disk when pools change
                 if (!default_save_path_.empty()) {
-                    if (p.save_path.find("/nimbus/pools/") != 0) {
+                    if (p.save_path.find("/nimos/pools/") != 0) {
                         std::cerr << "[torrentd] Overriding stale save_path '" << p.save_path 
                                   << "' → '" << default_save_path_ << "'\n";
                         p.save_path = default_save_path_;
@@ -313,7 +313,7 @@ void TorrentEngine::loadState() {
                 // Force save_path to current pool — never use stale paths
                 if (!default_save_path_.empty()) {
                     p.save_path = default_save_path_;
-                } else if (!save_path.empty() && save_path.find("/nimbus/pools/") == 0) {
+                } else if (!save_path.empty() && save_path.find("/nimos/pools/") == 0) {
                     p.save_path = save_path;
                 } else {
                     std::cerr << "[torrentd] Skipping magnet " << hash 
