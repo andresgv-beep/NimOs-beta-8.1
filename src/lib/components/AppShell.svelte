@@ -519,6 +519,15 @@
     position: relative;
     z-index: 6;
   }
+  /* Los SVG/iconos dentro de los controles del header no deben capturar
+     el click: si lo hacen, el target es el <svg> (no elevado) y la
+     drag-zone de WindowFrame se lo come. Forzamos que el click atraviese
+     al botón padre (que sí está a z-index 6). */
+  .page-header :global(button *),
+  .page-header :global(a *),
+  .page-header :global([role="button"] *) {
+    pointer-events: none;
+  }
   .page-header :global(b),
   .page-header :global(strong) {
     color: var(--ink, #f2f2f5);
