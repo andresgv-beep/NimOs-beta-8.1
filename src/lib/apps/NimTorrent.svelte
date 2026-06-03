@@ -117,15 +117,47 @@
     await refresh();
   }
 
-  // ─── Añadir torrent (magnet por ahora; .torrent via upload luego) ───
+  // ─── Carpetas compartidas (destino del torrent) ───
+  // NimTorrent SOLO escribe dentro de carpetas compartidas existentes con
+  // permiso rw. El backend resuelve el nombre→path real y valida; el
+  // frontend nunca dicta un path de disco.
+  let shares = [];
+  let selectedShare = '';
+  let shareMenuOpen = false;
+
+  async function loadShares() {
+    try {
+      const r = await fetch('/api/files', { headers: hdrs() });
+      if (!r.ok) return;
+      const d = await r.json();
+      // solo locales con escritura (no remotas para guardar descargas)
+      shares = (d.shares || []).filter(s => s.permission === 'rw' && !s.remote);
+      if (!selectedShare && shares.length) selectedShare = shares[0].name;
+    } catch { /* sin shares disponibles */ }
+  }
+  function pickShare(name) { selectedShare = name; shareMenuOpen = false; }
+  $: selectedShareLabel = (shares.find(s => s.name === selectedShare)?.displayName) || selectedShare || '—';
+
+  // ─── Añadir torrent (magnet) ───
   let showAdd = false;
   let magnetInput = '';
-  let savePathInput = '';
+  let addError = '';
   async function submitAdd() {
     const magnet = magnetInput.trim();
     if (!magnet) return;
-    await post('add', { magnet, save_path: savePathInput.trim() });
-    magnetInput = ''; savePathInput = ''; showAdd = false;
+    if (!selectedShare) { addError = 'Elige una carpeta de destino'; return; }
+    addError = '';
+    const r = await fetch('/api/torrent/add', {
+      method: 'POST', headers: hdrs(),
+      body: JSON.stringify({ magnet, share: selectedShare }),
+    });
+    if (!r.ok) {
+      let msg = 'No se pudo añadir';
+      try { const e = await r.json(); if (e.error) msg = e.error; } catch {}
+      addError = msg;
+      return;
+    }
+    magnetInput = ''; showAdd = false;
     await refresh();
   }
 
@@ -185,7 +217,7 @@
   onMount(async () => {
     let attempts = 0;
     while (!getToken() && attempts < 10) { await new Promise(r => setTimeout(r, 200)); attempts++; }
-    await refresh();
+    await Promise.all([refresh(), loadShares()]);
     pollInterval = setInterval(refresh, 2000);
   });
   onDestroy(() => { if (pollInterval) clearInterval(pollInterval); });
@@ -204,13 +236,27 @@
     <span class="ph-desc">· {torrents.length} torrents</span>
 
     <div class="nt-head-actions">
-      <div class="pool-select" title="Pool de destino por defecto">
-        <span class="pool-select-lbl">Pool</span>
+      <div class="pool-select" class:open={shareMenuOpen} title="Carpeta de destino" on:click={() => shareMenuOpen = !shareMenuOpen} on:keydown={(e) => e.key === 'Enter' && (shareMenuOpen = !shareMenuOpen)} role="button" tabindex="0">
+        <span class="pool-select-lbl">Carpeta</span>
         <span class="pool-cube"></span>
-        <span class="pool-select-name">multimedia</span>
+        <span class="pool-select-name">{selectedShareLabel}</span>
         <svg class="pool-select-chev" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <polyline points="3 4.5 6 7.5 9 4.5"/>
         </svg>
+        {#if shareMenuOpen}
+          <div class="pool-menu">
+            {#if shares.length === 0}
+              <div class="pool-menu-empty">No hay carpetas con escritura</div>
+            {:else}
+              {#each shares as s (s.name)}
+                <div class="pool-menu-item" class:active={s.name === selectedShare} on:click|stopPropagation={() => pickShare(s.name)} on:keydown={(e) => e.key === 'Enter' && pickShare(s.name)} role="button" tabindex="0">
+                  <span class="pool-cube"></span>
+                  <span>{s.displayName || s.name}</span>
+                </div>
+              {/each}
+            {/if}
+          </div>
+        {/if}
       </div>
 
       <button class="icon-btn" title="Pausar todos" on:click={pauseAll}>
@@ -242,15 +288,15 @@
         bind:value={magnetInput}
         on:keydown={(e) => e.key === 'Enter' && submitAdd()}
       />
-      <input
-        class="nt-add-input nt-add-path"
-        placeholder="ruta destino (opcional)"
-        bind:value={savePathInput}
-        on:keydown={(e) => e.key === 'Enter' && submitAdd()}
-      />
+      <span class="nt-add-dest" title="Carpeta de destino (cámbiala arriba)">
+        → {selectedShareLabel}/torrents
+      </span>
       <button class="nt-add-go" on:click={submitAdd}>Añadir</button>
-      <button class="nt-add-x" on:click={() => showAdd = false} title="Cerrar">✕</button>
+      <button class="nt-add-x" on:click={() => { showAdd = false; addError = ''; }} title="Cerrar">✕</button>
     </div>
+    {#if addError}
+      <div class="nt-add-err">{addError}</div>
+    {/if}
   {/if}
 
   <!-- ═══ SPLIT · lista (arriba) + detalle (abajo) ═══ -->
@@ -445,6 +491,57 @@
   .pool-select-name { color: var(--fg, #f0f0f0); font-family: var(--font-mono); font-size: 11px; }
   .pool-select-chev { width: 9px; height: 9px; color: var(--fg-4, #7a7a82); }
 
+  /* Dropdown de carpeta de destino */
+  .pool-select { position: relative; }
+  .pool-select.open { border-color: var(--bd-3, #2a2a32); }
+  .pool-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    min-width: 180px;
+    max-height: 240px;
+    overflow-y: auto;
+    background: var(--bg-card, #15151a);
+    border: 1px solid var(--bd-3, #2a2a32);
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    padding: 4px;
+    z-index: 30;
+  }
+  .pool-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 9px;
+    border-radius: 4px;
+    font-size: 11px;
+    color: var(--fg-2, #d0d0d4);
+    cursor: pointer;
+    font-family: var(--font-mono);
+  }
+  .pool-menu-item:hover { background: rgba(255,255,255,0.04); color: var(--fg, #f0f0f0); }
+  .pool-menu-item.active { background: var(--ui-select-bg, rgba(122,158,177,0.10)); color: var(--ui-select, #7a9eb1); }
+  .pool-menu-empty { padding: 10px; font-size: 10px; color: var(--fg-5, #5a5a62); text-align: center; font-family: var(--font-mono); }
+
+  /* Destino mostrado en la barra de añadir */
+  .nt-add-dest {
+    flex-shrink: 0;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fg-4, #7a7a82);
+    white-space: nowrap;
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .nt-add-err {
+    padding: 6px 24px 10px;
+    font-size: 11px;
+    color: var(--st-crit, #ff5a5a);
+    font-family: var(--font-mono);
+    background: var(--bg-inner, #101015);
+  }
+
   .icon-btn {
     width: 28px; height: 28px;
     background: var(--bg-card, #15151a);
@@ -608,7 +705,6 @@
     outline: none;
   }
   .nt-add-input:focus { border-color: var(--nim-green, #00ff9f); }
-  .nt-add-path { flex: 0 0 200px; }
   .nt-add-go {
     padding: 6px 14px;
     border: none;
