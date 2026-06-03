@@ -231,27 +231,30 @@
   </svelte:fragment>
 
   <!-- ═══ SPLIT · lista (arriba) + detalle (abajo) ═══ -->
-  <div class="nt-split">
+  <!-- Contenedor del cuerpo · barra opcional (auto) + split (flex:1) -->
+  <div class="nt-body">
+  <!-- Barra de añadir (magnet) · desplegable, fuera del grid split -->
+  {#if showAdd}
+    <div class="nt-add-bar">
+      <input
+        class="nt-add-input"
+        placeholder="magnet:?xt=urn:btih:…  o  pega un enlace magnet"
+        bind:value={magnetInput}
+        on:keydown={(e) => e.key === 'Enter' && submitAdd()}
+      />
+      <input
+        class="nt-add-input nt-add-path"
+        placeholder="ruta destino (opcional)"
+        bind:value={savePathInput}
+        on:keydown={(e) => e.key === 'Enter' && submitAdd()}
+      />
+      <button class="nt-add-go" on:click={submitAdd}>Añadir</button>
+      <button class="nt-add-x" on:click={() => showAdd = false} title="Cerrar">✕</button>
+    </div>
+  {/if}
 
-    <!-- Barra de añadir (magnet) · desplegable -->
-    {#if showAdd}
-      <div class="nt-add-bar">
-        <input
-          class="nt-add-input"
-          placeholder="magnet:?xt=urn:btih:…  o  pega un enlace magnet"
-          bind:value={magnetInput}
-          on:keydown={(e) => e.key === 'Enter' && submitAdd()}
-        />
-        <input
-          class="nt-add-input nt-add-path"
-          placeholder="ruta destino (opcional)"
-          bind:value={savePathInput}
-          on:keydown={(e) => e.key === 'Enter' && submitAdd()}
-        />
-        <button class="nt-add-go" on:click={submitAdd}>Añadir</button>
-        <button class="nt-add-x" on:click={() => showAdd = false} title="Cerrar">✕</button>
-      </div>
-    {/if}
+  <!-- ═══ SPLIT · lista (arriba) + detalle (abajo) ═══ -->
+  <div class="nt-split">
 
     <!-- ─── LISTA ─── -->
     <div class="list-wrap">
@@ -391,6 +394,7 @@
       {/if}
     </div>
   </div>
+  </div>
 
   <!-- ═══ FOOTER · stats globales reales ═══ -->
   <svelte:fragment slot="footer">
@@ -463,9 +467,18 @@
   .btn-add:hover { filter: brightness(1.08); }
   .btn-add svg { width: 12px; height: 12px; }
 
+  /* ═══ BODY · barra opcional + split ═══ */
+  .nt-body {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-height: 0;
+  }
+
   /* ═══ SPLIT ═══ */
   .nt-split {
-    height: 100%;
+    flex: 1;
     display: grid;
     grid-template-rows: 1.2fr 1fr;
     overflow: hidden;
