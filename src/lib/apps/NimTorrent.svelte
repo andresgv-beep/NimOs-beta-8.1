@@ -266,7 +266,7 @@
         </svg>
       </button>
 
-      <button class="btn-add" on:click={() => showAdd = !showAdd}>
+      <button class="btn-add" on:click={() => { showAdd = !showAdd; shareMenuOpen = false; addError = ''; }}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
           <line x1="12" y1="5" x2="12" y2="19"/>
           <line x1="5" y1="12" x2="19" y2="12"/>
@@ -494,6 +494,13 @@
   /* Dropdown de carpeta de destino */
   .pool-select { position: relative; }
   .pool-select.open { border-color: var(--bd-3, #2a2a32); }
+  /* Los span de texto del propio selector no deben capturar el click
+     (que caiga en el .pool-select role=button, elevado). El menú
+     desplegable es la excepción: vuelve a pointer-events:auto abajo. */
+  .pool-select > .pool-select-lbl,
+  .pool-select > .pool-cube,
+  .pool-select > .pool-select-name,
+  .pool-select > .pool-select-chev { pointer-events: none; }
   .pool-menu {
     position: absolute;
     top: calc(100% + 4px);
@@ -507,7 +514,13 @@
     box-shadow: 0 8px 24px rgba(0,0,0,0.4);
     padding: 4px;
     z-index: 30;
+    /* El page-header pone pointer-events:none a los hijos de los controles
+       (para que el click caiga en el botón padre). Pero este es un menú
+       interactivo: hay que devolverle la capacidad de recibir clicks, y
+       elevarlo por encima de la drag-zone de la ventana. */
+    pointer-events: auto;
   }
+  .pool-menu, .pool-menu * { pointer-events: auto; }
   .pool-menu-item {
     display: flex;
     align-items: center;
