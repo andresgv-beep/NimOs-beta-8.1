@@ -42,7 +42,13 @@ type ExposureCertSnapshot struct {
 
 // caddyCertFetcher es el subconjunto del cliente Caddy que el observer usa.
 // Interfaz para mockear en tests.
+//
+// Ping y FetchCertificates responden preguntas DISTINTAS:
+//   · Ping → ¿está vivo el admin de Caddy? (fuente de verdad de Reachable)
+//   · FetchCertificates → ¿qué certs hay? (puede fallar con Caddy vivo,
+//     p.ej. mientras el endpoint de certs no exista o no haya certs aún)
 type caddyCertFetcher interface {
+	Ping(ctx context.Context) error
 	FetchCertificates(ctx context.Context) ([]byte, error)
 }
 
@@ -111,10 +117,20 @@ func (o *NetworkExposureObserver) Reconcile(ctx context.Context) error {
 	}
 
 	fetcher := o.fetcherFor(cfg.CaddyAdminURL)
+
+	// 1) ¿Está vivo Caddy? Ping al admin (GET /config/). Solo si esto falla
+	//    marcamos Reachable=false — Caddy caído de verdad.
+	if perr := fetcher.Ping(ctx); perr != nil {
+		o.publish(&ExposureCertSnapshot{ObservedAt: o.clock.Now().UTC(), Reachable: false})
+		return nil
+	}
+
+	// 2) Caddy vive. Intentar leer certs; si falla (endpoint inexistente,
+	//    sin certs aún), Caddy sigue siendo Reachable — solo que no hay
+	//    información de certs que mostrar.
 	raw, ferr := fetcher.FetchCertificates(ctx)
 	if ferr != nil {
-		// Caddy caído o sin certs todavía: estado desconocido, no fatal.
-		o.publish(&ExposureCertSnapshot{ObservedAt: o.clock.Now().UTC(), Reachable: false})
+		o.publish(&ExposureCertSnapshot{ObservedAt: o.clock.Now().UTC(), Reachable: true})
 		return nil
 	}
 

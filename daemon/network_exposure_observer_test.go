@@ -9,10 +9,17 @@ import (
 	"time"
 )
 
-// mockCertFetcher simula GET /pki/certificates.
+// mockCertFetcher simula el cliente admin de Caddy para el observer.
+//   · pingErr ≠ nil → Caddy "caído" (Ping falla)
+//   · err ≠ nil     → Caddy vivo pero el endpoint de certs falla
 type mockCertFetcher struct {
 	payload []byte
 	err     error
+	pingErr error
+}
+
+func (m *mockCertFetcher) Ping(ctx context.Context) error {
+	return m.pingErr
 }
 
 func (m *mockCertFetcher) FetchCertificates(ctx context.Context) ([]byte, error) {
@@ -70,7 +77,8 @@ func TestExposureObserver_ParsesDirectList(t *testing.T) {
 }
 
 func TestExposureObserver_CaddyUnreachable(t *testing.T) {
-	obs, _, _, cleanup := newTestExposureObserver(t, &mockCertFetcher{err: fmt.Errorf("connection refused")})
+	// Ping falla → Caddy caído de verdad → Reachable: false.
+	obs, _, _, cleanup := newTestExposureObserver(t, &mockCertFetcher{pingErr: fmt.Errorf("connection refused")})
 	defer cleanup()
 
 	if err := obs.Reconcile(context.Background()); err != nil {
@@ -85,6 +93,28 @@ func TestExposureObserver_CaddyUnreachable(t *testing.T) {
 	}
 	if len(snap.Certs) != 0 {
 		t.Error("no certs when unreachable")
+	}
+}
+
+func TestExposureObserver_AliveButCertsUnavailable(t *testing.T) {
+	// El caso del bug del salpicadero: Caddy VIVO (Ping OK) pero el endpoint
+	// de certs falla (404 /pki/certificates, sin certs aún…). El observer
+	// debe reportar Reachable=TRUE con certs vacíos — NUNCA "Caddy caído".
+	obs, _, _, cleanup := newTestExposureObserver(t, &mockCertFetcher{err: fmt.Errorf("status 404")})
+	defer cleanup()
+
+	if err := obs.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	snap := obs.Snapshot()
+	if snap == nil {
+		t.Fatal("snapshot should exist")
+	}
+	if !snap.Reachable {
+		t.Error("Reachable should be TRUE when Caddy is alive (only certs endpoint failed)")
+	}
+	if len(snap.Certs) != 0 {
+		t.Error("certs should be empty when cert endpoint fails")
 	}
 }
 
