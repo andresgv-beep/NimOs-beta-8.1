@@ -41,18 +41,37 @@
   // Estado local del formulario de config (editable antes de guardar).
   let domainInput = config.base_domain || '';
   let enabledInput = config.enabled || false;
+  let httpPortInput = String(config.http_port || 80);
+  let httpsPortInput = String(config.https_port || 443);
 
   // Resincronizar inputs si cambia la config desde el padre (tras guardar).
   $: if (config) {
     domainInput = config.base_domain || '';
     enabledInput = config.enabled || false;
+    httpPortInput = String(config.http_port || 80);
+    httpsPortInput = String(config.https_port || 443);
   }
 
-  $: dirty = domainInput !== (config.base_domain || '') || enabledInput !== (config.enabled || false);
+  $: dirty = domainInput !== (config.base_domain || '') ||
+    enabledInput !== (config.enabled || false) ||
+    httpPortInput !== String(config.http_port || 80) ||
+    httpsPortInput !== String(config.https_port || 443);
+  $: httpPortNum = parseInt(httpPortInput, 10);
+  $: httpsPortNum = parseInt(httpsPortInput, 10);
+  $: portsValid =
+    !isNaN(httpPortNum) && httpPortNum >= 1 && httpPortNum <= 65535 &&
+    !isNaN(httpsPortNum) && httpsPortNum >= 1 && httpsPortNum <= 65535 &&
+    httpPortNum !== httpsPortNum;
   $: caddyReachable = certs ? certs.reachable : null;
 
   function saveConfig() {
-    dispatch('save-config', { baseDomain: domainInput.trim(), enabled: enabledInput });
+    if (!portsValid) return;
+    dispatch('save-config', {
+      baseDomain: domainInput.trim(),
+      enabled: enabledInput,
+      httpPort: httpPortNum,
+      httpsPort: httpsPortNum,
+    });
   }
 
   function badgeVariantFor(kind) {
@@ -115,9 +134,42 @@
       </div>
     </div>
 
+    <div class="nx-config-row">
+      <span class="nx-label">Puertos de Caddy</span>
+      <div class="nx-field">
+        <div class="nx-ports">
+          <div class="nx-port">
+            <span class="nx-port-lbl mono">HTTP</span>
+            <TextInput
+              value={httpPortInput}
+              placeholder="80"
+              size="sm"
+              disabled={busy}
+              onInput={(e) => (httpPortInput = e.target.value)}
+            />
+          </div>
+          <div class="nx-port">
+            <span class="nx-port-lbl mono">HTTPS</span>
+            <TextInput
+              value={httpsPortInput}
+              placeholder="443"
+              size="sm"
+              disabled={busy}
+              onInput={(e) => (httpsPortInput = e.target.value)}
+            />
+          </div>
+        </div>
+        {#if !portsValid}
+          <span class="nx-err">Puertos 1-65535, y distintos entre sí.</span>
+        {:else}
+          <span class="nx-hint">Cámbialos si :80/:443 están ocupados por otro equipo o servicio (ej. un Synology). Los certificados (DNS-01) funcionan en cualquier puerto.</span>
+        {/if}
+      </div>
+    </div>
+
     {#if dirty}
       <div class="nx-config-save">
-        <BevelButton size="sm" variant="primary" onClick={saveConfig} disabled={busy}>
+        <BevelButton size="sm" variant="primary" onClick={saveConfig} disabled={busy || !portsValid}>
           {busy ? '▸ Guardando…' : '▸ Guardar configuración'}
         </BevelButton>
       </div>
@@ -237,6 +289,12 @@
   .nx-toggle:disabled { opacity: 0.5; cursor: default; }
 
   .nx-config-save { display: flex; justify-content: flex-end; }
+
+  .nx-ports { display: flex; gap: 14px; }
+  .nx-port { display: flex; align-items: center; gap: 8px; }
+  .nx-port-lbl { font-size: 10px; color: var(--fg-4, #7a7a82); letter-spacing: 0.5px; }
+  .nx-port :global(input) { width: 80px; }
+  .nx-err { font-size: 11px; color: var(--st-crit, #ff5a5a); }
 
   /* ── Banners ── */
   .nx-banner {

@@ -64,11 +64,13 @@ export async function getExposureConfig() {
 }
 
 /** saveExposureConfig — actualiza config global. */
-export async function saveExposureConfig({ baseDomain, caddyAdminURL, enabled }) {
+export async function saveExposureConfig({ baseDomain, caddyAdminURL, enabled, httpPort, httpsPort }) {
   const payload = {};
   if (baseDomain !== undefined) payload.base_domain = baseDomain;
   if (caddyAdminURL !== undefined) payload.caddy_admin_url = caddyAdminURL;
   if (enabled !== undefined) payload.enabled = enabled;
+  if (httpPort !== undefined) payload.http_port = httpPort;
+  if (httpsPort !== undefined) payload.https_port = httpsPort;
   const res = await fetch(`${BASE}/exposure/config`, {
     method: 'PUT',
     headers: jsonHdrs(),
