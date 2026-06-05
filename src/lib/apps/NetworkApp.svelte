@@ -85,6 +85,8 @@
       config = await api.saveExposureConfig({
         baseDomain: e.detail.baseDomain,
         enabled: e.detail.enabled,
+        httpPort: e.detail.httpPort,
+        httpsPort: e.detail.httpsPort,
       });
       msg = 'Configuración guardada.';
       await refresh();
