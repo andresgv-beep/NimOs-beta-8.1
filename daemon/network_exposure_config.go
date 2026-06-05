@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -30,6 +31,12 @@ type NetworkExposureConfig struct {
 	HTTPPort      int       `json:"http_port"`  // puerto HTTP de Caddy (default 80)
 	HTTPSPort     int       `json:"https_port"` // puerto HTTPS de Caddy (default 443)
 	UpdatedAt     time.Time `json:"updated_at"`
+
+	// FWManagedPorts son los puertos que NimOS ha abierto en el firewall
+	// del host (ufw). Estado del reconciler, NO configuración del usuario:
+	// se persiste para saber qué reglas son nuestras y poder retirarlas
+	// cuando los puertos cambien, sin tocar jamás reglas ajenas.
+	FWManagedPorts []int `json:"-"`
 }
 
 // defaultExposureConfig devuelve la config inicial cuando no hay fila aún.
@@ -48,16 +55,17 @@ func defaultExposureConfig() NetworkExposureConfig {
 // defaults (sin error) — el sistema arranca con exposición desactivada.
 func (r *NetworkRepo) GetExposureConfig(ctx context.Context) (NetworkExposureConfig, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT base_domain, caddy_admin_url, enabled, http_port, https_port, updated_at
+		SELECT base_domain, caddy_admin_url, enabled, http_port, https_port, fw_managed_ports, updated_at
 		FROM network_exposure_config WHERE id = 'singleton'
 	`)
 	var (
 		cfg        NetworkExposureConfig
 		enabledInt int
+		fwJSON     string
 		updatedStr string
 	)
 	err := row.Scan(&cfg.BaseDomain, &cfg.CaddyAdminURL, &enabledInt,
-		&cfg.HTTPPort, &cfg.HTTPSPort, &updatedStr)
+		&cfg.HTTPPort, &cfg.HTTPSPort, &fwJSON, &updatedStr)
 	if err == sql.ErrNoRows {
 		return defaultExposureConfig(), nil
 	}
@@ -65,6 +73,9 @@ func (r *NetworkRepo) GetExposureConfig(ctx context.Context) (NetworkExposureCon
 		return defaultExposureConfig(), fmt.Errorf("GetExposureConfig: %w", err)
 	}
 	cfg.Enabled = enabledInt != 0
+	if fwJSON != "" {
+		_ = json.Unmarshal([]byte(fwJSON), &cfg.FWManagedPorts)
+	}
 	if cfg.HTTPPort == 0 {
 		cfg.HTTPPort = 80
 	}
@@ -113,6 +124,31 @@ func (r *NetworkRepo) SaveExposureConfig(ctx context.Context, tx *sql.Tx, cfg Ne
 	`, cfg.BaseDomain, cfg.CaddyAdminURL, intFromBool(cfg.Enabled), cfg.HTTPPort, cfg.HTTPSPort, now)
 	if err != nil {
 		return fmt.Errorf("SaveExposureConfig: %w", err)
+	}
+	return nil
+}
+
+// UpdateFWManagedPorts persiste la lista de puertos que NimOS gestiona en
+// el firewall del host. Solo la toca el reconciler (estado de máquina, no
+// configuración de usuario): SaveExposureConfig no escribe esta columna.
+func (r *NetworkRepo) UpdateFWManagedPorts(ctx context.Context, tx *sql.Tx, ports []int) error {
+	if ports == nil {
+		ports = []int{}
+	}
+	raw, err := json.Marshal(ports)
+	if err != nil {
+		return fmt.Errorf("UpdateFWManagedPorts: marshal: %w", err)
+	}
+	now := r.clock.Now().UTC().Format(time.RFC3339)
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO network_exposure_config (id, fw_managed_ports, updated_at)
+		VALUES ('singleton', ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			fw_managed_ports = excluded.fw_managed_ports,
+			updated_at       = excluded.updated_at
+	`, string(raw), now)
+	if err != nil {
+		return fmt.Errorf("UpdateFWManagedPorts: %w", err)
 	}
 	return nil
 }

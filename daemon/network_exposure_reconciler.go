@@ -40,9 +40,10 @@ func DefaultNetworkExposureReconcilerConfig() NetworkExposureReconcilerConfig {
 
 // NetworkExposureReconciler implementa Reconciler.
 type NetworkExposureReconciler struct {
-	repo    *NetworkRepo
-	secrets *SecretsStore // para descifrar el token DuckDNS (puede ser nil)
-	emitter *EventEmitter
+	repo     *NetworkRepo
+	secrets  *SecretsStore   // para descifrar el token DuckDNS (puede ser nil)
+	firewall firewallEnsurer // abre los puertos de exposición en ufw (puede ser nil)
+	emitter  *EventEmitter
 	clock   Clock
 	config  NetworkExposureReconcilerConfig
 
@@ -62,7 +63,8 @@ type caddySyncer interface {
 // NewNetworkExposureReconciler construye el reconciler. clock nil → RealClock.
 // secrets puede ser nil: la sincronización de rutas funciona igual, pero la
 // gestión de certs (DNS-01) queda deshabilitada hasta tener el store.
-func NewNetworkExposureReconciler(repo *NetworkRepo, secrets *SecretsStore, emitter *EventEmitter, clock Clock, config NetworkExposureReconcilerConfig) *NetworkExposureReconciler {
+// firewall puede ser nil: no se gestiona el firewall del host.
+func NewNetworkExposureReconciler(repo *NetworkRepo, secrets *SecretsStore, firewall firewallEnsurer, emitter *EventEmitter, clock Clock, config NetworkExposureReconcilerConfig) *NetworkExposureReconciler {
 	if clock == nil {
 		clock = NewRealClock()
 	}
@@ -70,11 +72,12 @@ func NewNetworkExposureReconciler(repo *NetworkRepo, secrets *SecretsStore, emit
 		config.Interval = DefaultNetworkExposureReconcilerConfig().Interval
 	}
 	r := &NetworkExposureReconciler{
-		repo:    repo,
-		secrets: secrets,
-		emitter: emitter,
-		clock:   clock,
-		config:  config,
+		repo:     repo,
+		secrets:  secrets,
+		firewall: firewall,
+		emitter:  emitter,
+		clock:    clock,
+		config:   config,
 	}
 	// Factory por defecto: cliente Caddy real.
 	r.caddyClientFor = func(adminURL string) caddySyncer {
@@ -125,6 +128,11 @@ func (r *NetworkExposureReconciler) Reconcile(ctx context.Context) error {
 			fmt.Sprintf("Failed to sync Caddy listen ports (%d/%d): %v",
 				cfg.HTTPPort, cfg.HTTPSPort, err))
 	}
+
+	// Firewall del host: si NimOS gestiona los puertos de Caddy, también
+	// gestiona su paso por el firewall (ufw). Sin esto, cambiar el puerto
+	// en la UI deja Caddy escuchando detrás de un muro. Best-effort.
+	r.syncFirewall(ctx, cfg)
 	// Intent TLS primero: los dominios gestionados determinan también la
 	// redirección HTTP→HTTPS (redirigimos exactamente lo que tiene cert).
 	domains := collectTLSDomains(cfg, caddyApps)
@@ -228,4 +236,41 @@ func (r *NetworkExposureReconciler) duckdnsToken(ctx context.Context, cfg Networ
 		return ""
 	}
 	return string(sec.Plaintext)
+}
+
+// syncFirewall abre los puertos de exposición en el firewall del host y
+// retira los que NimOS gestionaba y ya no se usan. Persiste la lista de
+// puertos gestionados para que el siguiente ciclo (o un cambio de puertos)
+// sepa qué reglas son nuestras. Best-effort: un fallo emite evento warn y
+// no interrumpe la reconciliación.
+func (r *NetworkExposureReconciler) syncFirewall(ctx context.Context, cfg NetworkExposureConfig) {
+	if r.firewall == nil {
+		return
+	}
+	want := []int{cfg.HTTPPort, cfg.HTTPSPort}
+	managed, changed, err := r.firewall.EnsurePorts(ctx, want, cfg.FWManagedPorts)
+	if err != nil {
+		r.emit(ctx, nil, "firewall_sync_failed", EventLevelWarn,
+			fmt.Sprintf("Failed to sync host firewall for ports %v: %v", want, err))
+		return
+	}
+	if !changed {
+		return
+	}
+	tx, err := r.repo.db.BeginTx(ctx, nil)
+	if err != nil {
+		r.emit(ctx, nil, "firewall_sync_failed", EventLevelWarn,
+			fmt.Sprintf("Failed to persist firewall state: %v", err))
+		return
+	}
+	if err := r.repo.UpdateFWManagedPorts(ctx, tx, managed); err != nil {
+		_ = tx.Rollback()
+		r.emit(ctx, nil, "firewall_sync_failed", EventLevelWarn,
+			fmt.Sprintf("Failed to persist firewall state: %v", err))
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		r.emit(ctx, nil, "firewall_sync_failed", EventLevelWarn,
+			fmt.Sprintf("Failed to persist firewall state: %v", err))
+	}
 }

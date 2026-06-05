@@ -57,7 +57,7 @@ func newTestExposureReconciler(t *testing.T) (*NetworkExposureReconciler, *mockC
 	t.Helper()
 	repo, clock, c, cleanup := newTestRepo(t)
 	mock := &mockCaddySyncer{}
-	rec := NewNetworkExposureReconciler(repo, nil, nil, clock, DefaultNetworkExposureReconcilerConfig())
+	rec := NewNetworkExposureReconciler(repo, nil, nil, nil, clock, DefaultNetworkExposureReconcilerConfig())
 	rec.caddyClientFor = func(adminURL string) caddySyncer { return mock }
 	return rec, mock, repo, c, cleanup
 }
@@ -430,5 +430,105 @@ func TestExposureReconcile_NoRedirectWithoutToken(t *testing.T) {
 	}
 	if mock.lastRoutes[0].Handle[0].Handler != "reverse_proxy" {
 		t.Errorf("route should be the app: %+v", mock.lastRoutes[0])
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Firewall sync
+// ─────────────────────────────────────────────────────────────────────────────
+
+// mockFirewall captura la última llamada a EnsurePorts.
+type mockFirewall struct {
+	lastWant []int
+	lastPrev []int
+	managed  []int
+	changed  bool
+	err      error
+	calls    int
+}
+
+func (m *mockFirewall) EnsurePorts(ctx context.Context, want, prev []int) ([]int, bool, error) {
+	m.calls++
+	m.lastWant = want
+	m.lastPrev = prev
+	return m.managed, m.changed, m.err
+}
+
+func TestExposureReconcile_FirewallSyncAndPersist(t *testing.T) {
+	rec, _, repo, c, cleanup := newTestExposureReconciler(t)
+	defer cleanup()
+	fw := &mockFirewall{managed: []int{80, 444}, changed: true}
+	rec.firewall = fw
+
+	withNetTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.SaveExposureConfig(context.Background(), tx, NetworkExposureConfig{
+			BaseDomain: "base.duckdns.org", Enabled: true,
+			HTTPPort: 80, HTTPSPort: 444,
+		})
+	})
+	if err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	if fw.calls != 1 {
+		t.Fatalf("firewall calls = %d, want 1", fw.calls)
+	}
+	if len(fw.lastWant) != 2 || fw.lastWant[0] != 80 || fw.lastWant[1] != 444 {
+		t.Errorf("want ports = %v, want [80 444]", fw.lastWant)
+	}
+	// changed=true → la lista gestionada se persiste en la DB.
+	cfg, _ := repo.GetExposureConfig(context.Background())
+	if len(cfg.FWManagedPorts) != 2 || cfg.FWManagedPorts[0] != 80 || cfg.FWManagedPorts[1] != 444 {
+		t.Errorf("persisted FWManagedPorts = %v, want [80 444]", cfg.FWManagedPorts)
+	}
+}
+
+func TestExposureReconcile_FirewallReceivesPrevManaged(t *testing.T) {
+	// El reconciler pasa los puertos gestionados previos (de la DB) para
+	// que el firewall sepa qué retirar al cambiar de puertos.
+	rec, _, repo, c, cleanup := newTestExposureReconciler(t)
+	defer cleanup()
+	fw := &mockFirewall{managed: []int{80, 444}, changed: false}
+	rec.firewall = fw
+
+	withNetTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.SaveExposureConfig(context.Background(), tx, NetworkExposureConfig{
+			BaseDomain: "base.duckdns.org", Enabled: true,
+			HTTPPort: 80, HTTPSPort: 444,
+		})
+	})
+	withNetTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.UpdateFWManagedPorts(context.Background(), tx, []int{80, 443})
+	})
+
+	if err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(fw.lastPrev) != 2 || fw.lastPrev[0] != 80 || fw.lastPrev[1] != 443 {
+		t.Errorf("prev managed = %v, want [80 443] from DB", fw.lastPrev)
+	}
+}
+
+func TestExposureReconcile_FirewallFailureNotFatal(t *testing.T) {
+	rec, mock, repo, c, cleanup := newTestExposureReconciler(t)
+	defer cleanup()
+	fw := &mockFirewall{err: fmt.Errorf("ufw boom")}
+	rec.firewall = fw
+
+	withNetTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.SaveExposureConfig(context.Background(), tx, NetworkExposureConfig{
+			BaseDomain: "base.duckdns.org", Enabled: true,
+		})
+	})
+	app := makeExposedApp("immich", "immich")
+	withNetTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.CreateExposedApp(context.Background(), tx, app)
+	})
+
+	if err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile should not be fatal on firewall failure: %v", err)
+	}
+	if mock.calls != 1 {
+		t.Errorf("routes should still sync after firewall failure")
 	}
 }

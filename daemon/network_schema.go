@@ -77,6 +77,7 @@ func initNetworkSchema(conn *sql.DB) error {
 	// creadas antes de que la config de exposición tuviera puertos.
 	conn.Exec(`ALTER TABLE network_exposure_config ADD COLUMN http_port INTEGER NOT NULL DEFAULT 80`)
 	conn.Exec(`ALTER TABLE network_exposure_config ADD COLUMN https_port INTEGER NOT NULL DEFAULT 443`)
+	conn.Exec(`ALTER TABLE network_exposure_config ADD COLUMN fw_managed_ports TEXT NOT NULL DEFAULT '[]'`)
 
 	return nil
 }
