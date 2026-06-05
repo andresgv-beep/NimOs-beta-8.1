@@ -41,13 +41,16 @@ type caddyRoute struct {
 }
 
 type caddyMatch struct {
-	Host []string `json:"host,omitempty"`
-	Path []string `json:"path,omitempty"`
+	Host     []string `json:"host,omitempty"`
+	Path     []string `json:"path,omitempty"`
+	Protocol string   `json:"protocol,omitempty"` // "http" = petición sin TLS
 }
 
 type caddyHandle struct {
-	Handler   string          `json:"handler"`
-	Upstreams []caddyUpstream `json:"upstreams,omitempty"`
+	Handler    string              `json:"handler"`
+	Upstreams  []caddyUpstream     `json:"upstreams,omitempty"`
+	StatusCode int                 `json:"status_code,omitempty"` // static_response
+	Headers    map[string][]string `json:"headers,omitempty"`     // static_response
 }
 
 type caddyUpstream struct {
@@ -93,6 +96,33 @@ func buildAppRoutes(cfg NetworkExposureConfig, apps []*NetworkExposedApp) []cadd
 		})
 	}
 	return routes
+}
+
+// buildHTTPSRedirectRoute construye la ruta de redirección HTTP→HTTPS para
+// los dominios gestionados. Va PRIMERA en el grupo nimos_apps para evaluarse
+// antes que las apps y el panel.
+//
+// Redirige SOLO los hosts cuyos certs gestiona Caddy (matcher host +
+// protocol=http): el acceso LAN por IP queda en HTTP intacto (el cert es
+// del dominio, redirigir la IP daría warning de navegador), y si los certs
+// no están activos (sin token), el reconciler ni añade esta ruta — la regla
+// es "redirigimos exactamente lo que tiene cert".
+//
+// 308 (Permanent Redirect) preserva el método HTTP, igual que el automatic
+// HTTPS de Caddy. Con https_port custom, el Location incluye el puerto.
+func buildHTTPSRedirectRoute(domains []string, httpsPort int) caddyRoute {
+	location := "https://{http.request.host}{http.request.uri}"
+	if httpsPort != 443 {
+		location = fmt.Sprintf("https://{http.request.host}:%d{http.request.uri}", httpsPort)
+	}
+	return caddyRoute{
+		Match: []caddyMatch{{Host: domains, Protocol: "http"}},
+		Handle: []caddyHandle{{
+			Handler:    "static_response",
+			StatusCode: 308,
+			Headers:    map[string][]string{"Location": {location}},
+		}},
+	}
 }
 
 // normalizeCaddyPath asegura que el path empiece por "/" y termine en "*"

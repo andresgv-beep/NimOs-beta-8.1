@@ -112,9 +112,6 @@ func (r *NetworkExposureReconciler) Reconcile(ctx context.Context) error {
 		}
 	}
 
-	// Generar SOLO las rutas de apps y sincronizarlas con Caddy. El panel
-	// vive en el config base de Caddy y NO se toca aquí.
-	routes := buildAppRoutes(cfg, caddyApps)
 	client := r.caddyClientFor(cfg.CaddyAdminURL)
 
 	// Puertos de escucha: configurables (setups donde :80/:443 están
@@ -128,6 +125,23 @@ func (r *NetworkExposureReconciler) Reconcile(ctx context.Context) error {
 			fmt.Sprintf("Failed to sync Caddy listen ports (%d/%d): %v",
 				cfg.HTTPPort, cfg.HTTPSPort, err))
 	}
+	// Intent TLS primero: los dominios gestionados determinan también la
+	// redirección HTTP→HTTPS (redirigimos exactamente lo que tiene cert).
+	domains := collectTLSDomains(cfg, caddyApps)
+	token := r.duckdnsToken(ctx, cfg)
+	if len(domains) > 0 && token == "" {
+		// Sin token no hay DNS-01 posible: no pedimos a Caddy certs que no
+		// puede validar (se quedarían reintentando contra Let's Encrypt),
+		// y por tanto tampoco redirigimos a un HTTPS que no funcionaría.
+		domains = []string{}
+	}
+
+	// Rutas de apps (el panel vive en el config base y NO se toca aquí),
+	// precedidas del redirect HTTP→HTTPS si hay certs gestionados.
+	routes := buildAppRoutes(cfg, caddyApps)
+	if len(domains) > 0 {
+		routes = append([]caddyRoute{buildHTTPSRedirectRoute(domains, cfg.HTTPSPort)}, routes...)
+	}
 	if err := client.SyncAppRoutes(ctx, routes); err != nil {
 		// Caddy caído o config rechazada: degradación, no fatal. Emitimos
 		// evento y NO marcamos applied (quedan pending para reintentar).
@@ -140,13 +154,6 @@ func (r *NetworkExposureReconciler) Reconcile(ctx context.Context) error {
 	// (DNS-01 DuckDNS con el token del módulo DDNS). Best-effort: si falla,
 	// las rutas ya están sincronizadas y el HTTP sigue funcionando — el cert
 	// llegará en un ciclo posterior cuando se resuelva la causa.
-	domains := collectTLSDomains(cfg, caddyApps)
-	token := r.duckdnsToken(ctx, cfg)
-	if len(domains) > 0 && token == "" {
-		// Sin token no hay DNS-01 posible: no pedimos a Caddy certs que no
-		// puede validar (se quedarían reintentando contra Let's Encrypt).
-		domains = []string{}
-	}
 	policy := buildTLSPolicy(domains, token, cfg.BaseDomain)
 	if err := client.SyncTLS(ctx, domains, policy); err != nil {
 		r.emit(ctx, nil, "caddy_tls_sync_failed", EventLevelWarn,

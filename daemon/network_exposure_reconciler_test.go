@@ -364,3 +364,71 @@ func TestExposureReconcile_ListenFailureNotFatal(t *testing.T) {
 		t.Errorf("routes should still sync after listen failure (calls=%d)", mock.calls)
 	}
 }
+
+func TestExposureReconcile_RedirectOnlyWithCerts(t *testing.T) {
+	// CON token → la primera ruta es el redirect HTTP→HTTPS de los dominios
+	// gestionados; las apps van detrás.
+	rec, mock, repo, c, cleanup := newTestExposureReconciler(t)
+	defer cleanup()
+	key := make([]byte, masterKeySize)
+	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewSecretsStoreWithKey(c.db, key, rec.clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.secrets = store
+	seedDDNS(t, c.db, repo, store, "base.duckdns.org", true, true, 300)
+
+	withNetTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.SaveExposureConfig(context.Background(), tx, NetworkExposureConfig{
+			BaseDomain: "base.duckdns.org", Enabled: true,
+		})
+	})
+	app := makeExposedApp("immich", "immich")
+	withNetTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.CreateExposedApp(context.Background(), tx, app)
+	})
+
+	if err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(mock.lastRoutes) != 2 {
+		t.Fatalf("routes = %d, want 2 (redirect + app)", len(mock.lastRoutes))
+	}
+	first := mock.lastRoutes[0]
+	if first.Match[0].Protocol != "http" || first.Handle[0].Handler != "static_response" {
+		t.Errorf("first route should be the HTTPS redirect: %+v", first)
+	}
+	if mock.lastRoutes[1].Handle[0].Handler != "reverse_proxy" {
+		t.Errorf("second route should be the app: %+v", mock.lastRoutes[1])
+	}
+}
+
+func TestExposureReconcile_NoRedirectWithoutToken(t *testing.T) {
+	// SIN token → sin certs gestionados → NO debe haber redirect (redirigir
+	// a un HTTPS sin cert rompería el acceso HTTP que sí funciona).
+	rec, mock, repo, c, cleanup := newTestExposureReconciler(t)
+	defer cleanup()
+
+	withNetTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.SaveExposureConfig(context.Background(), tx, NetworkExposureConfig{
+			BaseDomain: "base.duckdns.org", Enabled: true,
+		})
+	})
+	app := makeExposedApp("immich", "immich")
+	withNetTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.CreateExposedApp(context.Background(), tx, app)
+	})
+
+	if err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(mock.lastRoutes) != 1 {
+		t.Fatalf("routes = %d, want 1 (solo la app, sin redirect)", len(mock.lastRoutes))
+	}
+	if mock.lastRoutes[0].Handle[0].Handler != "reverse_proxy" {
+		t.Errorf("route should be the app: %+v", mock.lastRoutes[0])
+	}
+}

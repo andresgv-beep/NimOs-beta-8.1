@@ -362,3 +362,29 @@ func TestCaddyClient_SyncListen(t *testing.T) {
 		t.Errorf("listen = %v, want [:8080 :8443]", listen)
 	}
 }
+
+func TestBuildHTTPSRedirectRoute(t *testing.T) {
+	domains := []string{"base.duckdns.org", "next.base.duckdns.org"}
+
+	// Puerto estándar: Location sin puerto.
+	r := buildHTTPSRedirectRoute(domains, 443)
+	if r.Match[0].Protocol != "http" {
+		t.Errorf("protocol matcher = %q, want http", r.Match[0].Protocol)
+	}
+	if len(r.Match[0].Host) != 2 {
+		t.Errorf("hosts = %v, want both domains", r.Match[0].Host)
+	}
+	h := r.Handle[0]
+	if h.Handler != "static_response" || h.StatusCode != 308 {
+		t.Errorf("handle = %+v, want static_response 308", h)
+	}
+	if loc := h.Headers["Location"][0]; loc != "https://{http.request.host}{http.request.uri}" {
+		t.Errorf("location = %q (sin puerto custom no debe llevar puerto)", loc)
+	}
+
+	// Puerto custom: Location con puerto.
+	r = buildHTTPSRedirectRoute(domains, 8443)
+	if loc := r.Handle[0].Headers["Location"][0]; loc != "https://{http.request.host}:8443{http.request.uri}" {
+		t.Errorf("location custom = %q", loc)
+	}
+}
