@@ -339,10 +339,13 @@ func TestCaddyClient_SyncTLS_EmptySendsArrays(t *testing.T) {
 }
 
 func TestCaddyClient_SyncListen(t *testing.T) {
-	var gotPath, gotBody string
+	type call struct {
+		method, path, body string
+	}
+	var calls []call
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
-		gotPath, gotBody = r.URL.Path, string(b)
+		calls = append(calls, call{r.Method, r.URL.Path, string(b)})
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -351,12 +354,25 @@ func TestCaddyClient_SyncListen(t *testing.T) {
 	if err := client.SyncListen(context.Background(), 8080, 8443); err != nil {
 		t.Fatalf("SyncListen: %v", err)
 	}
-	if !strings.Contains(gotPath, "servers/nimos/listen") {
-		t.Errorf("path = %q, want listen path", gotPath)
+
+	// 3 pasos: http_port y https_port globales (POST: pueden no existir en
+	// el base) y luego el listen del server (PATCH). Sin los dos primeros,
+	// el automatic HTTPS no termina TLS en el puerto custom.
+	if len(calls) != 3 {
+		t.Fatalf("calls = %d, want 3 (http_port + https_port + listen)", len(calls))
+	}
+	if calls[0].method != http.MethodPost || !strings.HasSuffix(calls[0].path, "/http_port") || calls[0].body != "8080" {
+		t.Errorf("call 0 = %+v, want POST http_port 8080", calls[0])
+	}
+	if calls[1].method != http.MethodPost || !strings.HasSuffix(calls[1].path, "/https_port") || calls[1].body != "8443" {
+		t.Errorf("call 1 = %+v, want POST https_port 8443", calls[1])
+	}
+	if calls[2].method != http.MethodPatch || !strings.Contains(calls[2].path, "servers/nimos/listen") {
+		t.Errorf("call 2 = %+v, want PATCH listen", calls[2])
 	}
 	var listen []string
-	if err := json.Unmarshal([]byte(gotBody), &listen); err != nil {
-		t.Fatalf("body not array: %s", gotBody)
+	if err := json.Unmarshal([]byte(calls[2].body), &listen); err != nil {
+		t.Fatalf("listen body not array: %s", calls[2].body)
 	}
 	if len(listen) != 2 || listen[0] != ":8080" || listen[1] != ":8443" {
 		t.Errorf("listen = %v, want [:8080 :8443]", listen)

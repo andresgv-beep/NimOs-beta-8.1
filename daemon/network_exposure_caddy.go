@@ -270,6 +270,14 @@ func NewCaddyAdminClient(adminURL string, httpClient *http.Client) *CaddyAdminCl
 	}
 }
 
+// caddyHTTPPortPath / caddyHTTPSPortPath son los puertos globales del
+// automatic HTTPS de Caddy. CRÍTICOS: determinan en qué listener Caddy
+// termina TLS (https_port) y cuál queda exento como HTTP plano (http_port).
+// Sin sincronizarlos, mover el listen a un puerto custom (ej. :8443) deja
+// ese puerto sirviendo HTTP PLANO aunque los certs existan.
+const caddyHTTPPortPath = "/config/apps/http/http_port"
+const caddyHTTPSPortPath = "/config/apps/http/https_port"
+
 // caddyListenPath apunta al array listen del server base. NimOS lo gestiona
 // para que los puertos sean configurables: no todos los setups tienen :80 y
 // :443 libres (Synology al lado, otro reverse proxy, ISP capando puertos…).
@@ -301,9 +309,19 @@ func (c *CaddyAdminClient) SyncAppRoutes(ctx context.Context, routes []caddyRout
 	return c.patchJSON(ctx, caddyAppsRoutesPath, routes, "caddy sync")
 }
 
-// SyncListen reemplaza los puertos de escucha del server. Caddy rebindea
-// los sockets en caliente al aplicar el cambio (config reload interno).
+// SyncListen sincroniza los puertos de escucha en TRES pasos:
+//   1-2. http_port / https_port globales (POST: create-or-replace, por si
+//        el base no los declara) — sin esto el automatic HTTPS no sabe en
+//        qué listener terminar TLS y el puerto custom serviría HTTP plano.
+//   3.   listen del server (PATCH: el array existe en el base).
+// Caddy rebindea los sockets en caliente al aplicar cada cambio.
 func (c *CaddyAdminClient) SyncListen(ctx context.Context, httpPort, httpsPort int) error {
+	if err := c.postJSON(ctx, caddyHTTPPortPath, httpPort, "caddy http_port"); err != nil {
+		return err
+	}
+	if err := c.postJSON(ctx, caddyHTTPSPortPath, httpsPort, "caddy https_port"); err != nil {
+		return err
+	}
 	listen := []string{fmt.Sprintf(":%d", httpPort), fmt.Sprintf(":%d", httpsPort)}
 	return c.patchJSON(ctx, caddyListenPath, listen, "caddy listen")
 }
@@ -323,14 +341,25 @@ func (c *CaddyAdminClient) SyncTLS(ctx context.Context, domains []string, policy
 	return c.patchJSON(ctx, caddyTLSAutomatePath, domains, "caddy tls automate")
 }
 
-// patchJSON hace PATCH del payload (JSON) al path dado y valida la
-// respuesta. label da contexto a los errores.
+// patchJSON hace PATCH (reemplazar existente) del payload al path dado.
 func (c *CaddyAdminClient) patchJSON(ctx context.Context, path string, payload interface{}, label string) error {
+	return c.sendJSON(ctx, http.MethodPatch, path, payload, label)
+}
+
+// postJSON hace POST (crear o reemplazar) del payload al path dado. Para
+// claves escalares que pueden no existir en el config base.
+func (c *CaddyAdminClient) postJSON(ctx context.Context, path string, payload interface{}, label string) error {
+	return c.sendJSON(ctx, http.MethodPost, path, payload, label)
+}
+
+// sendJSON envía el payload (JSON) al path con el método dado y valida la
+// respuesta. label da contexto a los errores.
+func (c *CaddyAdminClient) sendJSON(ctx context.Context, method, path string, payload interface{}, label string) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("%s: marshal: %w", label, err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPatch,
+	req, err := http.NewRequestWithContext(ctx, method,
 		c.adminURL+path, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("%s: build request: %w", label, err)
