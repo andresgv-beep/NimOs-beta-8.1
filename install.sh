@@ -575,9 +575,12 @@ setup_caddy() {
       }
     },
     "http": {
+      "http_port": ${NIMOS_HTTP_PORT:-80},
+      "https_port": ${NIMOS_HTTPS_PORT:-443},
       "servers": {
         "nimos": {
           "listen": [":${NIMOS_HTTP_PORT:-80}", ":${NIMOS_HTTPS_PORT:-443}"],
+          "tls_connection_policies": [{}],
           "routes": [
             {
               "@id": "nimos_apps",
