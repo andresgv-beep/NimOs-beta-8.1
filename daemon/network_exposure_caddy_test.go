@@ -206,3 +206,133 @@ func TestCaddyClient_FetchCertificates(t *testing.T) {
 		t.Errorf("body = %q, want %q", body, payload)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TLS automation
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestCollectTLSDomains(t *testing.T) {
+	cfg := NetworkExposureConfig{BaseDomain: "base.duckdns.org", Enabled: true}
+	apps := []*NetworkExposedApp{
+		{AppID: "a", Subdomain: "next", UpstreamHost: "h", UpstreamPort: 1, Enabled: true},
+		{AppID: "b", Path: "/gitea", UpstreamHost: "h", UpstreamPort: 2, Enabled: true},
+		{AppID: "c", Path: "/otro", UpstreamHost: "h", UpstreamPort: 3, Enabled: true},  // dedupe → base
+		{AppID: "d", Subdomain: "off", UpstreamHost: "h", UpstreamPort: 4, Enabled: false}, // omitida
+	}
+	got := collectTLSDomains(cfg, apps)
+	want := []string{"next.base.duckdns.org", "base.duckdns.org"}
+	if len(got) != len(want) {
+		t.Fatalf("domains = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("domains[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestCollectTLSDomains_NoBaseDomain(t *testing.T) {
+	got := collectTLSDomains(NetworkExposureConfig{}, []*NetworkExposedApp{
+		{AppID: "a", Subdomain: "x", Enabled: true},
+	})
+	if len(got) != 0 {
+		t.Errorf("domains = %v, want empty (no base domain)", got)
+	}
+}
+
+func TestBuildTLSPolicy_WithToken(t *testing.T) {
+	domains := []string{"next.base.duckdns.org"}
+	p := buildTLSPolicy(domains, "tok123", "base.duckdns.org")
+	if p.ID != "nimos_tls" {
+		t.Errorf("ID = %q, want nimos_tls", p.ID)
+	}
+	if len(p.Subjects) != 1 || p.Subjects[0] != "next.base.duckdns.org" {
+		t.Errorf("Subjects = %v", p.Subjects)
+	}
+	if len(p.Issuers) != 1 || p.Issuers[0].Module != "acme" {
+		t.Fatalf("Issuers = %+v, want 1 acme issuer", p.Issuers)
+	}
+	prov := p.Issuers[0].Challenges.DNS.Provider
+	if prov.Name != "duckdns" || prov.APIToken != "tok123" || prov.OverrideDomain != "base.duckdns.org" {
+		t.Errorf("provider = %+v", prov)
+	}
+}
+
+func TestBuildTLSPolicy_NoTokenInert(t *testing.T) {
+	// Sin token → política inerte: sin issuers (no pedimos certs imposibles).
+	p := buildTLSPolicy([]string{"x.base.org"}, "", "base.org")
+	if len(p.Issuers) != 0 {
+		t.Errorf("Issuers = %+v, want none without token", p.Issuers)
+	}
+	// Sin dominios → también inerte, subjects [] no nil (marshal a []).
+	p = buildTLSPolicy(nil, "tok", "base.org")
+	if p.Subjects == nil || len(p.Subjects) != 0 || len(p.Issuers) != 0 {
+		t.Errorf("empty policy malformed: %+v", p)
+	}
+}
+
+func TestCaddyClient_SyncTLS(t *testing.T) {
+	type call struct {
+		path string
+		body string
+	}
+	var calls []call
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		calls = append(calls, call{path: r.URL.Path, body: string(b)})
+		if r.Method != http.MethodPatch {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := NewCaddyAdminClient(srv.URL, srv.Client())
+	domains := []string{"next.base.duckdns.org"}
+	policy := buildTLSPolicy(domains, "tok123", "base.duckdns.org")
+	if err := client.SyncTLS(context.Background(), domains, policy); err != nil {
+		t.Fatalf("SyncTLS: %v", err)
+	}
+
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want 2 (policy + automate)", len(calls))
+	}
+	// Orden: primero la política (el CÓMO), luego automate (el QUÉ).
+	if !strings.Contains(calls[0].path, "nimos_tls") {
+		t.Errorf("first call path = %q, want nimos_tls policy", calls[0].path)
+	}
+	if !strings.Contains(calls[0].body, `"api_token":"tok123"`) ||
+		!strings.Contains(calls[0].body, `"override_domain":"base.duckdns.org"`) {
+		t.Errorf("policy body missing token/override: %s", calls[0].body)
+	}
+	if !strings.Contains(calls[1].path, "certificates/automate") {
+		t.Errorf("second call path = %q, want automate", calls[1].path)
+	}
+	var sentDomains []string
+	if err := json.Unmarshal([]byte(calls[1].body), &sentDomains); err != nil || len(sentDomains) != 1 {
+		t.Errorf("automate body = %s", calls[1].body)
+	}
+}
+
+func TestCaddyClient_SyncTLS_EmptySendsArrays(t *testing.T) {
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := NewCaddyAdminClient(srv.URL, srv.Client())
+	if err := client.SyncTLS(context.Background(), nil, buildTLSPolicy(nil, "", "")); err != nil {
+		t.Fatalf("SyncTLS empty: %v", err)
+	}
+	// automate debe ir como [] (null rompería el array en Caddy).
+	if strings.TrimSpace(bodies[1]) != "[]" {
+		t.Errorf("automate body = %q, want []", bodies[1])
+	}
+	if !strings.Contains(bodies[0], `"subjects":[]`) {
+		t.Errorf("policy subjects should marshal as []: %s", bodies[0])
+	}
+}

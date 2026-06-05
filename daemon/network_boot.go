@@ -145,7 +145,8 @@ func initNetworkModule() error {
 	// /pki/certificates para que la UI muestre el estado de los certs. Ambos
 	// best-effort: si Caddy no está corriendo, degradan sin tumbar el módulo.
 	networkExposureReconciler = NewNetworkExposureReconciler(networkRepo,
-		networkEventEmitter, clock, DefaultNetworkExposureReconcilerConfig())
+		networkSecretsStore, networkEventEmitter, clock,
+		DefaultNetworkExposureReconcilerConfig())
 	if err := networkReconcilers.Register(networkExposureReconciler); err != nil {
 		return fmt.Errorf("initNetworkModule: register exposure reconciler: %w", err)
 	}

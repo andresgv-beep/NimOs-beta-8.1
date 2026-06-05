@@ -41,6 +41,7 @@ func DefaultNetworkExposureReconcilerConfig() NetworkExposureReconcilerConfig {
 // NetworkExposureReconciler implementa Reconciler.
 type NetworkExposureReconciler struct {
 	repo    *NetworkRepo
+	secrets *SecretsStore // para descifrar el token DuckDNS (puede ser nil)
 	emitter *EventEmitter
 	clock   Clock
 	config  NetworkExposureReconcilerConfig
@@ -54,10 +55,13 @@ type NetworkExposureReconciler struct {
 // Interfaz para poder mockear en tests.
 type caddySyncer interface {
 	SyncAppRoutes(ctx context.Context, routes []caddyRoute) error
+	SyncTLS(ctx context.Context, domains []string, policy caddyTLSPolicy) error
 }
 
 // NewNetworkExposureReconciler construye el reconciler. clock nil → RealClock.
-func NewNetworkExposureReconciler(repo *NetworkRepo, emitter *EventEmitter, clock Clock, config NetworkExposureReconcilerConfig) *NetworkExposureReconciler {
+// secrets puede ser nil: la sincronización de rutas funciona igual, pero la
+// gestión de certs (DNS-01) queda deshabilitada hasta tener el store.
+func NewNetworkExposureReconciler(repo *NetworkRepo, secrets *SecretsStore, emitter *EventEmitter, clock Clock, config NetworkExposureReconcilerConfig) *NetworkExposureReconciler {
 	if clock == nil {
 		clock = NewRealClock()
 	}
@@ -66,6 +70,7 @@ func NewNetworkExposureReconciler(repo *NetworkRepo, emitter *EventEmitter, cloc
 	}
 	r := &NetworkExposureReconciler{
 		repo:    repo,
+		secrets: secrets,
 		emitter: emitter,
 		clock:   clock,
 		config:  config,
@@ -118,6 +123,23 @@ func (r *NetworkExposureReconciler) Reconcile(ctx context.Context) error {
 		return fmt.Errorf("exposure reconcile: caddy sync: %w", err)
 	}
 
+	// TLS: decirle a Caddy qué certs gestionar (automate) y cómo obtenerlos
+	// (DNS-01 DuckDNS con el token del módulo DDNS). Best-effort: si falla,
+	// las rutas ya están sincronizadas y el HTTP sigue funcionando — el cert
+	// llegará en un ciclo posterior cuando se resuelva la causa.
+	domains := collectTLSDomains(cfg, caddyApps)
+	token := r.duckdnsToken(ctx, cfg)
+	if len(domains) > 0 && token == "" {
+		// Sin token no hay DNS-01 posible: no pedimos a Caddy certs que no
+		// puede validar (se quedarían reintentando contra Let's Encrypt).
+		domains = []string{}
+	}
+	policy := buildTLSPolicy(domains, token, cfg.BaseDomain)
+	if err := client.SyncTLS(ctx, domains, policy); err != nil {
+		r.emit(ctx, nil, "caddy_tls_sync_failed", EventLevelWarn,
+			fmt.Sprintf("Failed to sync Caddy TLS automation: %v", err))
+	}
+
 	// Caddy aceptó la config. Marcar applied en cada app pendiente.
 	for _, a := range apps {
 		if ctx.Err() != nil {
@@ -167,4 +189,23 @@ func (r *NetworkExposureReconciler) emit(ctx context.Context, targetID *string, 
 	if err != nil {
 		logMsg("exposure reconciler: emit %s: %v", event, err)
 	}
+}
+
+// duckdnsToken descifra el token DuckDNS reutilizando lo que el módulo DDNS
+// ya custodia: busca la entrada DDNS del dominio base y descifra su
+// TokenSecretID desde nimos_secrets. Devuelve "" si no hay entrada, no es
+// duckdns, o no hay store — el caller degrada a "sin gestión de certs".
+func (r *NetworkExposureReconciler) duckdnsToken(ctx context.Context, cfg NetworkExposureConfig) string {
+	if r.secrets == nil || cfg.BaseDomain == "" {
+		return ""
+	}
+	d, err := r.repo.GetDdnsByDomain(ctx, cfg.BaseDomain)
+	if err != nil || d == nil || d.Provider != "duckdns" || d.TokenSecretID == "" {
+		return ""
+	}
+	sec, err := r.secrets.GetSecret(SecretID(d.TokenSecretID))
+	if err != nil {
+		return ""
+	}
+	return string(sec.Plaintext)
 }

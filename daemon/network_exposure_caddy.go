@@ -108,6 +108,105 @@ func normalizeCaddyPath(p string) string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// TLS automation (DNS-01 DuckDNS)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Los hosts de las apps viven dentro del subroute "nimos_apps", invisibles
+// para el automatic HTTPS de Caddy (que solo mira rutas de primer nivel).
+// Por eso NimOS le dice a Caddy EXPLÍCITAMENTE qué certs gestionar:
+//
+//   · /id/nimos_tls (política @id del base) → CÓMO obtenerlos:
+//     ACME con challenge DNS-01 vía DuckDNS, usando el token que el módulo
+//     DDNS ya custodia en nimos_secrets. DNS-01 no necesita puertos abiertos.
+//   · /config/apps/tls/certificates/automate → QUÉ dominios gestionar
+//     proactivamente.
+//
+// override_domain apunta SIEMPRE al dominio base: la API de DuckDNS solo
+// conoce el dominio registrado (no sub-subdominios como next.base), y como
+// DuckDNS sirve el TXT para todos los subdominios, la validación funciona.
+
+// caddyTLSPolicy es la política de automatización TLS gestionada por NimOS
+// (el objeto @id "nimos_tls" definido en el config base).
+type caddyTLSPolicy struct {
+	ID       string           `json:"@id"`
+	Subjects []string         `json:"subjects"`
+	Issuers  []caddyTLSIssuer `json:"issuers,omitempty"`
+}
+
+type caddyTLSIssuer struct {
+	Module     string              `json:"module"`
+	Challenges *caddyTLSChallenges `json:"challenges,omitempty"`
+}
+
+type caddyTLSChallenges struct {
+	DNS *caddyTLSDNSChallenge `json:"dns,omitempty"`
+}
+
+type caddyTLSDNSChallenge struct {
+	Provider caddyTLSDNSProvider `json:"provider"`
+}
+
+type caddyTLSDNSProvider struct {
+	Name           string `json:"name"`
+	APIToken       string `json:"api_token"`
+	OverrideDomain string `json:"override_domain,omitempty"`
+}
+
+// collectTLSDomains deriva los dominios cuyos certs debe gestionar Caddy a
+// partir de las apps habilitadas. Subdominio → sub.base; ruta → el propio
+// base. Deduplicado, orden estable (orden de las apps).
+func collectTLSDomains(cfg NetworkExposureConfig, apps []*NetworkExposedApp) []string {
+	domains := []string{}
+	if cfg.BaseDomain == "" {
+		return domains
+	}
+	seen := map[string]bool{}
+	add := func(d string) {
+		if !seen[d] {
+			seen[d] = true
+			domains = append(domains, d)
+		}
+	}
+	for _, a := range apps {
+		if !a.Enabled {
+			continue
+		}
+		switch {
+		case a.Subdomain != "":
+			add(a.Subdomain + "." + cfg.BaseDomain)
+		case a.Path != "":
+			add(cfg.BaseDomain)
+		}
+	}
+	return domains
+}
+
+// buildTLSPolicy construye la política @id "nimos_tls". Con dominios y token
+// → ACME DNS-01 DuckDNS. Sin dominios o sin token → política inerte (subjects
+// vacíos, sin issuers): Caddy no intenta certs que no puede validar.
+func buildTLSPolicy(domains []string, duckdnsToken, baseDomain string) caddyTLSPolicy {
+	p := caddyTLSPolicy{ID: "nimos_tls", Subjects: domains}
+	if p.Subjects == nil {
+		p.Subjects = []string{}
+	}
+	if len(domains) > 0 && duckdnsToken != "" {
+		p.Issuers = []caddyTLSIssuer{{
+			Module: "acme",
+			Challenges: &caddyTLSChallenges{
+				DNS: &caddyTLSDNSChallenge{
+					Provider: caddyTLSDNSProvider{
+						Name:           "duckdns",
+						APIToken:       duckdnsToken,
+						OverrideDomain: baseDomain,
+					},
+				},
+			},
+		}}
+	}
+	return p
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Cliente API admin
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -137,6 +236,14 @@ func NewCaddyAdminClient(adminURL string, httpClient *http.Client) *CaddyAdminCl
 	}
 }
 
+// caddyTLSPolicyPath apunta a la política TLS @id "nimos_tls" del base.
+const caddyTLSPolicyPath = "/id/nimos_tls"
+
+// caddyTLSAutomatePath apunta al array de dominios que Caddy gestiona
+// proactivamente (obtiene y renueva sus certs). El base lo define vacío;
+// NimOS lo rellena con los dominios de las apps expuestas.
+const caddyTLSAutomatePath = "/config/apps/tls/certificates/automate"
+
 // SyncAppRoutes reemplaza SOLO el array de rutas de apps (grupo @id
 // "nimos_apps"), sin tocar el panel ni la config global. Usa PATCH sobre el
 // path concreto del array.
@@ -149,20 +256,44 @@ func NewCaddyAdminClient(adminURL string, httpClient *http.Client) *CaddyAdminCl
 // Como el array "routes" ya existe en el base (vacío), PATCH lo reemplaza
 // limpiamente con el conjunto regenerado.
 func (c *CaddyAdminClient) SyncAppRoutes(ctx context.Context, routes []caddyRoute) error {
-	body, err := json.Marshal(routes)
+	if routes == nil {
+		routes = []caddyRoute{}
+	}
+	return c.patchJSON(ctx, caddyAppsRoutesPath, routes, "caddy sync")
+}
+
+// SyncTLS sincroniza la gestión de certs con Caddy en dos pasos quirúrgicos,
+// en este orden (primero el CÓMO, luego el QUÉ, para que cuando Caddy
+// empiece a gestionar un dominio ya tenga la política DNS-01 lista):
+//   1. PATCH /id/nimos_tls → política (issuer ACME + DNS-01 DuckDNS + token).
+//   2. PATCH .../certificates/automate → dominios a gestionar.
+func (c *CaddyAdminClient) SyncTLS(ctx context.Context, domains []string, policy caddyTLSPolicy) error {
+	if err := c.patchJSON(ctx, caddyTLSPolicyPath, policy, "caddy tls policy"); err != nil {
+		return err
+	}
+	if domains == nil {
+		domains = []string{}
+	}
+	return c.patchJSON(ctx, caddyTLSAutomatePath, domains, "caddy tls automate")
+}
+
+// patchJSON hace PATCH del payload (JSON) al path dado y valida la
+// respuesta. label da contexto a los errores.
+func (c *CaddyAdminClient) patchJSON(ctx context.Context, path string, payload interface{}, label string) error {
+	body, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("caddy sync: marshal routes: %w", err)
+		return fmt.Errorf("%s: marshal: %w", label, err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPatch,
-		c.adminURL+caddyAppsRoutesPath, bytes.NewReader(body))
+		c.adminURL+path, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("caddy sync: build request: %w", err)
+		return fmt.Errorf("%s: build request: %w", label, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("caddy sync: request failed (is Caddy running?): %w", err)
+		return fmt.Errorf("%s: request failed (is Caddy running?): %w", label, err)
 	}
 	defer resp.Body.Close()
 
@@ -170,9 +301,9 @@ func (c *CaddyAdminClient) SyncAppRoutes(ctx context.Context, routes []caddyRout
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		trimmed := strings.TrimSpace(string(msg))
 		if resp.StatusCode == http.StatusBadRequest && strings.Contains(trimmed, "unknown object") {
-			return fmt.Errorf("caddy sync: base config missing 'nimos_apps' route group (reinstall Caddy base config): %s", trimmed)
+			return fmt.Errorf("%s: base config missing managed object (reinstall Caddy base config): %s", label, trimmed)
 		}
-		return fmt.Errorf("caddy sync: status %d: %s", resp.StatusCode, trimmed)
+		return fmt.Errorf("%s: status %d: %s", label, resp.StatusCode, trimmed)
 	}
 	return nil
 }
