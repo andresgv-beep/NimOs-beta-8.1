@@ -56,6 +56,7 @@ type NetworkExposureReconciler struct {
 type caddySyncer interface {
 	SyncAppRoutes(ctx context.Context, routes []caddyRoute) error
 	SyncTLS(ctx context.Context, domains []string, policy caddyTLSPolicy) error
+	SyncListen(ctx context.Context, httpPort, httpsPort int) error
 }
 
 // NewNetworkExposureReconciler construye el reconciler. clock nil → RealClock.
@@ -115,6 +116,18 @@ func (r *NetworkExposureReconciler) Reconcile(ctx context.Context) error {
 	// vive en el config base de Caddy y NO se toca aquí.
 	routes := buildAppRoutes(cfg, caddyApps)
 	client := r.caddyClientFor(cfg.CaddyAdminURL)
+
+	// Puertos de escucha: configurables (setups donde :80/:443 están
+	// ocupados por otro servicio, p.ej. un Synology en la misma máquina o
+	// red con los puertos clásicos pillados). Va ANTES que las rutas para
+	// que el server quede bindeado donde toca. Best-effort: si el puerto
+	// está en uso, Caddy lo rechaza, emitimos evento y seguimos — el
+	// server queda en los puertos anteriores, funcional.
+	if err := client.SyncListen(ctx, cfg.HTTPPort, cfg.HTTPSPort); err != nil {
+		r.emit(ctx, nil, "caddy_listen_sync_failed", EventLevelWarn,
+			fmt.Sprintf("Failed to sync Caddy listen ports (%d/%d): %v",
+				cfg.HTTPPort, cfg.HTTPSPort, err))
+	}
 	if err := client.SyncAppRoutes(ctx, routes); err != nil {
 		// Caddy caído o config rechazada: degradación, no fatal. Emitimos
 		// evento y NO marcamos applied (quedan pending para reintentar).

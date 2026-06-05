@@ -127,3 +127,81 @@ func TestExposureConfig_SingletonCheckEnforced(t *testing.T) {
 		t.Error("CHECK(id='singleton') should reject other ids")
 	}
 }
+
+func TestExposureConfig_PortDefaults(t *testing.T) {
+	repo, _, _, cleanup := newTestRepo(t)
+	defer cleanup()
+
+	cfg, err := repo.GetExposureConfig(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HTTPPort != 80 || cfg.HTTPSPort != 443 {
+		t.Errorf("default ports = %d/%d, want 80/443", cfg.HTTPPort, cfg.HTTPSPort)
+	}
+}
+
+func TestExposureConfig_CustomPortsPersist(t *testing.T) {
+	repo, _, c, cleanup := newTestRepo(t)
+	defer cleanup()
+
+	withNetTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.SaveExposureConfig(context.Background(), tx, NetworkExposureConfig{
+			BaseDomain: "x.org", Enabled: true, HTTPPort: 8080, HTTPSPort: 8443,
+		})
+	})
+	cfg, _ := repo.GetExposureConfig(context.Background())
+	if cfg.HTTPPort != 8080 || cfg.HTTPSPort != 8443 {
+		t.Errorf("ports = %d/%d, want 8080/8443", cfg.HTTPPort, cfg.HTTPSPort)
+	}
+}
+
+func TestExposureConfig_PortValidation(t *testing.T) {
+	repo, _, c, cleanup := newTestRepo(t)
+	defer cleanup()
+
+	// Puertos iguales → rechazado.
+	err := errFromTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.SaveExposureConfig(context.Background(), tx, NetworkExposureConfig{
+			HTTPPort: 8443, HTTPSPort: 8443,
+		})
+	})
+	if err == nil {
+		t.Error("equal ports should be rejected")
+	}
+	// Fuera de rango → rechazado.
+	err = errFromTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.SaveExposureConfig(context.Background(), tx, NetworkExposureConfig{
+			HTTPPort: 70000, HTTPSPort: 443,
+		})
+	})
+	if err == nil {
+		t.Error("out-of-range port should be rejected")
+	}
+	// Cero = default (80/443), válido.
+	err = errFromTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.SaveExposureConfig(context.Background(), tx, NetworkExposureConfig{})
+	})
+	if err != nil {
+		t.Errorf("zero ports should default, got: %v", err)
+	}
+	cfg, _ := repo.GetExposureConfig(context.Background())
+	if cfg.HTTPPort != 80 || cfg.HTTPSPort != 443 {
+		t.Errorf("zero ports should persist as defaults, got %d/%d", cfg.HTTPPort, cfg.HTTPSPort)
+	}
+}
+
+// errFromTx ejecuta fn en una tx y devuelve su error (rollback si falla,
+// commit si no). Para tests de validación que ESPERAN error.
+func errFromTx(t *testing.T, db *sql.DB, fn func(tx *sql.Tx) error) error {
+	t.Helper()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fn(tx); err != nil {
+		tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}

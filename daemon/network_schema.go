@@ -72,5 +72,11 @@ func initNetworkSchema(conn *sql.DB) error {
 	if _, err := conn.Exec(networkSchemaSQL); err != nil {
 		return fmt.Errorf("cannot apply network schema: %v", err)
 	}
+	// Migraciones columnares idempotentes (patrón del proyecto: SQLite
+	// devuelve "duplicate column" si ya existe — se ignora). Para DBs
+	// creadas antes de que la config de exposición tuviera puertos.
+	conn.Exec(`ALTER TABLE network_exposure_config ADD COLUMN http_port INTEGER NOT NULL DEFAULT 80`)
+	conn.Exec(`ALTER TABLE network_exposure_config ADD COLUMN https_port INTEGER NOT NULL DEFAULT 443`)
+
 	return nil
 }

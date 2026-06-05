@@ -110,6 +110,8 @@ type exposureConfigRequest struct {
 	BaseDomain    *string `json:"base_domain"`
 	CaddyAdminURL *string `json:"caddy_admin_url"`
 	Enabled       *bool   `json:"enabled"`
+	HTTPPort      *int    `json:"http_port"`
+	HTTPSPort     *int    `json:"https_port"`
 }
 
 func exposureConfigPutHTTP(w http.ResponseWriter, r *http.Request) {
@@ -140,6 +142,12 @@ func exposureConfigPutHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Enabled != nil {
 		cfg.Enabled = *req.Enabled
+	}
+	if req.HTTPPort != nil {
+		cfg.HTTPPort = *req.HTTPPort
+	}
+	if req.HTTPSPort != nil {
+		cfg.HTTPSPort = *req.HTTPSPort
 	}
 
 	err = exposureWithTx(r.Context(), func(tx *sql.Tx) error {

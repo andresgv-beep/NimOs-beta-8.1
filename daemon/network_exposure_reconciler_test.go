@@ -27,12 +27,23 @@ type mockCaddySyncer struct {
 	lastPolicy  caddyTLSPolicy
 	tlsCalls    int
 	tlsFailWith error
+	listenCalls    int
+	lastHTTPPort   int
+	lastHTTPSPort  int
+	listenFailWith error
 }
 
 func (m *mockCaddySyncer) SyncAppRoutes(ctx context.Context, routes []caddyRoute) error {
 	m.calls++
 	m.lastRoutes = routes
 	return m.failWith
+}
+
+func (m *mockCaddySyncer) SyncListen(ctx context.Context, httpPort, httpsPort int) error {
+	m.listenCalls++
+	m.lastHTTPPort = httpPort
+	m.lastHTTPSPort = httpsPort
+	return m.listenFailWith
 }
 
 func (m *mockCaddySyncer) SyncTLS(ctx context.Context, domains []string, policy caddyTLSPolicy) error {
@@ -307,5 +318,49 @@ func TestExposureReconcile_TLSFailureNotFatal(t *testing.T) {
 	got, _ := repo.GetExposedApp(context.Background(), app.ID)
 	if got.Convergence.IsPending() {
 		t.Error("app should be applied (routes synced) despite TLS failure")
+	}
+}
+
+func TestExposureReconcile_SyncsListenPorts(t *testing.T) {
+	rec, mock, repo, c, cleanup := newTestExposureReconciler(t)
+	defer cleanup()
+
+	withNetTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.SaveExposureConfig(context.Background(), tx, NetworkExposureConfig{
+			BaseDomain: "base.duckdns.org", Enabled: true,
+			HTTPPort: 8080, HTTPSPort: 8443,
+		})
+	})
+	if err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if mock.listenCalls != 1 || mock.lastHTTPPort != 8080 || mock.lastHTTPSPort != 8443 {
+		t.Errorf("listen sync = %d calls, ports %d/%d; want 1 call, 8080/8443",
+			mock.listenCalls, mock.lastHTTPPort, mock.lastHTTPSPort)
+	}
+}
+
+func TestExposureReconcile_ListenFailureNotFatal(t *testing.T) {
+	// Puerto en uso → Caddy rechaza el listen. Las rutas deben sincronizarse
+	// igual: el server sigue funcional en los puertos anteriores.
+	rec, mock, repo, c, cleanup := newTestExposureReconciler(t)
+	defer cleanup()
+	mock.listenFailWith = fmt.Errorf("address already in use")
+
+	withNetTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.SaveExposureConfig(context.Background(), tx, NetworkExposureConfig{
+			BaseDomain: "base.duckdns.org", Enabled: true,
+		})
+	})
+	app := makeExposedApp("immich", "immich")
+	withNetTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.CreateExposedApp(context.Background(), tx, app)
+	})
+
+	if err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile should not be fatal on listen failure: %v", err)
+	}
+	if mock.calls != 1 {
+		t.Errorf("routes should still sync after listen failure (calls=%d)", mock.calls)
 	}
 }

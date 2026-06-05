@@ -240,6 +240,11 @@ func NewCaddyAdminClient(adminURL string, httpClient *http.Client) *CaddyAdminCl
 	}
 }
 
+// caddyListenPath apunta al array listen del server base. NimOS lo gestiona
+// para que los puertos sean configurables: no todos los setups tienen :80 y
+// :443 libres (Synology al lado, otro reverse proxy, ISP capando puertos…).
+const caddyListenPath = "/config/apps/http/servers/nimos/listen"
+
 // caddyTLSPolicyPath apunta a la política TLS @id "nimos_tls" del base.
 const caddyTLSPolicyPath = "/id/nimos_tls"
 
@@ -264,6 +269,13 @@ func (c *CaddyAdminClient) SyncAppRoutes(ctx context.Context, routes []caddyRout
 		routes = []caddyRoute{}
 	}
 	return c.patchJSON(ctx, caddyAppsRoutesPath, routes, "caddy sync")
+}
+
+// SyncListen reemplaza los puertos de escucha del server. Caddy rebindea
+// los sockets en caliente al aplicar el cambio (config reload interno).
+func (c *CaddyAdminClient) SyncListen(ctx context.Context, httpPort, httpsPort int) error {
+	listen := []string{fmt.Sprintf(":%d", httpPort), fmt.Sprintf(":%d", httpsPort)}
+	return c.patchJSON(ctx, caddyListenPath, listen, "caddy listen")
 }
 
 // SyncTLS sincroniza la gestión de certs con Caddy en dos pasos quirúrgicos,

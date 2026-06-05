@@ -27,6 +27,8 @@ type NetworkExposureConfig struct {
 	BaseDomain    string    `json:"base_domain"`
 	CaddyAdminURL string    `json:"caddy_admin_url"`
 	Enabled       bool      `json:"enabled"`
+	HTTPPort      int       `json:"http_port"`  // puerto HTTP de Caddy (default 80)
+	HTTPSPort     int       `json:"https_port"` // puerto HTTPS de Caddy (default 443)
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
@@ -37,6 +39,8 @@ func defaultExposureConfig() NetworkExposureConfig {
 		BaseDomain:    "",
 		CaddyAdminURL: "http://127.0.0.1:2019",
 		Enabled:       false,
+		HTTPPort:      80,
+		HTTPSPort:     443,
 	}
 }
 
@@ -44,7 +48,7 @@ func defaultExposureConfig() NetworkExposureConfig {
 // defaults (sin error) — el sistema arranca con exposición desactivada.
 func (r *NetworkRepo) GetExposureConfig(ctx context.Context) (NetworkExposureConfig, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT base_domain, caddy_admin_url, enabled, updated_at
+		SELECT base_domain, caddy_admin_url, enabled, http_port, https_port, updated_at
 		FROM network_exposure_config WHERE id = 'singleton'
 	`)
 	var (
@@ -52,7 +56,8 @@ func (r *NetworkRepo) GetExposureConfig(ctx context.Context) (NetworkExposureCon
 		enabledInt int
 		updatedStr string
 	)
-	err := row.Scan(&cfg.BaseDomain, &cfg.CaddyAdminURL, &enabledInt, &updatedStr)
+	err := row.Scan(&cfg.BaseDomain, &cfg.CaddyAdminURL, &enabledInt,
+		&cfg.HTTPPort, &cfg.HTTPSPort, &updatedStr)
 	if err == sql.ErrNoRows {
 		return defaultExposureConfig(), nil
 	}
@@ -60,6 +65,12 @@ func (r *NetworkRepo) GetExposureConfig(ctx context.Context) (NetworkExposureCon
 		return defaultExposureConfig(), fmt.Errorf("GetExposureConfig: %w", err)
 	}
 	cfg.Enabled = enabledInt != 0
+	if cfg.HTTPPort == 0 {
+		cfg.HTTPPort = 80
+	}
+	if cfg.HTTPSPort == 0 {
+		cfg.HTTPSPort = 443
+	}
 	if t, perr := time.Parse(time.RFC3339, updatedStr); perr == nil {
 		cfg.UpdatedAt = t
 	}
@@ -75,16 +86,31 @@ func (r *NetworkRepo) SaveExposureConfig(ctx context.Context, tx *sql.Tx, cfg Ne
 	if cfg.CaddyAdminURL == "" {
 		cfg.CaddyAdminURL = defaultExposureConfig().CaddyAdminURL
 	}
+	// Puertos: 0 = "no especificado" → defaults. Validar rango y colisión.
+	if cfg.HTTPPort == 0 {
+		cfg.HTTPPort = 80
+	}
+	if cfg.HTTPSPort == 0 {
+		cfg.HTTPSPort = 443
+	}
+	if cfg.HTTPPort < 1 || cfg.HTTPPort > 65535 || cfg.HTTPSPort < 1 || cfg.HTTPSPort > 65535 {
+		return fmt.Errorf("SaveExposureConfig: ports must be 1-65535")
+	}
+	if cfg.HTTPPort == cfg.HTTPSPort {
+		return fmt.Errorf("SaveExposureConfig: http_port and https_port must differ")
+	}
 	now := r.clock.Now().UTC().Format(time.RFC3339)
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO network_exposure_config (id, base_domain, caddy_admin_url, enabled, updated_at)
-		VALUES ('singleton', ?, ?, ?, ?)
+		INSERT INTO network_exposure_config (id, base_domain, caddy_admin_url, enabled, http_port, https_port, updated_at)
+		VALUES ('singleton', ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			base_domain     = excluded.base_domain,
 			caddy_admin_url = excluded.caddy_admin_url,
 			enabled         = excluded.enabled,
+			http_port       = excluded.http_port,
+			https_port      = excluded.https_port,
 			updated_at      = excluded.updated_at
-	`, cfg.BaseDomain, cfg.CaddyAdminURL, intFromBool(cfg.Enabled), now)
+	`, cfg.BaseDomain, cfg.CaddyAdminURL, intFromBool(cfg.Enabled), cfg.HTTPPort, cfg.HTTPSPort, now)
 	if err != nil {
 		return fmt.Errorf("SaveExposureConfig: %w", err)
 	}

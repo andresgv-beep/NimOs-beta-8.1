@@ -333,6 +333,8 @@ CREATE TABLE IF NOT EXISTS network_exposure_config (
                     CHECK(id = 'singleton'),
     base_domain     TEXT    NOT NULL DEFAULT '',
     caddy_admin_url TEXT    NOT NULL DEFAULT 'http://127.0.0.1:2019',
+    http_port       INTEGER NOT NULL DEFAULT 80,
+    https_port      INTEGER NOT NULL DEFAULT 443,
     enabled         INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0, 1)),
     updated_at      TEXT    NOT NULL
 );

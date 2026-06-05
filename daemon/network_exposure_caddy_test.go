@@ -337,3 +337,28 @@ func TestCaddyClient_SyncTLS_EmptySendsArrays(t *testing.T) {
 		t.Errorf("policy subjects should marshal as []: %s", bodies[0])
 	}
 }
+
+func TestCaddyClient_SyncListen(t *testing.T) {
+	var gotPath, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotPath, gotBody = r.URL.Path, string(b)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := NewCaddyAdminClient(srv.URL, srv.Client())
+	if err := client.SyncListen(context.Background(), 8080, 8443); err != nil {
+		t.Fatalf("SyncListen: %v", err)
+	}
+	if !strings.Contains(gotPath, "servers/nimos/listen") {
+		t.Errorf("path = %q, want listen path", gotPath)
+	}
+	var listen []string
+	if err := json.Unmarshal([]byte(gotBody), &listen); err != nil {
+		t.Fatalf("body not array: %s", gotBody)
+	}
+	if len(listen) != 2 || listen[0] != ":8080" || listen[1] != ":8443" {
+		t.Errorf("listen = %v, want [:8080 :8443]", listen)
+	}
+}
