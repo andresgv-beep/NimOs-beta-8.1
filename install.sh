@@ -506,6 +506,41 @@ setup_caddy() {
     ok "Caddy already present"
   fi
 
+  # ── Binario custom con el plugin DNS de DuckDNS ──
+  # El Caddy de apt NO trae dns.providers.duckdns, necesario para que NimOS
+  # obtenga certs por DNS-01 (sin abrir puertos en el router). Descargamos
+  # un build oficial con el plugin desde caddyserver.com (compila bajo
+  # demanda para cada arquitectura: x64, arm64, armv7...) y lo instalamos
+  # con dpkg-divert para que los upgrades de apt no lo pisen (apt
+  # actualizará caddy.default, no nuestro binario).
+  if ! caddy list-modules 2>/dev/null | grep -q "dns.providers.duckdns"; then
+    log "Installing custom Caddy build (DuckDNS DNS-01 plugin)..."
+    case "$(uname -m)" in
+      x86_64)  CADDY_ARCH="amd64" ;;
+      aarch64) CADDY_ARCH="arm64" ;;
+      armv7l)  CADDY_ARCH="arm&arm=7" ;;
+      armv6l)  CADDY_ARCH="arm&arm=6" ;;
+      *)       CADDY_ARCH="" ;;
+    esac
+    if [ -n "$CADDY_ARCH" ] && curl -fsSL -o /tmp/caddy-custom \
+        "https://caddyserver.com/api/download?os=linux&arch=${CADDY_ARCH}&p=github.com%2Fcaddy-dns%2Fduckdns"; then
+      chmod +x /tmp/caddy-custom
+      if /tmp/caddy-custom list-modules 2>/dev/null | grep -q "dns.providers.duckdns"; then
+        systemctl stop caddy 2>/dev/null || true
+        dpkg-divert --divert /usr/bin/caddy.default --rename /usr/bin/caddy 2>/dev/null || true
+        cp /tmp/caddy-custom /usr/bin/caddy
+        chmod +x /usr/bin/caddy
+        ok "Custom Caddy installed (duckdns plugin · arch $(uname -m))"
+      else
+        warn "Downloaded binary lacks duckdns module — keeping stock Caddy (DNS-01 certs disabled)"
+      fi
+    else
+      warn "Could not download custom Caddy for arch '$(uname -m)' — keeping stock Caddy (DNS-01 certs disabled)"
+    fi
+  else
+    ok "Caddy already has duckdns plugin"
+  fi
+
   # ── Config base de Caddy (JSON nativo, NO Caddyfile) ──
   # MODELO 1: el panel de NimOS vive aquí, en el config base. El daemon NO
   # lo gestiona — solo añade/quita rutas de APPS bajo el grupo @id
@@ -526,6 +561,19 @@ setup_caddy() {
     "listen": "127.0.0.1:2019"
   },
   "apps": {
+    "tls": {
+      "certificates": {
+        "automate": []
+      },
+      "automation": {
+        "policies": [
+          {
+            "@id": "nimos_tls",
+            "subjects": []
+          }
+        ]
+      }
+    },
     "http": {
       "servers": {
         "nimos": {
