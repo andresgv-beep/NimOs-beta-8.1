@@ -232,8 +232,10 @@ func TestExposureReconcile_TLSWithToken(t *testing.T) {
 	if mock.tlsCalls != 1 {
 		t.Fatalf("tlsCalls = %d, want 1", mock.tlsCalls)
 	}
-	if len(mock.lastDomains) != 1 || mock.lastDomains[0] != "immich.base.duckdns.org" {
-		t.Errorf("domains = %v, want [immich.base.duckdns.org]", mock.lastDomains)
+	// Base primero (cert del panel), luego la app.
+	if len(mock.lastDomains) != 2 || mock.lastDomains[0] != "base.duckdns.org" ||
+		mock.lastDomains[1] != "immich.base.duckdns.org" {
+		t.Errorf("domains = %v, want [base.duckdns.org immich.base.duckdns.org]", mock.lastDomains)
 	}
 	if len(mock.lastPolicy.Issuers) != 1 {
 		t.Fatalf("policy issuers = %+v, want 1 (token disponible)", mock.lastPolicy.Issuers)

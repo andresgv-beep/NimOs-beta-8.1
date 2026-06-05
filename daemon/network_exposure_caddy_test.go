@@ -220,7 +220,8 @@ func TestCollectTLSDomains(t *testing.T) {
 		{AppID: "d", Subdomain: "off", UpstreamHost: "h", UpstreamPort: 4, Enabled: false}, // omitida
 	}
 	got := collectTLSDomains(cfg, apps)
-	want := []string{"next.base.duckdns.org", "base.duckdns.org"}
+	// El base va PRIMERO siempre (es el dominio del panel), luego las apps.
+	want := []string{"base.duckdns.org", "next.base.duckdns.org"}
 	if len(got) != len(want) {
 		t.Fatalf("domains = %v, want %v", got, want)
 	}

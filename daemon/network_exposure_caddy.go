@@ -152,9 +152,14 @@ type caddyTLSDNSProvider struct {
 	OverrideDomain string `json:"override_domain,omitempty"`
 }
 
-// collectTLSDomains deriva los dominios cuyos certs debe gestionar Caddy a
-// partir de las apps habilitadas. Subdominio → sub.base; ruta → el propio
-// base. Deduplicado, orden estable (orden de las apps).
+// collectTLSDomains deriva los dominios cuyos certs debe gestionar Caddy.
+//
+// El dominio base entra SIEMPRE que esté configurado: es el dominio del
+// PANEL de NimOS (servido por el catch-all del config base de Caddy), y el
+// portal merece HTTPS independientemente de que haya apps expuestas o de
+// que el kill-switch de apps esté activado. Después van los dominios de
+// las apps habilitadas: subdominio → sub.base; ruta → ya cubierta por el
+// base. Deduplicado, orden estable.
 func collectTLSDomains(cfg NetworkExposureConfig, apps []*NetworkExposedApp) []string {
 	domains := []string{}
 	if cfg.BaseDomain == "" {
@@ -167,16 +172,15 @@ func collectTLSDomains(cfg NetworkExposureConfig, apps []*NetworkExposedApp) []s
 			domains = append(domains, d)
 		}
 	}
+	add(cfg.BaseDomain) // el panel
 	for _, a := range apps {
 		if !a.Enabled {
 			continue
 		}
-		switch {
-		case a.Subdomain != "":
+		if a.Subdomain != "" {
 			add(a.Subdomain + "." + cfg.BaseDomain)
-		case a.Path != "":
-			add(cfg.BaseDomain)
 		}
+		// Ruta → mismo dominio base, ya añadido.
 	}
 	return domains
 }
