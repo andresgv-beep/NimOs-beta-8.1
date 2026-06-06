@@ -203,7 +203,9 @@
     {#if loading}
       <div class="nx-loading"><Spinner label="Cargando exposición…" /></div>
     {:else}
-      <NetworkKPIs {apps} {certs} {config} />
+      <div class="nx-kpis-wrap">
+        <NetworkKPIs {apps} {certs} {config} />
+      </div>
       <div class="nx-scroll">
         <NetworkExposure
           {config}
@@ -261,7 +263,10 @@
 
 <style>
   .nx-loading { display: flex; justify-content: center; padding: 60px 0; }
-  .nx-scroll { overflow-y: auto; padding-top: 14px; }
+  /* Mismo respiro que el resto de apps (patrón .st-scroll de Storage):
+     padding lateral estándar para no pegarse a los marcos de la ventana. */
+  .nx-kpis-wrap { padding: 18px 28px 0; }
+  .nx-scroll { flex: 1; overflow-y: auto; padding: 14px 28px 24px; }
 
   .nx-placeholder {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
