@@ -50,6 +50,7 @@
   // Modal exponer/editar
   let modalOpen = false;
   let modalApp = null;     // null = crear, app = editar
+  let installedApps = [];  // apps Docker detectadas (picker del modal)
   let modalError = '';
 
   onMount(loadExposure);
@@ -99,6 +100,7 @@
 
   function onExpose() {
     modalApp = null;
+    api.listInstalledApps().then((apps) => (installedApps = apps)).catch(() => (installedApps = []));
     modalError = '';
     modalOpen = true;
   }
@@ -247,6 +249,7 @@
 {#if modalOpen}
   <ExposeAppModal
     app={modalApp}
+    {installedApps}
     baseDomain={config.base_domain}
     httpsPort={config.https_port}
     {busy}
