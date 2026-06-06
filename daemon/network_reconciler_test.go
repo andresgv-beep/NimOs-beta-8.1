@@ -96,6 +96,7 @@ func TestReconciler_TierString(t *testing.T) {
 
 func TestRegister_RejectsNil(t *testing.T) {
 	s := NewReconcilerScheduler(nil)
+	s.settleDelay = 10 * time.Millisecond
 	if err := s.Register(nil); err == nil {
 		t.Error("Register(nil) should error")
 	}
@@ -103,6 +104,7 @@ func TestRegister_RejectsNil(t *testing.T) {
 
 func TestRegister_RejectsEmptyName(t *testing.T) {
 	s := NewReconcilerScheduler(nil)
+	s.settleDelay = 10 * time.Millisecond
 	r := &fakeReconciler{name: "", tier: TierMedium, interval: time.Second}
 	if err := s.Register(r); err == nil {
 		t.Error("Register with empty Name should error")
@@ -111,6 +113,7 @@ func TestRegister_RejectsEmptyName(t *testing.T) {
 
 func TestRegister_RejectsShortInterval(t *testing.T) {
 	s := NewReconcilerScheduler(nil)
+	s.settleDelay = 10 * time.Millisecond
 	r := &fakeReconciler{name: "x", tier: TierMedium, interval: 500 * time.Millisecond}
 	if err := s.Register(r); err == nil {
 		t.Error("Register with interval<1s should error")
@@ -119,6 +122,7 @@ func TestRegister_RejectsShortInterval(t *testing.T) {
 
 func TestRegister_RejectsDuplicate(t *testing.T) {
 	s := NewReconcilerScheduler(nil)
+	s.settleDelay = 10 * time.Millisecond
 	r1 := &fakeReconciler{name: "dup", tier: TierMedium, interval: time.Second}
 	r2 := &fakeReconciler{name: "dup", tier: TierLow, interval: time.Minute}
 
@@ -133,6 +137,7 @@ func TestRegister_RejectsDuplicate(t *testing.T) {
 
 func TestRegister_RejectsAfterStart(t *testing.T) {
 	s := NewReconcilerScheduler(nil)
+	s.settleDelay = 10 * time.Millisecond
 	r := &fakeReconciler{name: "first", tier: TierMedium, interval: time.Second}
 	if err := s.Register(r); err != nil {
 		t.Fatal(err)
@@ -154,6 +159,7 @@ func TestRegister_RejectsAfterStart(t *testing.T) {
 
 func TestListReconcilers_SortedByName(t *testing.T) {
 	s := NewReconcilerScheduler(nil)
+	s.settleDelay = 10 * time.Millisecond
 	names := []string{"zeta", "alpha", "mike"}
 	for _, n := range names {
 		s.Register(&fakeReconciler{name: n, tier: TierMedium, interval: time.Second})
@@ -177,6 +183,7 @@ func TestListReconcilers_SortedByName(t *testing.T) {
 
 func TestStart_ErrorsIfAlreadyRunning(t *testing.T) {
 	s := NewReconcilerScheduler(nil)
+	s.settleDelay = 10 * time.Millisecond
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -190,6 +197,7 @@ func TestStart_ErrorsIfAlreadyRunning(t *testing.T) {
 
 func TestStop_ErrorsIfNotRunning(t *testing.T) {
 	s := NewReconcilerScheduler(nil)
+	s.settleDelay = 10 * time.Millisecond
 	err := s.Stop()
 	if !errors.Is(err, ErrSchedulerNotRunning) {
 		t.Errorf("Stop without Start: err = %v, want ErrSchedulerNotRunning", err)
@@ -198,6 +206,7 @@ func TestStop_ErrorsIfNotRunning(t *testing.T) {
 
 func TestIsRunning_TrueDuringStart(t *testing.T) {
 	s := NewReconcilerScheduler(nil)
+	s.settleDelay = 10 * time.Millisecond
 	if s.IsRunning() {
 		t.Error("before Start: IsRunning=true, want false")
 	}
@@ -217,6 +226,7 @@ func TestIsRunning_TrueDuringStart(t *testing.T) {
 
 func TestRunOnce_ExecutesAndReturnsError(t *testing.T) {
 	s := NewReconcilerScheduler(nil)
+	s.settleDelay = 10 * time.Millisecond
 	r := &fakeReconciler{name: "x", tier: TierMedium, interval: time.Second}
 	s.Register(r)
 
@@ -240,6 +250,7 @@ func TestRunOnce_ExecutesAndReturnsError(t *testing.T) {
 
 func TestRunOnce_NotFound(t *testing.T) {
 	s := NewReconcilerScheduler(nil)
+	s.settleDelay = 10 * time.Millisecond
 	err := s.RunOnce(context.Background(), "missing")
 	if !errors.Is(err, ErrReconcilerNotFound) {
 		t.Errorf("err = %v, want ErrReconcilerNotFound", err)
@@ -252,6 +263,7 @@ func TestRunOnce_NotFound(t *testing.T) {
 
 func TestSchedulerLoop_TicksReconcile(t *testing.T) {
 	s := NewReconcilerScheduler(nil)
+	s.settleDelay = 10 * time.Millisecond
 	r := &fakeReconciler{name: "ticker", tier: TierMedium, interval: time.Second}
 	s.Register(r)
 
@@ -275,6 +287,7 @@ func TestSchedulerLoop_TicksReconcile(t *testing.T) {
 
 func TestSchedulerLoop_ContextCancellationStops(t *testing.T) {
 	s := NewReconcilerScheduler(nil)
+	s.settleDelay = 10 * time.Millisecond
 	r := &fakeReconciler{name: "x", tier: TierMedium, interval: time.Second}
 	s.Register(r)
 
@@ -302,6 +315,7 @@ func TestSchedulerLoop_ContextCancellationStops(t *testing.T) {
 
 func TestSchedulerLoop_PanicDoesNotKillScheduler(t *testing.T) {
 	s := NewReconcilerScheduler(nil)
+	s.settleDelay = 10 * time.Millisecond
 	rBad := &fakeReconciler{name: "panicky", tier: TierMedium, interval: time.Second, doPanic: true}
 	rGood := &fakeReconciler{name: "good", tier: TierMedium, interval: time.Second}
 	s.Register(rBad)
@@ -329,6 +343,7 @@ func TestSchedulerLoop_PanicDoesNotKillScheduler(t *testing.T) {
 
 func TestConcurrent_MultipleReconcilersRunIndependently(t *testing.T) {
 	s := NewReconcilerScheduler(nil)
+	s.settleDelay = 10 * time.Millisecond
 	const N = 5
 	recs := make([]*fakeReconciler, N)
 	for i := 0; i < N; i++ {
@@ -362,5 +377,33 @@ func TestConcurrent_MultipleReconcilersRunIndependently(t *testing.T) {
 		if r.Calls() == 0 {
 			t.Errorf("reconciler %s never ticked", r.Name())
 		}
+	}
+}
+
+func TestSchedulerLoop_InitialRunBeforeFirstInterval(t *testing.T) {
+	// CONTRATO: cada reconciler hace una pasada INICIAL tras el settle,
+	// sin esperar su primer intervalo. Sin esto, el observer de certs
+	// (intervalo largo) dejaba minutos de "desconocido" en la UI tras
+	// cada reinicio del daemon.
+	s := NewReconcilerScheduler(nil)
+	s.settleDelay = 10 * time.Millisecond
+	// Intervalo ENORME: si hay una llamada, solo puede ser la inicial.
+	r := &fakeReconciler{name: "boot", tier: TierLow, interval: time.Hour}
+	s.Register(r)
+
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.Calls() >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if r.Calls() < 1 {
+		t.Error("initial run should happen right after settle, not after the first interval")
 	}
 }

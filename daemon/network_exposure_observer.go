@@ -85,7 +85,10 @@ type NetworkExposureObserverConfig struct {
 // DefaultNetworkExposureObserverConfig devuelve config de producción.
 func DefaultNetworkExposureObserverConfig() NetworkExposureObserverConfig {
 	return NetworkExposureObserverConfig{
-		Interval: 5 * time.Minute, // los certs cambian lento; no hace falta más
+		// 60s: el sondeo TLS es local y barato (un handshake por dominio),
+		// y así la UI refleja un cert recién emitido en ≤1 min en vez de
+		// hasta 5. Los certs cambian lento, pero el FEEDBACK debe ser rápido.
+		Interval: 60 * time.Second,
 	}
 }
 

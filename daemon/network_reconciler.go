@@ -110,6 +110,12 @@ type Reconciler interface {
 type ReconcilerScheduler struct {
 	clock Clock
 
+	// settleDelay es la espera antes de la PASADA INICIAL de cada
+	// reconciler al arrancar (default 3s: margen para que servicios
+	// vecinos como Caddy/Docker terminen de levantar). Los tests lo
+	// reducen para no esperar.
+	settleDelay time.Duration
+
 	mu          sync.Mutex
 	reconcilers map[string]Reconciler
 	running     bool
@@ -125,6 +131,7 @@ func NewReconcilerScheduler(clock Clock) *ReconcilerScheduler {
 	}
 	return &ReconcilerScheduler{
 		clock:       clock,
+		settleDelay: 3 * time.Second,
 		reconcilers: make(map[string]Reconciler),
 	}
 }
@@ -271,6 +278,21 @@ func (s *ReconcilerScheduler) runReconciler(ctx context.Context, r Reconciler) {
 	defer s.wg.Done()
 	logMsg("Reconciler %q (%s) started, interval=%v",
 		r.Name(), r.Tier(), r.Interval())
+
+	// Pasada INICIAL tras un settle corto: un reconciler declarativo debe
+	// converger cuanto antes, no tras su primer intervalo completo. Sin
+	// esto, el observer de certs (tier de 5 min) dejaba 5 minutos de
+	// "desconocido" en la UI tras CADA reinicio del daemon. El settle de
+	// 3s da margen a que los servicios vecinos (Caddy, Docker) terminen de
+	// arrancar; si aún no están, el reconciler degrada con gracia y el
+	// siguiente tick lo recoge.
+	select {
+	case <-ctx.Done():
+		logMsg("Reconciler %q stopping", r.Name())
+		return
+	case <-time.After(s.settleDelay):
+		s.runReconcileWithRecover(ctx, r)
+	}
 
 	ticker := time.NewTicker(r.Interval())
 	defer ticker.Stop()
