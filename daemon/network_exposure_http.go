@@ -26,6 +26,7 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -283,6 +284,16 @@ func exposureUpdateHTTP(w http.ResponseWriter, r *http.Request, id string) {
 		jsonError(w, http.StatusServiceUnavailable, "Network module not initialized")
 		return
 	}
+	// Candado optimista (CRIT-1): toda mutación exige If-Match con la
+	// desired_generation que el cliente vio. Sin él no hay forma de saber
+	// si está editando sobre una vista vieja.
+	expectedGen, hasGen := parseIfMatch(r)
+	if !hasGen {
+		jsonError(w, http.StatusPreconditionRequired,
+			"Missing If-Match header (send the desired_generation you last read)")
+		return
+	}
+
 	// Cargar existente para componer los campos a actualizar.
 	app, err := networkRepo.GetExposedApp(r.Context(), id)
 	if errors.Is(err, ErrExposedAppNotFound) {
@@ -317,11 +328,24 @@ func exposureUpdateHTTP(w http.ResponseWriter, r *http.Request, id string) {
 	}
 
 	err = exposureWithTx(r.Context(), func(tx *sql.Tx) error {
-		return networkRepo.UpdateExposedAppConfig(r.Context(), tx, app)
+		return networkRepo.UpdateExposedAppConfig(r.Context(), tx, app, expectedGen)
 	})
+	if errors.Is(err, ErrExposedAppConflict) {
+		exposureConflictResponse(w, r, id)
+		return
+	}
+	if errors.Is(err, ErrExposedAppNotFound) {
+		jsonError(w, http.StatusNotFound, "Exposed app not found")
+		return
+	}
 	if err != nil {
 		jsonError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	// Releer: el UPDATE incrementó desired_generation; devolver el estado
+	// real para que el cliente tenga el token fresco sin otra petición.
+	if fresh, gerr := networkRepo.GetExposedApp(r.Context(), id); gerr == nil {
+		app = fresh
 	}
 	jsonOk(w, map[string]interface{}{"app": app})
 }
@@ -334,9 +358,19 @@ func exposureDeleteHTTP(w http.ResponseWriter, r *http.Request, id string) {
 		jsonError(w, http.StatusServiceUnavailable, "Network module not initialized")
 		return
 	}
+	expectedGen, hasGen := parseIfMatch(r)
+	if !hasGen {
+		jsonError(w, http.StatusPreconditionRequired,
+			"Missing If-Match header (send the desired_generation you last read)")
+		return
+	}
 	err := exposureWithTx(r.Context(), func(tx *sql.Tx) error {
-		return networkRepo.DeleteExposedApp(r.Context(), tx, id)
+		return networkRepo.DeleteExposedApp(r.Context(), tx, id, expectedGen)
 	})
+	if errors.Is(err, ErrExposedAppConflict) {
+		exposureConflictResponse(w, r, id)
+		return
+	}
 	if errors.Is(err, ErrExposedAppNotFound) {
 		jsonError(w, http.StatusNotFound, "Exposed app not found")
 		return
@@ -346,6 +380,33 @@ func exposureDeleteHTTP(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	jsonOk(w, map[string]interface{}{"deleted": id})
+}
+
+// parseIfMatch extrae la generación esperada del header If-Match (candado
+// optimista CRIT-1). Acepta el entero a pelo ("3") o entre comillas estilo
+// ETag ("\"3\""). ok=false si falta o no es un entero.
+func parseIfMatch(r *http.Request) (int64, bool) {
+	raw := strings.Trim(strings.TrimSpace(r.Header.Get("If-Match")), `"`)
+	if raw == "" {
+		return 0, false
+	}
+	gen, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return gen, true
+}
+
+// exposureConflictResponse responde 412 con el estado ACTUAL de la app en el
+// body, para que el cliente pueda refrescar su vista y decidir.
+func exposureConflictResponse(w http.ResponseWriter, r *http.Request, id string) {
+	payload := map[string]interface{}{
+		"error": "Exposed app was modified by another client (stale If-Match generation)",
+	}
+	if current, err := networkRepo.GetExposedApp(r.Context(), id); err == nil {
+		payload["app"] = current
+	}
+	jsonResponse(w, http.StatusPreconditionFailed, payload)
 }
 
 // exposureWithTx ejecuta fn dentro de una tx sobre la conexión global `db`.

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -57,6 +58,18 @@ func setupExposureHTTPTest(t *testing.T) (token string, cleanup func()) {
 		exposureHTTPTestMu.Unlock()
 	}
 	return token, cleanup
+}
+
+// doExposureReqIfMatch — como doExposureReq pero con header If-Match
+// (candado optimista CRIT-1 para mutaciones).
+func doExposureReqIfMatch(t *testing.T, token, method, path, body string, gen int64) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("If-Match", strconv.FormatInt(gen, 10))
+	rr := httptest.NewRecorder()
+	handleNetworkExposureRoutes(rr, req)
+	return rr
 }
 
 func doExposureReq(t *testing.T, token, method, path, body string) *httptest.ResponseRecorder {
@@ -204,9 +217,10 @@ func TestExposureHTTP_GetUpdateDelete(t *testing.T) {
 		t.Fatalf("GET status=%d", rr.Code)
 	}
 
-	// Update (cambiar puerto + disable).
+	// Update (cambiar puerto + disable) — con If-Match de la generación leída.
 	upd := `{"upstream_port":2284,"enabled":false}`
-	rr = doExposureReq(t, token, "PUT", "/api/v4/network/exposure/"+id, upd)
+	rr = doExposureReqIfMatch(t, token, "PUT", "/api/v4/network/exposure/"+id, upd,
+		created.App.Convergence.Desired)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("PUT status=%d body=%s", rr.Code, rr.Body.String())
 	}
@@ -219,10 +233,11 @@ func TestExposureHTTP_GetUpdateDelete(t *testing.T) {
 		t.Errorf("update not applied: %+v", got.App)
 	}
 
-	// Delete.
-	rr = doExposureReq(t, token, "DELETE", "/api/v4/network/exposure/"+id, "")
+	// Delete — con la generación FRESCA (el update la subió).
+	rr = doExposureReqIfMatch(t, token, "DELETE", "/api/v4/network/exposure/"+id, "",
+		got.App.Convergence.Desired)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("DELETE status=%d", rr.Code)
+		t.Fatalf("DELETE status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	rr = doExposureReq(t, token, "GET", "/api/v4/network/exposure/"+id, "")
 	if rr.Code != http.StatusNotFound {
@@ -237,5 +252,91 @@ func TestExposureHTTP_GetNotFound(t *testing.T) {
 	rr := doExposureReq(t, token, "GET", "/api/v4/network/exposure/no-existe", "")
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("status=%d, want 404", rr.Code)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CRIT-1 · Contrato If-Match en HTTP
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestExposureHTTP_MutationWithoutIfMatchIs428(t *testing.T) {
+	token, cleanup := setupExposureHTTPTest(t)
+	defer cleanup()
+
+	body := `{"app_id":"immich","subdomain":"immich","upstream_host":"127.0.0.1","upstream_port":2283}`
+	rr := doExposureReq(t, token, "POST", "/api/v4/network/exposure", body)
+	var created struct {
+		App *NetworkExposedApp `json:"app"`
+	}
+	json.NewDecoder(rr.Body).Decode(&created)
+	id := created.App.ID
+
+	// PUT sin If-Match → 428 Precondition Required.
+	rr = doExposureReq(t, token, "PUT", "/api/v4/network/exposure/"+id, `{"upstream_port":9999}`)
+	if rr.Code != http.StatusPreconditionRequired {
+		t.Errorf("PUT without If-Match status=%d, want 428", rr.Code)
+	}
+	// DELETE sin If-Match → 428.
+	rr = doExposureReq(t, token, "DELETE", "/api/v4/network/exposure/"+id, "")
+	if rr.Code != http.StatusPreconditionRequired {
+		t.Errorf("DELETE without If-Match status=%d, want 428", rr.Code)
+	}
+	// Y la app sigue intacta.
+	rr = doExposureReq(t, token, "GET", "/api/v4/network/exposure/"+id, "")
+	if rr.Code != http.StatusOK {
+		t.Errorf("app should be untouched, GET=%d", rr.Code)
+	}
+}
+
+func TestExposureHTTP_StaleIfMatchIs412WithCurrentState(t *testing.T) {
+	token, cleanup := setupExposureHTTPTest(t)
+	defer cleanup()
+
+	body := `{"app_id":"immich","subdomain":"immich","upstream_host":"127.0.0.1","upstream_port":2283}`
+	rr := doExposureReq(t, token, "POST", "/api/v4/network/exposure", body)
+	var created struct {
+		App *NetworkExposedApp `json:"app"`
+	}
+	json.NewDecoder(rr.Body).Decode(&created)
+	id := created.App.ID
+	gen := created.App.Convergence.Desired
+
+	// Cliente A actualiza con la generación correcta → 200, y el body trae
+	// el token fresco (gen+1) para no necesitar otra petición.
+	rr = doExposureReqIfMatch(t, token, "PUT", "/api/v4/network/exposure/"+id,
+		`{"display_name":"A"}`, gen)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("fresh PUT status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var afterA struct {
+		App *NetworkExposedApp `json:"app"`
+	}
+	json.NewDecoder(rr.Body).Decode(&afterA)
+	if afterA.App.Convergence.Desired != gen+1 {
+		t.Errorf("response generation = %d, want %d (fresh token)", afterA.App.Convergence.Desired, gen+1)
+	}
+
+	// Cliente B llega con la generación VIEJA → 412 + estado actual en body.
+	rr = doExposureReqIfMatch(t, token, "PUT", "/api/v4/network/exposure/"+id,
+		`{"display_name":"B"}`, gen)
+	if rr.Code != http.StatusPreconditionFailed {
+		t.Fatalf("stale PUT status=%d, want 412", rr.Code)
+	}
+	var conflict struct {
+		App *NetworkExposedApp `json:"app"`
+	}
+	json.NewDecoder(rr.Body).Decode(&conflict)
+	if conflict.App == nil || conflict.App.DisplayName != "A" {
+		t.Errorf("412 body should carry current state (A): %+v", conflict.App)
+	}
+
+	// DELETE con generación vieja → 412 y la app sobrevive.
+	rr = doExposureReqIfMatch(t, token, "DELETE", "/api/v4/network/exposure/"+id, "", gen)
+	if rr.Code != http.StatusPreconditionFailed {
+		t.Errorf("stale DELETE status=%d, want 412", rr.Code)
+	}
+	rr = doExposureReq(t, token, "GET", "/api/v4/network/exposure/"+id, "")
+	if rr.Code != http.StatusOK {
+		t.Errorf("app must survive a conflicted delete, GET=%d", rr.Code)
 	}
 }

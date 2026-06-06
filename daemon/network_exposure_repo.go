@@ -201,9 +201,16 @@ func (r *NetworkRepo) ListDriftedExposedApps(ctx context.Context) ([]*NetworkExp
 	return collectExposedApps(rows)
 }
 
+// ErrExposedAppConflict — la app fue modificada por otro cliente desde que
+// el caller la leyó (candado optimista: la generación esperada no coincide).
+// El caller debe recargar el estado actual y reintentar conscientemente.
+var ErrExposedAppConflict = errors.New("exposed app modified concurrently (stale generation)")
+
 // UpdateExposedAppConfig cambia config de enrutado/upstream/enabled e
-// incrementa desired_generation.
-func (r *NetworkRepo) UpdateExposedAppConfig(ctx context.Context, tx *sql.Tx, a *NetworkExposedApp) error {
+// incrementa desired_generation — SOLO si la generación actual coincide con
+// expectedGen (candado optimista, CRIT-1). Así dos clientes editando a la
+// vez no se pisan en silencio: el segundo recibe ErrExposedAppConflict.
+func (r *NetworkRepo) UpdateExposedAppConfig(ctx context.Context, tx *sql.Tx, a *NetworkExposedApp, expectedGen int64) error {
 	if a.Subdomain == "" && a.Path == "" {
 		return fmt.Errorf("UpdateExposedAppConfig: subdomain or path required")
 	}
@@ -217,20 +224,36 @@ func (r *NetworkRepo) UpdateExposedAppConfig(ctx context.Context, tx *sql.Tx, a 
 		    upstream_host = ?, upstream_port = ?, enabled = ?,
 		    desired_generation = desired_generation + 1,
 		    updated_at = ?
-		WHERE id = ?
+		WHERE id = ? AND desired_generation = ?
 	`,
 		a.DisplayName, a.Subdomain, a.Path,
 		a.UpstreamHost, a.UpstreamPort, intFromBool(a.Enabled),
-		now, a.ID,
+		now, a.ID, expectedGen,
 	)
 	if err != nil {
 		return fmt.Errorf("UpdateExposedAppConfig: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return ErrExposedAppNotFound
+		return r.classifyMissOrConflict(ctx, tx, a.ID)
 	}
 	return nil
+}
+
+// classifyMissOrConflict distingue, tras un UPDATE/DELETE con candado que
+// no afectó filas, entre "la app no existe" y "existe pero con otra
+// generación" (conflicto concurrente).
+func (r *NetworkRepo) classifyMissOrConflict(ctx context.Context, tx *sql.Tx, id string) error {
+	var one int
+	err := tx.QueryRowContext(ctx,
+		`SELECT 1 FROM network_exposed_apps WHERE id = ?`, id).Scan(&one)
+	if err == sql.ErrNoRows {
+		return ErrExposedAppNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("classifyMissOrConflict: %w", err)
+	}
+	return ErrExposedAppConflict
 }
 
 // RecordExposedAppObserved incrementa observed_generation (drift detectado
@@ -271,17 +294,19 @@ func (r *NetworkRepo) MarkExposedAppApplied(ctx context.Context, tx *sql.Tx, id 
 	return nil
 }
 
-// DeleteExposedApp elimina una app expuesta. El reconciler regenerará la
-// config de Caddy sin ella en la siguiente pasada.
-func (r *NetworkRepo) DeleteExposedApp(ctx context.Context, tx *sql.Tx, id string) error {
+// DeleteExposedApp elimina una app expuesta — SOLO si la generación
+// coincide (candado optimista: borrar basándose en una vista vieja también
+// es un conflicto). El reconciler regenerará la config de Caddy sin ella.
+func (r *NetworkRepo) DeleteExposedApp(ctx context.Context, tx *sql.Tx, id string, expectedGen int64) error {
 	res, err := tx.ExecContext(ctx,
-		`DELETE FROM network_exposed_apps WHERE id = ?`, id)
+		`DELETE FROM network_exposed_apps WHERE id = ? AND desired_generation = ?`,
+		id, expectedGen)
 	if err != nil {
 		return fmt.Errorf("DeleteExposedApp: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return ErrExposedAppNotFound
+		return r.classifyMissOrConflict(ctx, tx, id)
 	}
 	return nil
 }

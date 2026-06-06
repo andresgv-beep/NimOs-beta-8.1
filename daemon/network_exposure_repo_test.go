@@ -13,6 +13,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"database/sql"
 	"testing"
 )
@@ -184,10 +185,11 @@ func TestExposed_TripleGenerationFlow(t *testing.T) {
 		t.Errorf("after MarkApplied, pending = %d, want 0", len(pending))
 	}
 
-	// Update → pending de nuevo (desired sube).
+	// Update → pending de nuevo (desired sube). Generación actual del GET.
 	app.UpstreamPort = 9999
+	cur, _ := repo.GetExposedApp(context.Background(), app.ID)
 	withNetTx(t, c.db, func(tx *sql.Tx) error {
-		return repo.UpdateExposedAppConfig(context.Background(), tx, app)
+		return repo.UpdateExposedAppConfig(context.Background(), tx, app, cur.Convergence.Desired)
 	})
 	pending, _ = repo.ListPendingExposedApps(context.Background())
 	if len(pending) != 1 {
@@ -219,8 +221,9 @@ func TestExposed_UpdatePersistsFields(t *testing.T) {
 	app.DisplayName = "Immich Photos"
 	app.UpstreamPort = 2284
 	app.Enabled = false
+	cur, _ := repo.GetExposedApp(context.Background(), app.ID)
 	withNetTx(t, c.db, func(tx *sql.Tx) error {
-		return repo.UpdateExposedAppConfig(context.Background(), tx, app)
+		return repo.UpdateExposedAppConfig(context.Background(), tx, app, cur.Convergence.Desired)
 	})
 
 	got, _ := repo.GetExposedApp(context.Background(), app.ID)
@@ -237,8 +240,9 @@ func TestExposed_DeleteAndNotFound(t *testing.T) {
 	withNetTx(t, c.db, func(tx *sql.Tx) error {
 		return repo.CreateExposedApp(context.Background(), tx, app)
 	})
+	cur, _ := repo.GetExposedApp(context.Background(), app.ID)
 	withNetTx(t, c.db, func(tx *sql.Tx) error {
-		return repo.DeleteExposedApp(context.Background(), tx, app.ID)
+		return repo.DeleteExposedApp(context.Background(), tx, app.ID, cur.Convergence.Desired)
 	})
 
 	_, err := repo.GetExposedApp(context.Background(), app.ID)
@@ -248,9 +252,85 @@ func TestExposed_DeleteAndNotFound(t *testing.T) {
 
 	// Delete inexistente → NotFound.
 	tx, _ := c.db.Begin()
-	err = repo.DeleteExposedApp(context.Background(), tx, "no-existe")
+	err = repo.DeleteExposedApp(context.Background(), tx, "no-existe", 1)
 	_ = tx.Rollback()
 	if err != ErrExposedAppNotFound {
 		t.Errorf("delete missing, err = %v, want ErrExposedAppNotFound", err)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CRIT-1 · Candado optimista (If-Match / desired_generation)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestExposed_UpdateWithStaleGenerationConflicts(t *testing.T) {
+	repo, _, c, cleanup := newTestRepo(t)
+	defer cleanup()
+
+	app := makeExposedApp("immich", "immich")
+	withNetTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.CreateExposedApp(context.Background(), tx, app)
+	})
+	cur, _ := repo.GetExposedApp(context.Background(), app.ID)
+
+	// Cliente A actualiza con la generación correcta → OK, desired sube.
+	app.DisplayName = "A"
+	withNetTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.UpdateExposedAppConfig(context.Background(), tx, app, cur.Convergence.Desired)
+	})
+	after, _ := repo.GetExposedApp(context.Background(), app.ID)
+	if after.Convergence.Desired != cur.Convergence.Desired+1 {
+		t.Fatalf("desired = %d, want %d", after.Convergence.Desired, cur.Convergence.Desired+1)
+	}
+
+	// Cliente B llega con la generación VIEJA (su vista es anterior al
+	// update de A) → conflicto, y la fila NO cambia.
+	app.DisplayName = "B"
+	tx, _ := c.db.Begin()
+	err := repo.UpdateExposedAppConfig(context.Background(), tx, app, cur.Convergence.Desired)
+	_ = tx.Rollback()
+	if !errors.Is(err, ErrExposedAppConflict) {
+		t.Fatalf("stale update err = %v, want ErrExposedAppConflict", err)
+	}
+	got, _ := repo.GetExposedApp(context.Background(), app.ID)
+	if got.DisplayName != "A" {
+		t.Errorf("row changed despite conflict: DisplayName = %q, want \"A\"", got.DisplayName)
+	}
+}
+
+func TestExposed_DeleteWithStaleGenerationConflicts(t *testing.T) {
+	repo, _, c, cleanup := newTestRepo(t)
+	defer cleanup()
+
+	app := makeExposedApp("immich", "immich")
+	withNetTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.CreateExposedApp(context.Background(), tx, app)
+	})
+	cur, _ := repo.GetExposedApp(context.Background(), app.ID)
+
+	// Alguien actualiza entre medias → la vista del que borra queda vieja.
+	app.DisplayName = "cambiada"
+	withNetTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.UpdateExposedAppConfig(context.Background(), tx, app, cur.Convergence.Desired)
+	})
+
+	// Borrado con la generación vieja → conflicto y la app SIGUE existiendo.
+	tx, _ := c.db.Begin()
+	err := repo.DeleteExposedApp(context.Background(), tx, app.ID, cur.Convergence.Desired)
+	_ = tx.Rollback()
+	if !errors.Is(err, ErrExposedAppConflict) {
+		t.Fatalf("stale delete err = %v, want ErrExposedAppConflict", err)
+	}
+	if _, err := repo.GetExposedApp(context.Background(), app.ID); err != nil {
+		t.Errorf("app should still exist after conflicted delete: %v", err)
+	}
+
+	// Con la generación fresca → borra de verdad.
+	fresh, _ := repo.GetExposedApp(context.Background(), app.ID)
+	withNetTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.DeleteExposedApp(context.Background(), tx, app.ID, fresh.Convergence.Desired)
+	})
+	if _, err := repo.GetExposedApp(context.Background(), app.ID); !errors.Is(err, ErrExposedAppNotFound) {
+		t.Errorf("after fresh delete, err = %v, want NotFound", err)
 	}
 }
