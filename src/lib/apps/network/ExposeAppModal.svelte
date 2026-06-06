@@ -2,9 +2,10 @@
   /**
    * ExposeAppModal · Formulario para exponer una app nueva o editar una existente.
    * ──────────────────────────────────────────────────────────────────────────────
-   * Entrada manual (MVP): el usuario indica app_id, enrutado (subdominio o
-   * ruta), y el upstream (host + puerto) del servicio a exponer. La
-   * autodetección desde Docker llegará en un sprint posterior.
+   * Con DETECCIÓN de apps instaladas: el picker lista las apps Docker de
+   * NimOS (nombre + puerto) y autocompleta app_id, upstream y sugiere el
+   * subdominio — cero puertos a mano. "— personalizado —" mantiene la
+   * entrada manual para servicios fuera del catálogo.
    *
    * Modo:
    *   · sin `app` (null)  → crear (expone una app nueva)
@@ -24,6 +25,7 @@
   import { BevelButton, TextInput } from '$lib/ui';
 
   export let app = null;
+  export let installedApps = []; // [{id, name, icon, port}] — detectadas
   export let baseDomain = '';
   export let httpsPort = 443;
   export let busy = false;
@@ -40,6 +42,34 @@
   let path = app?.path || '';
   let upstreamHost = app?.upstream_host || '127.0.0.1';
   let upstreamPort = app?.upstream_port || '';
+
+  // ─── Picker de apps detectadas (solo en creación) ───
+  // 'custom' = entrada manual; cualquier otro valor = id de app instalada.
+  let picked = 'custom';
+
+  // slug — sugerencia de subdominio a partir del nombre (minúsculas a-z0-9).
+  const slug = (name) => (name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  function pickApp(value) {
+    picked = value;
+    if (value === 'custom') return; // manual: campos quedan editables tal cual
+    const a = installedApps.find((x) => x.id === value);
+    if (!a) return;
+    appId = a.id;
+    displayName = a.name;
+    upstreamHost = '127.0.0.1';
+    upstreamPort = String(a.port);
+    if (!subdomain.trim()) subdomain = slug(a.name);
+  }
+
+  $: pickedApp = picked !== 'custom' ? installedApps.find((x) => x.id === picked) : null;
+
+  // Al llegar la lista (async): si el formulario está virgen, preseleccionar
+  // la primera app detectada. El guard (appId vacío) evita pisarte si ya
+  // empezaste a escribir o si re-renderiza.
+  $: if (!editing && installedApps.length > 0 && picked === 'custom' && !appId.trim()) {
+    pickApp(installedApps[0].id);
+  }
 
   // ─── Validación en vivo ───
   $: portNum = parseInt(upstreamPort, 10);
@@ -99,28 +129,50 @@
     </div>
 
     <div class="ex-body">
-      <!-- app_id -->
-      <div class="ex-field">
-        <label class="ex-label">Identificador de la app</label>
-        <TextInput
-          value={appId}
-          placeholder="ej. immich, gitea, jellyfin"
-          disabled={busy || editing}
-          onInput={(e) => (appId = e.target.value)}
-        />
-        {#if editing}<span class="ex-hint">El identificador no se puede cambiar.</span>{/if}
-      </div>
+      {#if !editing}
+        <!-- Picker: apps Docker detectadas -->
+        <div class="ex-field">
+          <label class="ex-label">App a exponer</label>
+          <select class="ex-select mono" disabled={busy} value={picked} on:change={(e) => pickApp(e.target.value)}>
+            {#each installedApps as a (a.id)}
+              <option value={a.id}>{a.name} · :{a.port}</option>
+            {/each}
+            <option value="custom">— personalizado —</option>
+          </select>
+          {#if installedApps.length === 0}
+            <span class="ex-hint">No se han detectado apps Docker con puerto · entrada manual.</span>
+          {:else if pickedApp}
+            <span class="ex-hint">Detectada de tus apps instaladas · upstream autocompletado.</span>
+          {/if}
+        </div>
+      {/if}
 
-      <!-- display_name -->
-      <div class="ex-field">
-        <label class="ex-label">Nombre visible <span class="ex-opt">(opcional)</span></label>
-        <TextInput
-          value={displayName}
-          placeholder="ej. Immich Fotos"
-          disabled={busy}
-          onInput={(e) => (displayName = e.target.value)}
-        />
-      </div>
+      {#if editing || picked === 'custom'}
+        <!-- app_id (manual) -->
+        <div class="ex-field">
+          <label class="ex-label">Identificador de la app</label>
+          <TextInput
+            value={appId}
+            placeholder="ej. immich, gitea, jellyfin"
+            disabled={busy || editing}
+            onInput={(e) => (appId = e.target.value)}
+          />
+          {#if editing}<span class="ex-hint">El identificador no se puede cambiar.</span>{/if}
+        </div>
+      {/if}
+
+      {#if editing || picked === 'custom'}
+        <!-- display_name -->
+        <div class="ex-field">
+          <label class="ex-label">Nombre visible <span class="ex-opt">(opcional)</span></label>
+          <TextInput
+            value={displayName}
+            placeholder="ej. Immich Fotos"
+            disabled={busy}
+            onInput={(e) => (displayName = e.target.value)}
+          />
+        </div>
+      {/if}
 
       <!-- Routing mode -->
       <div class="ex-field">
@@ -160,30 +212,37 @@
       {/if}
 
       <!-- Upstream -->
-      <div class="ex-field-row">
-        <div class="ex-field" style="flex:2">
-          <label class="ex-label">Host del servicio</label>
-          <TextInput
-            value={upstreamHost}
-            placeholder="127.0.0.1"
-            disabled={busy}
-            onInput={(e) => (upstreamHost = e.target.value)}
-          />
+      {#if !editing && pickedApp}
+        <div class="ex-field">
+          <label class="ex-label">Upstream</label>
+          <div class="ex-upstream mono">{upstreamHost}:{upstreamPort} <span class="ex-auto">· auto</span></div>
         </div>
-        <div class="ex-field" style="flex:1">
-          <label class="ex-label">Puerto</label>
-          <TextInput
-            value={upstreamPort}
-            type="text"
-            placeholder="2283"
-            disabled={busy}
-            onInput={(e) => (upstreamPort = e.target.value)}
-          />
+      {:else}
+        <div class="ex-field-row">
+          <div class="ex-field" style="flex:2">
+            <label class="ex-label">Host del servicio</label>
+            <TextInput
+              value={upstreamHost}
+              placeholder="127.0.0.1"
+              disabled={busy}
+              onInput={(e) => (upstreamHost = e.target.value)}
+            />
+          </div>
+          <div class="ex-field" style="flex:1">
+            <label class="ex-label">Puerto</label>
+            <TextInput
+              value={upstreamPort}
+              type="text"
+              placeholder="2283"
+              disabled={busy}
+              onInput={(e) => (upstreamPort = e.target.value)}
+            />
+          </div>
         </div>
-      </div>
 
-      {#if upstreamPort !== '' && !portValid}
-        <span class="ex-err-inline">El puerto debe estar entre 1 y 65535.</span>
+        {#if upstreamPort !== '' && !portValid}
+          <span class="ex-err-inline">El puerto debe estar entre 1 y 65535.</span>
+        {/if}
       {/if}
 
       <!-- Preview -->
@@ -264,6 +323,21 @@
     padding: 14px 20px; display: flex; justify-content: flex-end; gap: 8px;
     border-top: 1px solid var(--bd, rgba(255,255,255,0.04));
   }
+
+  .ex-select {
+    width: 100%; padding: 8px 12px; border-radius: 6px; cursor: pointer;
+    background: var(--bg-inner, #101015); border: 1px solid var(--bd-3, #2a2a32);
+    color: var(--fg, #f0f0f0); font-size: 12.5px;
+    appearance: auto;
+  }
+  .ex-select:focus { border-color: rgba(0,255,159,0.4); outline: none; }
+  .ex-select:disabled { opacity: 0.5; cursor: default; }
+
+  .ex-upstream {
+    background: var(--bg-inner, #101015); border-radius: 6px; padding: 9px 12px;
+    font-size: 12.5px; color: var(--fg-2, #c8c8cf);
+  }
+  .ex-auto { font-size: 10px; color: var(--fg-5, #5a5a62); }
 
   .mono { font-family: ui-monospace, "JetBrains Mono", monospace; }
 </style>

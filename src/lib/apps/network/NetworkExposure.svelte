@@ -64,6 +64,20 @@
     httpPortNum !== httpsPortNum;
   $: caddyReachable = certs ? certs.reachable : null;
 
+  // ─── Tira de estado del acceso externo ───
+  // Una línea densa: qué piezas están OK y cuál es el siguiente paso. El
+  // único que NimOS no puede verificar es el router (forward externo) —
+  // cuando todo lo demás está verde, la tira recuerda esa regla exacta.
+  $: validCerts = (certs && certs.certs ? certs.certs.length : 0);
+  $: strip = [
+    { k: 'dominio', ok: !!config.base_domain },
+    { k: 'exposición', ok: !!config.enabled },
+    { k: 'caddy', ok: caddyReachable === true },
+    { k: 'certs', ok: validCerts > 0 },
+  ];
+  $: stripMissing = strip.find((i) => !i.ok);
+  $: extPort = config.https_port && config.https_port !== 443 ? `:${config.https_port}` : '';
+
   function saveConfig() {
     if (!portsValid) return;
     dispatch('save-config', {
@@ -98,6 +112,18 @@
 </script>
 
 <div class="nx-section">
+  <!-- ── Tira de estado del acceso externo ── -->
+  <div class="nx-strip">
+    {#each strip as it (it.k)}
+      <span class="nx-pill mono" class:ok={it.ok}>{it.k}</span>
+    {/each}
+    {#if stripMissing}
+      <span class="nx-strip-hint mono warn">falta: {stripMissing.k}</span>
+    {:else}
+      <span class="nx-strip-hint mono">router: abre {config.https_port || 443}/tcp → esta máquina · https://{config.base_domain}{extPort}</span>
+    {/if}
+  </div>
+
   <!-- ── Config global ── -->
   <SectionHead>Configuración global</SectionHead>
 
@@ -259,6 +285,23 @@
 
 <style>
   .nx-section { display: flex; flex-direction: column; }
+
+  .nx-strip {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 10px 14px; margin-bottom: 16px;
+    border: 1px solid var(--bd, rgba(255,255,255,0.06)); border-radius: 6px;
+    background: var(--bg-inner, #101015);
+  }
+  .nx-pill {
+    font-size: 11px; padding: 2px 9px; border-radius: 99px;
+    border: 1px solid var(--bd-3, #2a2a32); color: var(--fg-4, #7a7a82);
+  }
+  .nx-pill.ok {
+    border-color: rgba(0,255,159,0.4); color: var(--nim-green, #00ff9f);
+    background: rgba(0,255,159,0.06);
+  }
+  .nx-strip-hint { margin-left: auto; font-size: 11px; color: var(--fg-4, #7a7a82); }
+  .nx-strip-hint.warn { color: var(--st-warn, #ffc857); }
 
   /* ── Config ── */
   .nx-config {

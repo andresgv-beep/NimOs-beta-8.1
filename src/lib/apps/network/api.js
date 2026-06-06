@@ -210,3 +210,17 @@ export function appState(app, cert, caddyReachable) {
   }
   return { kind: 'exposed', label: 'expuesta' };
 }
+
+/**
+ * listInstalledApps — apps Docker instaladas (nombre + puerto), para el
+ * picker de "Exponer app": elegir de lo detectado en vez de teclear
+ * puertos a mano. Devuelve [{id, name, icon, port}] con port > 0.
+ */
+export async function listInstalledApps() {
+  const res = await fetch('/api/installed-apps', { headers: hdrs() });
+  const body = await unwrap(res, 'listInstalledApps');
+  const apps = Array.isArray(body) ? body : body.apps || [];
+  return apps
+    .filter((a) => a && a.id && Number(a.port) > 0)
+    .map((a) => ({ id: a.id, name: a.name || a.id, icon: a.icon || '', port: Number(a.port) }));
+}
