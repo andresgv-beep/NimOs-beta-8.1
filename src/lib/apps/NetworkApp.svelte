@@ -248,6 +248,7 @@
   <ExposeAppModal
     app={modalApp}
     baseDomain={config.base_domain}
+    httpsPort={config.https_port}
     {busy}
     error={modalError}
     on:submit={onModalSubmit}
