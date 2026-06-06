@@ -18,7 +18,9 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"crypto/tls"
+	"fmt"
+	"net"
 	"sync/atomic"
 	"time"
 )
@@ -26,11 +28,11 @@ import (
 // ExposureCertStatus describe el estado de un cert gestionado por Caddy,
 // derivado de /pki/certificates. Es lo que la UI muestra.
 type ExposureCertStatus struct {
-	Subject   string    `json:"subject"`    // dominio principal del cert
-	Issuer    string    `json:"issuer"`     // "Let's Encrypt", etc.
-	NotAfter  time.Time `json:"not_after"`  // expiración
-	Managed   bool      `json:"managed"`    // gestionado por Caddy (ACME)
-	DaysLeft  int       `json:"days_left"`  // días hasta expirar (puede ser <0)
+	Subject  string    `json:"subject"`   // dominio principal del cert
+	Issuer   string    `json:"issuer"`    // "Let's Encrypt", etc.
+	NotAfter time.Time `json:"not_after"` // expiración
+	Managed  bool      `json:"managed"`   // gestionado por Caddy (ACME)
+	DaysLeft int       `json:"days_left"` // días hasta expirar (puede ser <0)
 }
 
 // ExposureCertSnapshot es el último resultado del observer.
@@ -44,22 +46,33 @@ type ExposureCertSnapshot struct {
 // Interfaz para mockear en tests.
 //
 // Ping y FetchCertificates responden preguntas DISTINTAS:
-//   · Ping → ¿está vivo el admin de Caddy? (fuente de verdad de Reachable)
-//   · FetchCertificates → ¿qué certs hay? (puede fallar con Caddy vivo,
-//     p.ej. mientras el endpoint de certs no exista o no haya certs aún)
-type caddyCertFetcher interface {
+//
+//	· Ping → ¿está vivo el admin de Caddy? (fuente de verdad de Reachable)
+//	· FetchCertificates → ¿qué certs hay? (puede fallar con Caddy vivo,
+//	  p.ej. mientras el endpoint de certs no exista o no haya certs aún)
+type caddyPinger interface {
+	// Ping → ¿está vivo el admin de Caddy? (fuente de verdad de Reachable)
 	Ping(ctx context.Context) error
-	FetchCertificates(ctx context.Context) ([]byte, error)
+}
+
+// certProber sondea el cert TLS que Caddy sirve REALMENTE para un dominio.
+// Caddy no expone un endpoint que liste sus certs ACME, así que en vez de
+// preguntar, MIRAMOS: abrimos una conexión TLS y leemos el cert servido.
+// Eso refleja exactamente lo que recibe el usuario. Interfaz para mockear.
+type certProber interface {
+	Probe(ctx context.Context, domain string, port int) (ExposureCertStatus, error)
 }
 
 // NetworkExposureObserver consulta Caddy y mantiene un snapshot atómico.
 type NetworkExposureObserver struct {
-	repo    *NetworkRepo
-	clock   Clock
-	config  NetworkExposureObserverConfig
+	repo   *NetworkRepo
+	clock  Clock
+	config NetworkExposureObserverConfig
 
-	// fetcherFor crea un fetcher para la URL admin dada. Inyectable.
-	fetcherFor func(adminURL string) caddyCertFetcher
+	// pingerFor crea un pinger para la URL admin dada. Inyectable.
+	pingerFor func(adminURL string) caddyPinger
+	// prober sondea el cert TLS servido por Caddy. Inyectable en tests.
+	prober certProber
 
 	last atomic.Pointer[ExposureCertSnapshot]
 }
@@ -89,9 +102,10 @@ func NewNetworkExposureObserver(repo *NetworkRepo, clock Clock, config NetworkEx
 		clock:  clock,
 		config: config,
 	}
-	o.fetcherFor = func(adminURL string) caddyCertFetcher {
+	o.pingerFor = func(adminURL string) caddyPinger {
 		return NewCaddyAdminClient(adminURL, nil)
 	}
+	o.prober = tlsCertProber{}
 	return o
 }
 
@@ -116,25 +130,36 @@ func (o *NetworkExposureObserver) Reconcile(ctx context.Context) error {
 		return nil
 	}
 
-	fetcher := o.fetcherFor(cfg.CaddyAdminURL)
-
 	// 1) ¿Está vivo Caddy? Ping al admin (GET /config/). Solo si esto falla
 	//    marcamos Reachable=false — Caddy caído de verdad.
-	if perr := fetcher.Ping(ctx); perr != nil {
+	if perr := o.pingerFor(cfg.CaddyAdminURL).Ping(ctx); perr != nil {
 		o.publish(&ExposureCertSnapshot{ObservedAt: o.clock.Now().UTC(), Reachable: false})
 		return nil
 	}
 
-	// 2) Caddy vive. Intentar leer certs; si falla (endpoint inexistente,
-	//    sin certs aún), Caddy sigue siendo Reachable — solo que no hay
-	//    información de certs que mostrar.
-	raw, ferr := fetcher.FetchCertificates(ctx)
-	if ferr != nil {
-		o.publish(&ExposureCertSnapshot{ObservedAt: o.clock.Now().UTC(), Reachable: true})
-		return nil
+	// 2) Caddy vive. Sondear el TLS REAL de cada dominio gestionado: abrimos
+	//    una conexión TLS (SNI = dominio) al puerto HTTPS de Caddy y leemos
+	//    el cert servido. Es la única forma fiable de saber qué sirve Caddy
+	//    (no hay endpoint que liste los certs ACME). Un dominio sin cert aún
+	//    simplemente no aparece → su app mostrará "emitiendo", ahora con razón.
+	apps, _ := o.repo.ListExposedApps(ctx)
+	enabled := make([]*NetworkExposedApp, 0, len(apps))
+	for _, a := range apps {
+		if a.Enabled {
+			enabled = append(enabled, a)
+		}
+	}
+	domains := collectTLSDomains(cfg, enabled)
+
+	certs := make([]ExposureCertStatus, 0, len(domains))
+	for _, d := range domains {
+		st, err := o.prober.Probe(ctx, d, cfg.HTTPSPort)
+		if err != nil {
+			continue // sin cert servido todavía para ese dominio
+		}
+		certs = append(certs, st)
 	}
 
-	certs := parseCaddyCertificates(raw, o.clock.Now())
 	o.publish(&ExposureCertSnapshot{
 		ObservedAt: o.clock.Now().UTC(),
 		Reachable:  true,
@@ -148,60 +173,43 @@ func (o *NetworkExposureObserver) publish(s *ExposureCertSnapshot) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Parsing de /pki/certificates
+// Sondeo TLS real
 // ─────────────────────────────────────────────────────────────────────────────
 
-// caddyPKIResponse refleja el subset de la respuesta de Caddy que usamos.
-// Caddy devuelve la lista bajo distintas formas según versión; soportamos
-// tanto {"result":[...]} como [...] directo.
-type caddyPKIResponse struct {
-	Result []caddyPKICert `json:"result"`
-}
+// tlsCertProber abre una conexión TLS a 127.0.0.1:port con SNI=domain y lee
+// el certificado que Caddy sirve. InsecureSkipVerify: no validamos la cadena
+// (es loopback y solo queremos LEER el cert); la validez la derivamos de
+// NotAfter. Refleja exactamente lo que un cliente externo recibiría.
+type tlsCertProber struct{}
 
-type caddyPKICert struct {
-	Subjects []string `json:"subjects"`
-	Issuer   string   `json:"issuer"`
-	NotAfter int64    `json:"not_after"` // unix seconds (Caddy lo da así)
-	Managed  bool     `json:"managed"`
-}
-
-// parseCaddyCertificates convierte el JSON crudo de Caddy en una lista de
-// ExposureCertStatus. Tolera ambos formatos (envuelto en "result" o lista
-// directa) y entradas malformadas (las omite).
-func parseCaddyCertificates(raw []byte, now time.Time) []ExposureCertStatus {
-	var pkiCerts []caddyPKICert
-
-	// Intento 1: {"result": [...]}.
-	var wrapped caddyPKIResponse
-	if err := json.Unmarshal(raw, &wrapped); err == nil && wrapped.Result != nil {
-		pkiCerts = wrapped.Result
-	} else {
-		// Intento 2: lista directa [...].
-		_ = json.Unmarshal(raw, &pkiCerts)
+func (tlsCertProber) Probe(ctx context.Context, domain string, port int) (ExposureCertStatus, error) {
+	dialer := &tls.Dialer{
+		NetDialer: &net.Dialer{Timeout: 4 * time.Second},
+		Config: &tls.Config{
+			ServerName:         domain,
+			InsecureSkipVerify: true,
+		},
 	}
-
-	out := make([]ExposureCertStatus, 0, len(pkiCerts))
-	for _, c := range pkiCerts {
-		subject := ""
-		if len(c.Subjects) > 0 {
-			subject = c.Subjects[0]
-		}
-		if subject == "" {
-			continue // entrada sin dominio, inútil para la UI
-		}
-		notAfter := time.Time{}
-		daysLeft := 0
-		if c.NotAfter > 0 {
-			notAfter = time.Unix(c.NotAfter, 0).UTC()
-			daysLeft = int(notAfter.Sub(now).Hours() / 24)
-		}
-		out = append(out, ExposureCertStatus{
-			Subject:  subject,
-			Issuer:   c.Issuer,
-			NotAfter: notAfter,
-			Managed:  c.Managed,
-			DaysLeft: daysLeft,
-		})
+	conn, err := dialer.DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return ExposureCertStatus{}, err
 	}
-	return out
+	defer conn.Close()
+
+	peers := conn.(*tls.Conn).ConnectionState().PeerCertificates
+	if len(peers) == 0 {
+		return ExposureCertStatus{}, fmt.Errorf("no peer certificate served for %s", domain)
+	}
+	leaf := peers[0]
+	issuer := leaf.Issuer.CommonName
+	if issuer == "" && len(leaf.Issuer.Organization) > 0 {
+		issuer = leaf.Issuer.Organization[0]
+	}
+	return ExposureCertStatus{
+		Subject:  domain,
+		Issuer:   issuer,
+		NotAfter: leaf.NotAfter,
+		Managed:  true,
+		DaysLeft: int(time.Until(leaf.NotAfter).Hours() / 24),
+	}, nil
 }

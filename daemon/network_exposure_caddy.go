@@ -384,10 +384,8 @@ func (c *CaddyAdminClient) sendJSON(ctx context.Context, method, path string, pa
 }
 
 // Ping comprueba que la API admin de Caddy está viva con un GET /config/
-// (endpoint raíz de la config: existe siempre que el admin responda, haya o
-// no certs). Es la fuente de verdad de "reachable" para el observer — NO se
-// usa FetchCertificates para esto, porque su endpoint puede no existir aún
-// y eso no significa que Caddy esté caído.
+// (endpoint raíz de la config: existe siempre que el admin responda). Es la
+// fuente de verdad de "reachable" para el observer.
 func (c *CaddyAdminClient) Ping(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		c.adminURL+"/config/", nil)
@@ -405,23 +403,3 @@ func (c *CaddyAdminClient) Ping(ctx context.Context) error {
 	return nil
 }
 
-// FetchCertificates lee el estado de los certs gestionados por Caddy desde
-// GET /pki/certificates. Devuelve el JSON crudo para que el observer lo
-// parsee. Si Caddy no responde, devuelve error (el observer lo trata como
-// "estado desconocido", no como fallo crítico).
-func (c *CaddyAdminClient) FetchCertificates(ctx context.Context) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		c.adminURL+"/pki/certificates", nil)
-	if err != nil {
-		return nil, fmt.Errorf("caddy certs: build request: %w", err)
-	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("caddy certs: request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("caddy certs: status %d", resp.StatusCode)
-	}
-	return io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB cap
-}

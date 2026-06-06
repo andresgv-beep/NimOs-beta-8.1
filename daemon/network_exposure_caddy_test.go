@@ -10,7 +10,6 @@
 //   - SyncAppRoutes: status != 200 → error con cuerpo.
 //   - SyncAppRoutes: "unknown object" → error pista de base mal instalado.
 //   - SyncAppRoutes: servidor caído → error claro.
-//   - FetchCertificates: devuelve el cuerpo crudo.
 
 package main
 
@@ -183,27 +182,6 @@ func TestCaddyClient_SyncServerDown(t *testing.T) {
 	client := NewCaddyAdminClient("http://127.0.0.1:59998", &http.Client{})
 	if err := client.SyncAppRoutes(context.Background(), nil); err == nil {
 		t.Error("expected error when Caddy is unreachable")
-	}
-}
-
-func TestCaddyClient_FetchCertificates(t *testing.T) {
-	payload := `{"result":[{"subjects":["immich.x.org"]}]}`
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/pki/certificates" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		w.Write([]byte(payload))
-	}))
-	defer srv.Close()
-
-	client := NewCaddyAdminClient(srv.URL, srv.Client())
-	body, err := client.FetchCertificates(context.Background())
-	if err != nil {
-		t.Fatalf("FetchCertificates: %v", err)
-	}
-	if string(body) != payload {
-		t.Errorf("body = %q, want %q", body, payload)
 	}
 }
 

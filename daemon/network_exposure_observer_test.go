@@ -1,47 +1,72 @@
-// network_exposure_observer_test.go — Tests del observer de certs Caddy.
+// network_exposure_observer_test.go — Tests del observer de certs.
+//
+// El observer ahora SONDEA el TLS real (no parsea un endpoint). Mockeamos
+// dos cosas: el pinger (¿Caddy vivo?) y el prober (¿qué cert sirve?).
 
 package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"testing"
-	"time"
 )
 
-// mockCertFetcher simula el cliente admin de Caddy para el observer.
-//   · pingErr ≠ nil → Caddy "caído" (Ping falla)
-//   · err ≠ nil     → Caddy vivo pero el endpoint de certs falla
-type mockCertFetcher struct {
-	payload []byte
-	err     error
-	pingErr error
+// mockPinger simula el chequeo de vida del admin de Caddy.
+type mockPinger struct{ pingErr error }
+
+func (m *mockPinger) Ping(ctx context.Context) error { return m.pingErr }
+
+// mockProber simula el sondeo TLS: devuelve un cert por dominio, o error.
+type mockProber struct {
+	byDomain map[string]ExposureCertStatus
+	errAll   error // si != nil, todo dominio falla (sin cert servido)
+	calls    []string
 }
 
-func (m *mockCertFetcher) Ping(ctx context.Context) error {
-	return m.pingErr
+func (m *mockProber) Probe(ctx context.Context, domain string, port int) (ExposureCertStatus, error) {
+	m.calls = append(m.calls, fmt.Sprintf("%s:%d", domain, port))
+	if m.errAll != nil {
+		return ExposureCertStatus{}, m.errAll
+	}
+	if st, ok := m.byDomain[domain]; ok {
+		return st, nil
+	}
+	return ExposureCertStatus{}, fmt.Errorf("no cert for %s", domain)
 }
 
-func (m *mockCertFetcher) FetchCertificates(ctx context.Context) ([]byte, error) {
-	return m.payload, m.err
-}
-
-func newTestExposureObserver(t *testing.T, fetcher caddyCertFetcher) (*NetworkExposureObserver, *NetworkRepo, *sqlConn, func()) {
+func newTestExposureObserver(t *testing.T, pinger caddyPinger, prober certProber) (*NetworkExposureObserver, *NetworkRepo, *sqlConn, func()) {
 	t.Helper()
 	repo, clock, c, cleanup := newTestRepo(t)
 	obs := NewNetworkExposureObserver(repo, clock, DefaultNetworkExposureObserverConfig())
-	obs.fetcherFor = func(adminURL string) caddyCertFetcher { return fetcher }
+	obs.pingerFor = func(adminURL string) caddyPinger { return pinger }
+	obs.prober = prober
 	return obs, repo, c, cleanup
 }
 
-func TestExposureObserver_ParsesWrappedResult(t *testing.T) {
-	// El FakeClock del repo está fijado en 2026-05-21 12:00 UTC.
-	clockNow := time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)
-	notAfter := clockNow.Add(67 * 24 * time.Hour).Unix()
-	payload := fmt.Sprintf(`{"result":[{"subjects":["immich.x.org"],"issuer":"Let's Encrypt","not_after":%d,"managed":true}]}`, notAfter)
+// seedExposed configura dominio base + una app de subdominio habilitada.
+func seedExposed(t *testing.T, repo *NetworkRepo, c *sqlConn, baseDomain, sub string) {
+	t.Helper()
+	withNetTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.SaveExposureConfig(context.Background(), tx, NetworkExposureConfig{
+			BaseDomain: baseDomain, Enabled: true, HTTPPort: 80, HTTPSPort: 443,
+		})
+	})
+	app := makeExposedApp(sub, sub)
+	withNetTx(t, c.db, func(tx *sql.Tx) error {
+		return repo.CreateExposedApp(context.Background(), tx, app)
+	})
+}
 
-	obs, _, _, cleanup := newTestExposureObserver(t, &mockCertFetcher{payload: []byte(payload)})
+func TestExposureObserver_ProbesServedCert(t *testing.T) {
+	domain := "immich.x.org"
+	prober := &mockProber{byDomain: map[string]ExposureCertStatus{
+		// base (x.org) sin cert; la app (immich.x.org) con cert.
+		domain: {Subject: domain, Issuer: "Let's Encrypt", Managed: true, DaysLeft: 67},
+	}}
+	obs, repo, c, cleanup := newTestExposureObserver(t, &mockPinger{}, prober)
 	defer cleanup()
+	seedExposed(t, repo, c, "x.org", "immich")
 
 	if err := obs.Reconcile(context.Background()); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -50,121 +75,87 @@ func TestExposureObserver_ParsesWrappedResult(t *testing.T) {
 	if snap == nil || !snap.Reachable {
 		t.Fatal("snapshot should be reachable")
 	}
-	if len(snap.Certs) != 1 {
-		t.Fatalf("certs = %d, want 1", len(snap.Certs))
+	// Encontró el cert de la app (el base x.org no tiene → no aparece).
+	found := false
+	for _, cert := range snap.Certs {
+		if cert.Subject == domain {
+			found = true
+			if cert.Issuer != "Let's Encrypt" || cert.DaysLeft != 67 {
+				t.Errorf("cert fields mismatch: %+v", cert)
+			}
+		}
 	}
-	cert := snap.Certs[0]
-	if cert.Subject != "immich.x.org" || cert.Issuer != "Let's Encrypt" || !cert.Managed {
-		t.Errorf("cert mismatch: %+v", cert)
+	if !found {
+		t.Errorf("served cert for %s not in snapshot: %+v", domain, snap.Certs)
 	}
-	if cert.DaysLeft < 66 || cert.DaysLeft > 67 {
-		t.Errorf("DaysLeft = %d, want ~67", cert.DaysLeft)
-	}
-}
-
-func TestExposureObserver_ParsesDirectList(t *testing.T) {
-	payload := `[{"subjects":["gitea.x.org"],"issuer":"ZeroSSL","not_after":0,"managed":true}]`
-	obs, _, _, cleanup := newTestExposureObserver(t, &mockCertFetcher{payload: []byte(payload)})
-	defer cleanup()
-
-	if err := obs.Reconcile(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	snap := obs.Snapshot()
-	if len(snap.Certs) != 1 || snap.Certs[0].Subject != "gitea.x.org" {
-		t.Errorf("direct list parse failed: %+v", snap.Certs)
+	// Sondeó al puerto HTTPS configurado (443).
+	if len(prober.calls) == 0 {
+		t.Fatal("prober was never called")
 	}
 }
 
-func TestExposureObserver_CaddyUnreachable(t *testing.T) {
-	// Ping falla → Caddy caído de verdad → Reachable: false.
-	obs, _, _, cleanup := newTestExposureObserver(t, &mockCertFetcher{pingErr: fmt.Errorf("connection refused")})
+func TestExposureObserver_ProbeFailureMeansNoCert(t *testing.T) {
+	// Caddy vivo (ping OK) pero ningún dominio sirve cert aún → Reachable
+	// TRUE con certs vacíos. La app mostrará "emitiendo certificado…" — y
+	// esta vez es la verdad, no el bug del endpoint muerto.
+	prober := &mockProber{errAll: fmt.Errorf("connection refused")}
+	obs, repo, c, cleanup := newTestExposureObserver(t, &mockPinger{}, prober)
 	defer cleanup()
-
-	if err := obs.Reconcile(context.Background()); err != nil {
-		t.Fatalf("Reconcile should not error on unreachable Caddy: %v", err)
-	}
-	snap := obs.Snapshot()
-	if snap == nil {
-		t.Fatal("snapshot should exist")
-	}
-	if snap.Reachable {
-		t.Error("Reachable should be false when Caddy is down")
-	}
-	if len(snap.Certs) != 0 {
-		t.Error("no certs when unreachable")
-	}
-}
-
-func TestExposureObserver_AliveButCertsUnavailable(t *testing.T) {
-	// El caso del bug del salpicadero: Caddy VIVO (Ping OK) pero el endpoint
-	// de certs falla (404 /pki/certificates, sin certs aún…). El observer
-	// debe reportar Reachable=TRUE con certs vacíos — NUNCA "Caddy caído".
-	obs, _, _, cleanup := newTestExposureObserver(t, &mockCertFetcher{err: fmt.Errorf("status 404")})
-	defer cleanup()
+	seedExposed(t, repo, c, "x.org", "immich")
 
 	if err := obs.Reconcile(context.Background()); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	snap := obs.Snapshot()
-	if snap == nil {
-		t.Fatal("snapshot should exist")
-	}
 	if !snap.Reachable {
-		t.Error("Reachable should be TRUE when Caddy is alive (only certs endpoint failed)")
+		t.Error("Reachable should be TRUE (Caddy alive, only the cert isn't served yet)")
 	}
 	if len(snap.Certs) != 0 {
-		t.Error("certs should be empty when cert endpoint fails")
+		t.Errorf("certs should be empty when nothing is served: %+v", snap.Certs)
 	}
 }
 
-func TestExposureObserver_OmitsCertWithoutSubject(t *testing.T) {
-	payload := `{"result":[{"subjects":[],"issuer":"x","not_after":0,"managed":true},{"subjects":["ok.x.org"],"not_after":0,"managed":true}]}`
-	obs, _, _, cleanup := newTestExposureObserver(t, &mockCertFetcher{payload: []byte(payload)})
+func TestExposureObserver_CaddyUnreachable(t *testing.T) {
+	// Ping falla → Caddy caído → Reachable false, y el prober NI se llama.
+	prober := &mockProber{}
+	obs, repo, c, cleanup := newTestExposureObserver(t, &mockPinger{pingErr: fmt.Errorf("refused")}, prober)
 	defer cleanup()
+	seedExposed(t, repo, c, "x.org", "immich")
+
+	if err := obs.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	snap := obs.Snapshot()
+	if snap == nil || snap.Reachable {
+		t.Error("Reachable should be false when Caddy is down")
+	}
+	if len(snap.Certs) != 0 {
+		t.Error("no certs when unreachable")
+	}
+	if len(prober.calls) != 0 {
+		t.Error("prober must NOT run when Caddy is unreachable")
+	}
+}
+
+func TestExposureObserver_ProbesBaseDomainToo(t *testing.T) {
+	// El dominio base (panel) también se sondea: collectTLSDomains lo mete
+	// primero. Si sirve cert, aparece.
+	prober := &mockProber{byDomain: map[string]ExposureCertStatus{
+		"x.org": {Subject: "x.org", Issuer: "Let's Encrypt", Managed: true, DaysLeft: 80},
+	}}
+	obs, repo, c, cleanup := newTestExposureObserver(t, &mockPinger{}, prober)
+	defer cleanup()
+	seedExposed(t, repo, c, "x.org", "immich")
 
 	obs.Reconcile(context.Background())
 	snap := obs.Snapshot()
-	if len(snap.Certs) != 1 || snap.Certs[0].Subject != "ok.x.org" {
-		t.Errorf("should omit cert without subject: %+v", snap.Certs)
+	found := false
+	for _, cert := range snap.Certs {
+		if cert.Subject == "x.org" {
+			found = true
+		}
 	}
-}
-
-func TestExposureObserver_MalformedJSON(t *testing.T) {
-	obs, _, _, cleanup := newTestExposureObserver(t, &mockCertFetcher{payload: []byte("not json at all")})
-	defer cleanup()
-
-	if err := obs.Reconcile(context.Background()); err != nil {
-		t.Fatalf("should not error on malformed json: %v", err)
-	}
-	snap := obs.Snapshot()
-	// Reachable=true (Caddy respondió) pero sin certs parseables.
-	if !snap.Reachable {
-		t.Error("Caddy responded, should be reachable")
-	}
-	if len(snap.Certs) != 0 {
-		t.Error("malformed json yields no certs")
-	}
-}
-
-func TestExposureObserver_NilSnapshotBeforeRun(t *testing.T) {
-	obs, _, _, cleanup := newTestExposureObserver(t, &mockCertFetcher{})
-	defer cleanup()
-	if obs.Snapshot() != nil {
-		t.Error("snapshot should be nil before first Reconcile")
-	}
-}
-
-func TestExposureObserver_InterfaceMethods(t *testing.T) {
-	obs, _, _, cleanup := newTestExposureObserver(t, &mockCertFetcher{})
-	defer cleanup()
-	if obs.Name() != "exposure_certs" {
-		t.Errorf("Name = %q", obs.Name())
-	}
-	if obs.Tier() != TierLow {
-		t.Errorf("Tier should be TierLow")
-	}
-	if obs.Interval() != 5*time.Minute {
-		t.Errorf("Interval = %v, want 5m", obs.Interval())
+	if !found {
+		t.Errorf("panel (base domain) cert should be probed and listed: %+v", snap.Certs)
 	}
 }
