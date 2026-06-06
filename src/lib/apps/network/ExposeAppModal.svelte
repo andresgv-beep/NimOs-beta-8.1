@@ -25,6 +25,7 @@
 
   export let app = null;
   export let baseDomain = '';
+  export let httpsPort = 443;
   export let busy = false;
   export let error = '';
 
@@ -47,14 +48,15 @@
   $: canSubmit = appId.trim() !== '' && upstreamHost.trim() !== '' && portValid && routeValid && !busy;
 
   // ─── Previsualización de la URL final ───
+  $: portPart = httpsPort && httpsPort !== 443 ? `:${httpsPort}` : '';
   $: preview = (() => {
     if (!baseDomain) return '(configura un dominio base primero)';
     if (routeMode === 'subdomain') {
-      return subdomain.trim() ? `https://${subdomain.trim()}.${baseDomain}` : `https://‹subdominio›.${baseDomain}`;
+      return subdomain.trim() ? `https://${subdomain.trim()}.${baseDomain}${portPart}` : `https://‹subdominio›.${baseDomain}${portPart}`;
     }
     const p = path.trim();
     const norm = p ? (p.startsWith('/') ? p : '/' + p) : '/‹ruta›';
-    return `https://${baseDomain}${norm}`;
+    return `https://${baseDomain}${portPart}${norm}`;
   })();
 
   function submit() {

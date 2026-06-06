@@ -159,6 +159,21 @@ export function fullDomainFor(app, baseDomain) {
 }
 
 /**
+ * appURL — URL externa COMPLETA de una app: esquema, host, PUERTO y ruta.
+ * El puerto es la pieza que faltaba: si Caddy sirve HTTPS en un puerto que
+ * no es el 443, hay que escribirlo en la URL (https://dominio:444) o el
+ * navegador asume 443 y no conecta. Antes la UI mostraba solo el host y el
+ * usuario no sabía que faltaba el puerto.
+ */
+export function appURL(app, baseDomain, httpsPort = 443) {
+  if (!baseDomain) return '';
+  const host = app.subdomain ? `${app.subdomain}.${baseDomain}` : baseDomain;
+  const portPart = httpsPort && httpsPort !== 443 ? `:${httpsPort}` : '';
+  const path = app.subdomain ? '' : (app.path || '');
+  return `https://${host}${portPart}${path}`;
+}
+
+/**
  * certForApp — empareja una app con su cert observado por subject.
  * Devuelve el objeto cert o null si no hay match.
  */

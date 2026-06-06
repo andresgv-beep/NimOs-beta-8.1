@@ -28,7 +28,7 @@
    */
   import { createEventDispatcher } from 'svelte';
   import { SectionHead, BevelButton, Badge, TextInput, EmptyState, LED } from '$lib/ui';
-  import { fullDomainFor, certForApp, appState } from './api.js';
+  import { fullDomainFor, appURL, certForApp, appState } from './api.js';
 
   export let config = { base_domain: '', caddy_admin_url: '', enabled: false };
   export let apps = [];
@@ -218,7 +218,12 @@
             </div>
 
             <div class="nx-app-route mono">
-              {fullDomainFor(app, config.base_domain) || '(sin dominio base)'}
+              {#if config.base_domain}
+                {@const url = appURL(app, config.base_domain, config.https_port)}
+                <a class="nx-app-url" href={url} target="_blank" rel="noopener noreferrer">{url}</a>
+              {:else}
+                <span class="nx-app-nodomain">(sin dominio base)</span>
+              {/if}
               <span class="nx-arrow">→</span>
               {app.upstream_host}:{app.upstream_port}
             </div>
@@ -289,6 +294,10 @@
   .nx-toggle:disabled { opacity: 0.5; cursor: default; }
 
   .nx-config-save { display: flex; justify-content: flex-end; }
+
+  .nx-app-url { color: var(--nim-remote, #4db8ff); text-decoration: none; }
+  .nx-app-url:hover { text-decoration: underline; }
+  .nx-app-nodomain { color: var(--fg-4, #7a7a82); }
 
   .nx-ports { display: flex; gap: 14px; }
   .nx-port { display: flex; align-items: center; gap: 8px; }
