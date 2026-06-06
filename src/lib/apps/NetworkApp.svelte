@@ -116,14 +116,23 @@
     modalError = '';
     try {
       if (e.detail.id) {
-        await api.updateExposedApp(e.detail.id, e.detail.fields);
+        await api.updateExposedApp(e.detail.id, e.detail.fields,
+          modalApp?.convergence?.desired_generation);
       } else {
         await api.exposeApp(e.detail.fields);
       }
       modalOpen = false;
       await refresh();
     } catch (err) {
-      modalError = err.message;
+      if (err.status === 412) {
+        // Conflicto de concurrencia: la app cambió en otro sitio mientras
+        // editabas. Refrescamos la lista; el modal queda abierto con tu
+        // texto para que decidas sobre el estado actual.
+        modalError = 'Conflicto: la app fue modificada en otro sitio. Lista actualizada — cierra y reintenta sobre el estado actual.';
+        await refresh();
+      } else {
+        modalError = err.message;
+      }
     } finally {
       busy = false;
     }
@@ -132,10 +141,16 @@
   async function onToggle(e) {
     busy = true;
     try {
-      await api.updateExposedApp(e.detail.app.id, { enabled: e.detail.enabled });
+      await api.updateExposedApp(e.detail.app.id, { enabled: e.detail.enabled },
+        e.detail.app.convergence?.desired_generation);
       await refresh();
     } catch (err) {
-      msg = `Error: ${err.message}`;
+      if (err.status === 412) {
+        msg = 'La app cambió en otro sitio — lista actualizada, reintenta.';
+        await refresh();
+      } else {
+        msg = `Error: ${err.message}`;
+      }
     } finally {
       busy = false;
     }
@@ -145,10 +160,15 @@
     if (!confirm(`¿Dejar de exponer "${e.detail.app.display_name || e.detail.app.app_id}"?`)) return;
     busy = true;
     try {
-      await api.unexposeApp(e.detail.app.id);
+      await api.unexposeApp(e.detail.app.id, e.detail.app.convergence?.desired_generation);
       await refresh();
     } catch (err) {
-      msg = `Error: ${err.message}`;
+      if (err.status === 412) {
+        msg = 'La app cambió en otro sitio — lista actualizada, revisa antes de quitar.';
+        await refresh();
+      } else {
+        msg = `Error: ${err.message}`;
+      }
     } finally {
       busy = false;
     }
