@@ -47,6 +47,8 @@ async function unwrap(res, label = 'api call') {
     }
     const e = new Error(`${label}: ${msg}`);
     e.code = code;
+    e.status = res.status; // p.ej. 412 = conflicto de concurrencia (CRIT-1)
+    e.body = body;         // en un 412 trae el estado actual de la app
     throw e;
   }
   return body;
@@ -117,7 +119,12 @@ export async function exposeApp({ appId, displayName, subdomain, path, upstreamH
 }
 
 /** updateExposedApp — edita una app expuesta (config o enabled). */
-export async function updateExposedApp(id, fields) {
+/**
+ * Mutaciones con candado optimista (CRIT-1): el backend exige el header
+ * If-Match con la desired_generation que el cliente leyó. Si otro cliente
+ * tocó la app entre medias → 412 con el estado actual en err.body.app.
+ */
+export async function updateExposedApp(id, fields, generation) {
   const payload = {};
   if (fields.displayName !== undefined) payload.display_name = fields.displayName;
   if (fields.subdomain !== undefined) payload.subdomain = fields.subdomain;
@@ -127,7 +134,7 @@ export async function updateExposedApp(id, fields) {
   if (fields.enabled !== undefined) payload.enabled = fields.enabled;
   const res = await fetch(`${BASE}/exposure/${encodeURIComponent(id)}`, {
     method: 'PUT',
-    headers: jsonHdrs(),
+    headers: { ...jsonHdrs(), 'If-Match': String(generation) },
     body: JSON.stringify(payload),
   });
   const body = await unwrap(res, 'update exposed app');
@@ -135,10 +142,10 @@ export async function updateExposedApp(id, fields) {
 }
 
 /** unexposeApp — deja de exponer (borra) una app. */
-export async function unexposeApp(id) {
+export async function unexposeApp(id, generation) {
   const res = await fetch(`${BASE}/exposure/${encodeURIComponent(id)}`, {
     method: 'DELETE',
-    headers: hdrs(),
+    headers: { ...hdrs(), 'If-Match': String(generation) },
   });
   return unwrap(res, 'unexpose app');
 }
