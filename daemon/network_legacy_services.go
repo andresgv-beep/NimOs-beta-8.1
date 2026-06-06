@@ -19,7 +19,6 @@ package main
 
 import (
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 )
@@ -100,42 +99,6 @@ func handleNfsRoutes(w http.ResponseWriter, r *http.Request) {
 	default:
 		jsonError(w, 404, "Not found")
 	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WebDAV (vía nginx site)
-// ─────────────────────────────────────────────────────────────────────────────
-
-func handleWebdavRoutes(w http.ResponseWriter, r *http.Request) {
-	session := requireAdmin(w, r)
-	if session == nil {
-		return
-	}
-	urlPath := r.URL.Path
-	method := r.Method
-
-	if urlPath == "/api/webdav/status" && method == "GET" {
-		_, installed := runSafe("which", "nginx")
-		running := false
-		if _, err := os.Stat("/etc/nginx/sites-enabled/nimos-webdav.conf"); err == nil {
-			running = true
-		}
-		jsonOk(w, map[string]interface{}{"installed": installed, "running": running})
-		return
-	}
-	if urlPath == "/api/webdav/start" && method == "POST" {
-		runSafe("sudo", "ln", "-sf", "/etc/nginx/sites-available/nimos-webdav.conf", "/etc/nginx/sites-enabled/")
-		runShellStatic("sudo nginx -t 2>/dev/null && sudo systemctl reload nginx 2>/dev/null")
-		jsonOk(w, map[string]interface{}{"ok": true})
-		return
-	}
-	if urlPath == "/api/webdav/stop" && method == "POST" {
-		runSafe("sudo", "rm", "-f", "/etc/nginx/sites-enabled/nimos-webdav.conf")
-		runShellStatic("sudo nginx -t 2>/dev/null && sudo systemctl reload nginx 2>/dev/null")
-		jsonOk(w, map[string]interface{}{"ok": true})
-		return
-	}
-	jsonError(w, 404, "Not found")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -256,6 +219,5 @@ func registerLegacyServiceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/ssh/", handleSshRoutes)
 	mux.HandleFunc("/api/ftp/", handleFtpRoutes)
 	mux.HandleFunc("/api/nfs/", handleNfsRoutes)
-	mux.HandleFunc("/api/webdav/", handleWebdavRoutes)
 	mux.HandleFunc("/api/smb/", handleSmbRoutes)
 }
