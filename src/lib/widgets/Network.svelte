@@ -64,13 +64,17 @@
     return (b / MB).toFixed(0) + ' MB';
   }
 
-  // sparkline: path SVG normalizado al máximo de la ventana
-  function spark(key) {
-    if (samples.length < 2) return { line: '', area: '' };
+  // sparkline: path SVG normalizado al máximo de la ventana.
+  // OJO: `list` viene por argumento a propósito — si la función
+  // leyera `samples` del scope, la reactividad de Svelte no la
+  // detectaría como dependencia y la sparkline no se redibujaría
+  // jamás (bug cazado en hardware real, jun 2026).
+  function spark(list, key) {
+    if (list.length < 2) return { line: '', area: '' };
     const W = 100, H = 32;
-    const vals = samples.map(s => s[key]);
+    const vals = list.map(s => s[key]);
     const max = Math.max(...vals, 1);
-    const step = W / (samples.length - 1);
+    const step = W / (list.length - 1);
     let d = '';
     vals.forEach((v, i) => {
       const x = i * step;
@@ -79,8 +83,8 @@
     });
     return { line: d, area: `${d}L${W} ${H} L0 ${H} Z` };
   }
-  $: dl = spark('rx');
-  $: ul = spark('tx');
+  $: dl = spark(samples, 'rx');
+  $: ul = spark(samples, 'tx');
   $: dlRate = fmtRate(cur?.rx);
   $: ulRate = fmtRate(cur?.tx);
 </script>
