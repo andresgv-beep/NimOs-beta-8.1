@@ -54,10 +54,20 @@
   $: nOk = sorted.length - nCrit - nWarn;
   $: allOk = services && sorted.length > 0 && nCrit === 0 && nWarn === 0;
 
-  $: rows = h >= 2 ? 10 : 4;
+  // Regla de llenado (decisión jun 2026): la 1ª columna se llena
+  // HASTA EL TOPE (4 en altura 1, 8 en altura 2) y solo entonces se
+  // salta a la siguiente. Nada de balancear.
+  $: rows = h >= 2 ? 8 : 4;
   $: cols = w >= 2 ? 2 : 1;
   $: visible = sorted.slice(0, rows * cols);
   $: extra = Math.max(0, sorted.length - visible.length);
+  // `list` por argumento: lección de reactividad de Network.svelte
+  $: colChunks = chunkCols(visible, rows);
+  function chunkCols(list, n) {
+    const out = [];
+    for (let i = 0; i < list.length; i += n) out.push(list.slice(i, i + n));
+    return out;
+  }
 </script>
 
 <div class="svcs">
@@ -86,13 +96,22 @@
       <div class="lbl">{w >= 2 ? 'todos operativos' : 'OK'}</div>
     </div>
   {:else}
-    <div class="list" style="grid-template-rows:repeat({Math.min(rows, Math.ceil(visible.length / cols))}, auto); grid-auto-columns: 1fr;">
-      {#each visible as s (s.id)}
-        <div class="svc">
-          <span class="cube {SEV_CLASS[sev(s)]}"></span>
-          <span class="sn" class:hot={sev(s) === 0}>{s.appId || s.id}</span>
-        </div>
-      {/each}
+    <div class="list">
+      <div class="cols">
+        {#each colChunks as chunk, i (i)}
+          <div class="colwrap">
+            {#each chunk as s (s.id)}
+              <div class="svc">
+                <span class="cube {SEV_CLASS[sev(s)]}"></span>
+                <span class="sn" class:hot={sev(s) === 0}>{s.appId || s.id}</span>
+              </div>
+            {/each}
+          </div>
+        {/each}
+        {#if cols === 2 && colChunks.length === 1}
+          <div class="colwrap"></div>
+        {/if}
+      </div>
     </div>
     {#if extra > 0}
       <div class="more">+{extra} más</div>
@@ -134,14 +153,27 @@
   .sum .g { color: var(--signal); }
   .sum .sep { color: var(--ink-trace); margin: 0 3px; }
 
-  /* columnas en paralelo · relleno por columna (graves arriba-izq) */
+  /* columnas en paralelo · la 1ª se llena al tope y luego la 2ª.
+     El bloque entero se centra en vertical; las columnas quedan
+     alineadas arriba entre sí (la 2ª empieza a la altura de la 1ª). */
   .list {
     flex: 1;
-    display: grid;
-    grid-auto-flow: column;
-    column-gap: 14px;
-    row-gap: 7px;
-    align-content: center;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 0;
+  }
+  .cols {
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+  }
+  .colwrap {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
   }
   .svc {
     display: flex;
