@@ -24,6 +24,7 @@ import Storage from './Storage.svelte';
 import Network from './Network.svelte';
 import RingSolo from './RingSolo.svelte';
 import Services from './Services.svelte';
+import Torrent from './Torrent.svelte';
 
 export const WIDGET_CATALOG = [
   {
@@ -105,8 +106,8 @@ export const WIDGET_CATALOG = [
     name: 'NimTorrent',
     w: 2,
     h: 1,
-    topic: 'torrent',     // definido al implementar el widget
-    component: null,      // → src/lib/widgets/Torrent.svelte (pendiente)
+    topic: 'torrent',     // /api/torrent/torrents · proxy Go → torrentd
+    component: Torrent,
     defaultOn: false,     // existe en catálogo, apagado por defecto
     sizes: [[2, 1], [2, 2]],
   },
