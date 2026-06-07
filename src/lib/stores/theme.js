@@ -78,11 +78,30 @@ export const currentTheme = derived(prefs, $p => $p.theme || 'dark');
 let saveTimeout = null;
 
 /**
+ * Cache del factor de escala 'auto' · UNA VEZ por sesión.
+ * ──────────────────────────────────────────────────────
+ * Bug Beta 8.1 (junio 2026): computeUiScale('auto') usa
+ * window.innerWidth, que CAMBIA con el zoom del navegador
+ * (Ctrl+rueda). Como applyToDOM se re-ejecuta en cada setPref
+ * (tema, accent, widgetLayout...), cada recálculo devolvía un
+ * scale distinto al que el usuario veía → la UI se "ampliaba"
+ * sola y peleaba contra el zoom manual del usuario.
+ * Fix: el auto-scale se calcula al cargar y se memoiza; solo se
+ * invalida cuando el usuario cambia la pref uiScale en Settings.
+ */
+let cachedAutoScale = null;
+
+function invalidateAutoScale() {
+  cachedAutoScale = null;
+}
+
+/**
  * Calcula el factor de escala automático según resolución/DPR.
  * Mismo algoritmo que Beta 7 — funcionaba bien.
  */
 function computeUiScale(setting) {
   if (setting !== 'auto' && typeof setting === 'number') return setting / 100;
+  if (cachedAutoScale !== null) return cachedAutoScale;
 
   const w = window.innerWidth;
   const dpr = window.devicePixelRatio || 1;
@@ -96,7 +115,8 @@ function computeUiScale(setting) {
     scale = physicalWidth / baseline;
   }
 
-  return Math.max(0.75, Math.min(1.5, Math.round(scale * 20) / 20));
+  cachedAutoScale = Math.max(0.75, Math.min(1.5, Math.round(scale * 20) / 20));
+  return cachedAutoScale;
 }
 
 /**
@@ -246,10 +266,18 @@ export async function loadPrefs() {
   }
 }
 
+/**
+ * Claves que NO afectan al DOM global (tema/zoom/variables CSS).
+ * Cambiarlas no debe re-ejecutar applyToDOM — mover un widget o
+ * anclar una app no puede tocar el escalado de toda la UI.
+ */
+const NON_VISUAL_KEYS = new Set(['widgetLayout', 'pinnedApps']);
+
 export function setPref(key, value) {
+  if (key === 'uiScale') invalidateAutoScale();
   prefs.update(p => {
     const updated = { ...p, [key]: value };
-    applyToDOM(updated);
+    if (!NON_VISUAL_KEYS.has(key)) applyToDOM(updated);
     localStorage.setItem('nimos-prefs', JSON.stringify(updated));
     if (saveTimeout) clearTimeout(saveTimeout);
     saveTimeout = setTimeout(() => saveToServer(key, value), 1500);
@@ -258,9 +286,11 @@ export function setPref(key, value) {
 }
 
 export function setPrefs(updates) {
+  if ('uiScale' in updates) invalidateAutoScale();
+  const hasVisual = Object.keys(updates).some(k => !NON_VISUAL_KEYS.has(k));
   prefs.update(p => {
     const updated = { ...p, ...updates };
-    applyToDOM(updated);
+    if (hasVisual) applyToDOM(updated);
     localStorage.setItem('nimos-prefs', JSON.stringify(updated));
     if (saveTimeout) clearTimeout(saveTimeout);
     saveTimeout = setTimeout(() => saveToServer(null, null, updates), 1500);
