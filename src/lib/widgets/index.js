@@ -21,6 +21,7 @@
 import Clock from './Clock.svelte';
 import SysMon from './SysMon.svelte';
 import Storage from './Storage.svelte';
+import Network from './Network.svelte';
 
 export const WIDGET_CATALOG = [
   {
@@ -79,7 +80,7 @@ export const WIDGET_CATALOG = [
     w: 2,
     h: 1,
     topic: 'network',     // /api/network · sparklines DL/UL
-    component: null,      // → src/lib/widgets/Network.svelte (pendiente)
+    component: Network,
     defaultOn: true,
     sizes: [[2, 1], [2, 2]],
   },
