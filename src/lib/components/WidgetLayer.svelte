@@ -329,9 +329,10 @@
       on:contextmenu|stopPropagation={(e) => openMenu(e, p.id)}
     >
       {#if p.def.component}
-        <!-- Contrato mínimo: el widget SOLO conoce su talla en celdas.
+        <!-- Contrato mínimo: el widget SOLO conoce su talla en celdas
+             (+ props estáticas declaradas en el catálogo, ej. metric).
              Nada de col/row/px — el grid es asunto del contenedor. -->
-        <svelte:component this={p.def.component} w={p.cw} h={p.ch} />
+        <svelte:component this={p.def.component} w={p.cw} h={p.ch} {...(p.def.props || {})} />
       {:else}
         <!-- Placeholder · fase contenedor · se sustituye al registrar
              el componente en el catálogo -->
