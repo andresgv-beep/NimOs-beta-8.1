@@ -599,6 +599,13 @@ func handleInstalledAppsRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// POST /api/installed-apps/:id/access-mode · SHIELD-P2 candado de puerto
+	accessModeRegex := regexp.MustCompile(`^/api/installed-apps/([a-zA-Z0-9_.-]+)/access-mode$`)
+	if matches := accessModeRegex.FindStringSubmatch(path); matches != nil && method == "POST" {
+		handleAppAccessMode(w, r, matches[1])
+		return
+	}
+
 	// DELETE /api/installed-apps/:id
 	appDelRegex := regexp.MustCompile(`^/api/installed-apps/([a-zA-Z0-9_.-]+)$`)
 	if matches := appDelRegex.FindStringSubmatch(path); matches != nil && method == "DELETE" {

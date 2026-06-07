@@ -45,6 +45,7 @@ type DBDockerApp struct {
 	PortsJSON   string // APP-033 · JSON array de PortBinding · canonical multi-port source
 	Deleting    bool   // APP-031 · true mientras la app está siendo desinstalada
 	Config      string // JSON serializado: volúmenes, env, ports extra
+	AccessMode  string // SHIELD-P2 · 'lan' | 'caddy_only' (bind loopback)
 	InstalledAt string
 	InstalledBy string
 }
@@ -62,6 +63,7 @@ func (a *DBDockerApp) ToMap() map[string]interface{} {
 		"type":        a.Type,
 		"openMode":    a.OpenMode,
 		"port":        a.Port, // legacy · clientes viejos
+		"accessMode":  a.AccessMode,
 		"installedAt": a.InstalledAt,
 		"installedBy": a.InstalledBy,
 	}
@@ -223,12 +225,16 @@ func (r *AppsRepo) CreateOrUpdateDockerApp(ctx context.Context, app *DBDockerApp
 	if portsJSON == "" {
 		portsJSON = "[]"
 	}
+	accessMode := app.AccessMode
+	if accessMode == "" {
+		accessMode = "lan"
+	}
 	deletingInt := boolToInt(app.Deleting)
 
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO docker_apps
-			(id, name, icon, image, color, type, open_mode, port, ports_json, deleting, config, installed_at, installed_by)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(id, name, icon, image, color, type, open_mode, port, ports_json, deleting, config, access_mode, installed_at, installed_by)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			icon = excluded.icon,
@@ -241,7 +247,7 @@ func (r *AppsRepo) CreateOrUpdateDockerApp(ctx context.Context, app *DBDockerApp
 			deleting = excluded.deleting,
 			config = excluded.config
 	`, app.ID, app.Name, app.Icon, app.Image, app.Color, typ,
-		openMode, app.Port, portsJSON, deletingInt, config, installedAt, app.InstalledBy)
+		openMode, app.Port, portsJSON, deletingInt, config, accessMode, installedAt, app.InstalledBy)
 	if err != nil {
 		return fmt.Errorf("upsert docker app %q: %w", app.ID, err)
 	}
@@ -256,14 +262,14 @@ func (r *AppsRepo) CreateOrUpdateDockerApp(ctx context.Context, app *DBDockerApp
 // que ya filtra (lista global de "apps activas").
 func (r *AppsRepo) GetDockerApp(ctx context.Context, id string) (*DBDockerApp, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT id, name, icon, image, color, type, open_mode, port, ports_json, deleting, config, installed_at, installed_by
+		SELECT id, name, icon, image, color, type, open_mode, port, ports_json, deleting, config, access_mode, installed_at, installed_by
 		FROM docker_apps WHERE id = ?
 	`, id)
 
 	var a DBDockerApp
 	var deletingInt int
 	err := row.Scan(&a.ID, &a.Name, &a.Icon, &a.Image, &a.Color, &a.Type,
-		&a.OpenMode, &a.Port, &a.PortsJSON, &deletingInt, &a.Config, &a.InstalledAt, &a.InstalledBy)
+		&a.OpenMode, &a.Port, &a.PortsJSON, &deletingInt, &a.Config, &a.AccessMode, &a.InstalledAt, &a.InstalledBy)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -297,7 +303,7 @@ func (r *AppsRepo) ListDockerAppsIncludingDeleting(ctx context.Context) ([]*DBDo
 
 func (r *AppsRepo) listDockerAppsFiltered(ctx context.Context, hideDeleting bool) ([]*DBDockerApp, error) {
 	query := `
-		SELECT id, name, icon, image, color, type, open_mode, port, ports_json, deleting, config, installed_at, installed_by
+		SELECT id, name, icon, image, color, type, open_mode, port, ports_json, deleting, config, access_mode, installed_at, installed_by
 		FROM docker_apps`
 	if hideDeleting {
 		query += ` WHERE deleting = 0`
@@ -315,7 +321,7 @@ func (r *AppsRepo) listDockerAppsFiltered(ctx context.Context, hideDeleting bool
 		var a DBDockerApp
 		var deletingInt int
 		if err := rows.Scan(&a.ID, &a.Name, &a.Icon, &a.Image, &a.Color, &a.Type,
-			&a.OpenMode, &a.Port, &a.PortsJSON, &deletingInt, &a.Config, &a.InstalledAt, &a.InstalledBy); err != nil {
+			&a.OpenMode, &a.Port, &a.PortsJSON, &deletingInt, &a.Config, &a.AccessMode, &a.InstalledAt, &a.InstalledBy); err != nil {
 			return nil, fmt.Errorf("scan docker app: %w", err)
 		}
 		a.Deleting = deletingInt == 1
@@ -577,4 +583,22 @@ func (r *AppsRepo) DeleteStaleAutoDetected(ctx context.Context, olderThan time.D
 		return 0, fmt.Errorf("delete stale auto-detected: rows affected: %w", err)
 	}
 	return affected, nil
+}
+
+// SetDockerAppAccessMode persiste el modo de acceso (SHIELD-P2).
+// 'lan' = publicado en 0.0.0.0 (comportamiento clásico) ·
+// 'caddy_only' = bind 127.0.0.1, solo accesible vía reverse proxy.
+func (r *AppsRepo) SetDockerAppAccessMode(ctx context.Context, id, mode string) error {
+	if mode != "lan" && mode != "caddy_only" {
+		return fmt.Errorf("invalid access_mode %q (want lan|caddy_only)", mode)
+	}
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE docker_apps SET access_mode = ? WHERE id = ?`, mode, id)
+	if err != nil {
+		return fmt.Errorf("set access_mode for %q: %w", id, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("app %q not found", id)
+	}
+	return nil
 }

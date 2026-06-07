@@ -78,6 +78,9 @@ func initAppsSchema(db *sql.DB) error {
 	//   APP-031 · deleting flag para race-free uninstall
 	db.Exec(`ALTER TABLE docker_apps ADD COLUMN ports_json TEXT DEFAULT '[]'`)
 	db.Exec(`ALTER TABLE docker_apps ADD COLUMN deleting INTEGER DEFAULT 0`)
+	//   SHIELD-P2 · access_mode: 'lan' (0.0.0.0, como siempre) o
+	//   'caddy_only' (bind 127.0.0.1 — Caddy es la única puerta).
+	db.Exec(`ALTER TABLE docker_apps ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'lan'`)
 
 	// ── 4. Re-creación de índices migrados ───────────────────────────
 	// El índice debe crearse DESPUÉS del ALTER que añade la columna.
