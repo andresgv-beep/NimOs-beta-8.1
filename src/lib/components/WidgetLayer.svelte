@@ -30,8 +30,10 @@
   import { WIDGET_CATALOG, WIDGET_BY_ID, DEFAULT_LAYOUT } from '$lib/widgets/index.js';
 
   // ─── Geometría del grid ───
-  const CELL = 116;   // lado de celda en px (pre-zoom)
-  const GAP  = 12;    // separación entre celdas
+  // 1×1 = 144×144 · 2×1 = 302×144 (px CSS, pre-uiScale).
+  // Subido de 116/12 (jun 2026): en monitores 2560+ quedaba pequeño.
+  const CELL = 144;   // lado de celda en px (pre-zoom)
+  const GAP  = 14;    // separación entre celdas
   const PAD  = 20;    // margen interior de la capa
 
   let layerEl;
