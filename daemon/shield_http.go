@@ -130,7 +130,7 @@ func dbShieldEventsRecent(limit int) []map[string]interface{} {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	rows, err := db.Query(`SELECT id, timestamp, category, severity, source_ip, endpoint, rule, details
+	rows, err := db.Query(`SELECT id, timestamp, category, severity, source_ip, endpoint, method, rule, details
 		FROM shield_events ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return []map[string]interface{}{}
@@ -140,11 +140,11 @@ func dbShieldEventsRecent(limit int) []map[string]interface{} {
 	var events []map[string]interface{}
 	for rows.Next() {
 		var id int
-		var ts, cat, sev, ip, endpoint, rule, details string
-		rows.Scan(&id, &ts, &cat, &sev, &ip, &endpoint, &rule, &details)
+		var ts, cat, sev, ip, endpoint, method, rule, details string
+		rows.Scan(&id, &ts, &cat, &sev, &ip, &endpoint, &method, &rule, &details)
 		events = append(events, map[string]interface{}{
 			"id": id, "timestamp": ts, "category": cat, "severity": sev,
-			"sourceIP": ip, "endpoint": endpoint, "rule": rule,
+			"sourceIP": ip, "endpoint": endpoint, "method": method, "rule": rule,
 		})
 	}
 	if events == nil {
@@ -189,7 +189,11 @@ func dbShieldBlocksGetActive() []BlockEntry {
 // ── HTTP API ─────────────────────────────────────────────────────────────────
 
 func handleShieldRoutes(w http.ResponseWriter, r *http.Request) {
-	session := requireAuth(w, r)
+	// Control de acceso por APP (no por rol): el admin concede acceso a
+	// NimShield desde la gestión de usuarios; quien lo tenga, entra. Mismo
+	// modelo que el resto de apps (p.ej. nimtorrent). El loopback y la
+	// autenticación los cubre requireAppAccess → requireAuth.
+	session := requireAppAccess(w, r, "nimshield")
 	if session == nil {
 		return
 	}
@@ -206,20 +210,16 @@ func handleShieldRoutes(w http.ResponseWriter, r *http.Request) {
 		shieldBlockMu.RUnlock()
 
 		jsonOk(w, map[string]interface{}{
-			"enabled":      shieldEnabled,
-			"blockedIPs":   blockedCount,
-			"honeypots":    len(honeypotPaths),
-			"rules":        22,
-			"xssPatterns":  len(xssPatterns),
-			"scannerUAs":   len(scannerUAs),
+			"enabled":     shieldEnabled,
+			"blockedIPs":  blockedCount,
+			"honeypots":   len(honeypotPaths),
+			"rules":       22,
+			"xssPatterns": len(xssPatterns),
+			"scannerUAs":  len(scannerUAs),
 		})
 
 	// GET /api/shield/events?limit=50
 	case path == "/api/shield/events" && method == "GET":
-		if session.Role != "admin" {
-			jsonError(w, 403, "Admin required")
-			return
-		}
 		limit := 50
 		if l := r.URL.Query().Get("limit"); l != "" {
 			fmt.Sscanf(l, "%d", &limit)
@@ -228,10 +228,6 @@ func handleShieldRoutes(w http.ResponseWriter, r *http.Request) {
 
 	// GET /api/shield/blocks
 	case path == "/api/shield/blocks" && method == "GET":
-		if session.Role != "admin" {
-			jsonError(w, 403, "Admin required")
-			return
-		}
 		shieldBlockMu.RLock()
 		blocks := make([]map[string]interface{}, 0, len(shieldBlocklist))
 		for ip, entry := range shieldBlocklist {
@@ -248,10 +244,6 @@ func handleShieldRoutes(w http.ResponseWriter, r *http.Request) {
 
 	// POST /api/shield/unblock — body: {"ip": "1.2.3.4"}
 	case path == "/api/shield/unblock" && method == "POST":
-		if session.Role != "admin" {
-			jsonError(w, 403, "Admin required")
-			return
-		}
 		body, _ := readBody(r)
 		ip := bodyStr(body, "ip")
 		if ip == "" {
@@ -263,28 +255,16 @@ func handleShieldRoutes(w http.ResponseWriter, r *http.Request) {
 
 	// POST /api/shield/toggle — enable/disable
 	case path == "/api/shield/toggle" && method == "POST":
-		if session.Role != "admin" {
-			jsonError(w, 403, "Admin required")
-			return
-		}
 		shieldEnabled = !shieldEnabled
 		logMsg("shield: %s by %s", map[bool]string{true: "enabled", false: "disabled"}[shieldEnabled], session.Username)
 		jsonOk(w, map[string]interface{}{"ok": true, "enabled": shieldEnabled})
 
 	// GET /api/shield/whitelist — lista IPs de confianza
 	case path == "/api/shield/whitelist" && method == "GET":
-		if session.Role != "admin" {
-			jsonError(w, 403, "Admin required")
-			return
-		}
 		jsonOk(w, map[string]interface{}{"ok": true, "whitelist": dbShieldWhitelistGetAll()})
 
 	// POST /api/shield/whitelist — body: {"ip": "1.2.3.4", "note": "auditoría"}
 	case path == "/api/shield/whitelist" && method == "POST":
-		if session.Role != "admin" {
-			jsonError(w, 403, "Admin required")
-			return
-		}
 		body, _ := readBody(r)
 		ip := bodyStr(body, "ip")
 		note := bodyStr(body, "note")
@@ -307,10 +287,6 @@ func handleShieldRoutes(w http.ResponseWriter, r *http.Request) {
 
 	// POST /api/shield/whitelist/remove — body: {"ip": "1.2.3.4"}
 	case path == "/api/shield/whitelist/remove" && method == "POST":
-		if session.Role != "admin" {
-			jsonError(w, 403, "Admin required")
-			return
-		}
 		body, _ := readBody(r)
 		ip := bodyStr(body, "ip")
 		if ip == "" {

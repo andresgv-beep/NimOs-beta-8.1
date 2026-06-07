@@ -920,6 +920,7 @@ func createAppRegistryTable() error {
 			{"storage", "Storage", "system", 1, 0},
 			{"network", "Network", "system", 1, 0},
 			{"nimtorrent", "NimTorrent", "app", 0, 0},
+			{"nimshield", "NimShield", "system", 0, 0},
 			{"appstore", "App Store", "system", 0, 0},
 			{"files", "Files", "app", 0, 1},
 			{"mediaplayer", "Media Player", "app", 0, 1},
@@ -935,6 +936,21 @@ func createAppRegistryTable() error {
 		}
 		tx.Commit()
 		logMsg("app_registry: seeded %d default apps", len(seedApps))
+	}
+
+	// Migración idempotente: registra apps añadidas en versiones posteriores
+	// al seed inicial. En instalaciones existentes (app_registry ya poblada)
+	// el bloque de arriba no corre, así que las apps nuevas se insertan aquí.
+	// INSERT OR IGNORE respeta las filas existentes (no pisa configuración).
+	laterApps := []struct {
+		id, name, category string
+		adminOnly, public  int
+	}{
+		{"nimshield", "NimShield", "system", 0, 0}, // concedible por el admin, no admin-only
+	}
+	for _, a := range laterApps {
+		db.Exec(`INSERT OR IGNORE INTO app_registry (id, name, category, admin_only, public) VALUES (?, ?, ?, ?, ?)`,
+			a.id, a.name, a.category, a.adminOnly, a.public)
 	}
 	return nil
 }
@@ -1002,7 +1018,7 @@ func dbUserHasAppAccess(username, role, appId string) bool {
 	return count > 0
 }
 
-// Get permission level for a user+app ('use', 'manage', or '')
+// Get permission level for a user+app ('use', 'manage', or ”)
 func dbUserGetAppPermission(username, role, appId string) string {
 	if role == "admin" {
 		return "manage"
