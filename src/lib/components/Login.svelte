@@ -1,11 +1,18 @@
 <script>
   /**
-   * Login · Pantalla de login retro terminal
-   * ──────────────────────────────────────────
+   * Login · Pantalla de acceso v3 (card glass centrado)
+   * ────────────────────────────────────────────────────
+   * Rediseñado a partir de login-mockup.html. Estados:
+   *   · login    → usuario + contraseña
+   *   · loading  → inputs deshabilitados + spinner
+   *   · 2FA      → código TOTP grande centrado + cancelar
+   *   · error    → banner ERR bajo los campos
+   *
+   * Lógica real preservada: login() del store de auth, flujo
+   * requires2FA, autocomplete correcto para gestores de contraseñas.
    */
   import { login } from '$lib/stores/auth.js';
-  import BevelButton from '$lib/ui/BevelButton.svelte';
-  import LED from '$lib/ui/LED.svelte';
+  import NimosLogo from '$lib/ui/NimosLogo.svelte';
 
   let username = '';
   let password = '';
@@ -16,7 +23,7 @@
 
   async function handleSubmit(e) {
     e.preventDefault();
-    if (!username || !password) return;
+    if (needs2FA ? !totpCode : (!username || !password)) return;
 
     error = '';
     loading = true;
@@ -34,298 +41,472 @@
       loading = false;
     }
   }
+
+  function cancel2FA() {
+    needs2FA = false;
+    totpCode = '';
+    error = '';
+    loading = false;
+  }
+
+  // Solo dígitos en el TOTP
+  function onTotpInput(e) {
+    totpCode = e.target.value.replace(/\D/g, '').slice(0, 6);
+    e.target.value = totpCode;
+  }
 </script>
 
 <div class="login-screen">
+  <div class="login-wrap">
 
-  <!-- Boot log simulated arriba -->
-  <div class="boot-log">
-    <div class="line"><span class="ts">[    0.000000]</span> <span class="lvl ok">OK</span> <span>NimOS v0.8.1-alpha initialized</span></div>
-    <div class="line"><span class="ts">[    0.142391]</span> <span class="lvl ok">OK</span> <span>Daemon running on port 5000</span></div>
-    <div class="line"><span class="ts">[    0.283412]</span> <span class="lvl info">INFO</span> <span>Design System v3 · Terminal</span></div>
-    <div class="line"><span class="ts">[    0.421055]</span> <span class="lvl ok">OK</span> <span>Awaiting authentication<span class="cursor">_</span></span></div>
-  </div>
+    <div class="login-card">
 
-  <div class="login-box">
-
-    <div class="login-header">
-      <div class="header-logo"></div>
-      <div class="header-text">
-        <span class="title">NimOS</span>
-        <span class="subtitle">NAS INTERACTIVE MACHINE OS</span>
+      <!-- ═══ BRAND ═══ -->
+      <div class="brand">
+        <div class="brand-logo">
+          <NimosLogo size={56} showText={false} />
+        </div>
+        <div class="brand-title">NimOS</div>
+        <div class="brand-tagline">your <span class="nas">NAS</span> for developers</div>
       </div>
-    </div>
 
-    <div class="login-brackets">
-      <span>──</span>
-      <span class="lbl">AUTH REQUIRED</span>
-      <span class="line-fill"></span>
-      <LED size={7} />
-    </div>
-
-    <form on:submit={handleSubmit}>
-
+      <!-- ═══ FORM · cambia según estado ═══ -->
       {#if !needs2FA}
-        <div class="field">
-          <label>
-            <span class="lb">user</span>
-            <span class="lk">[U]</span>
-          </label>
-          <input
-            type="text"
-            bind:value={username}
-            placeholder="username"
-            autocomplete="username"
-            autofocus
-            required
-          />
-        </div>
+        <form class="form-state" on:submit={handleSubmit}>
+          <div class="section-label">iniciar sesión</div>
 
-        <div class="field">
-          <label>
-            <span class="lb">password</span>
-            <span class="lk">[P]</span>
-          </label>
-          <input
-            type="password"
-            bind:value={password}
-            placeholder="••••••••"
-            autocomplete="current-password"
-            required
-          />
-        </div>
+          <div class="field">
+            <label class="field-label" for="user">
+              <span>usuario</span>
+              <span class="kb">U</span>
+            </label>
+            <!-- svelte-ignore a11y_autofocus -->
+            <input
+              type="text"
+              id="user"
+              bind:value={username}
+              placeholder="admin"
+              autocomplete="username"
+              disabled={loading}
+              autofocus
+              required
+            />
+          </div>
+
+          <div class="field">
+            <label class="field-label" for="pass">
+              <span>contraseña</span>
+              <span class="kb">P</span>
+            </label>
+            <input
+              type="password"
+              id="pass"
+              bind:value={password}
+              placeholder="••••••••"
+              autocomplete="current-password"
+              disabled={loading}
+              required
+            />
+          </div>
+
+          {#if error}
+            <div class="error">
+              <span class="err-tag">err</span>
+              <span>{error}</span>
+            </div>
+          {/if}
+
+          <button class="btn-submit" type="submit" disabled={loading}>
+            {#if loading}
+              <span class="spinner"></span>
+              Autenticando…
+            {:else}
+              Entrar
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M5 12h14"/>
+                <path d="M12 5l7 7-7 7"/>
+              </svg>
+            {/if}
+          </button>
+        </form>
       {:else}
-        <div class="field">
-          <label>
-            <span class="lb">2FA code</span>
-            <span class="lk">[2]</span>
-          </label>
-          <input
-            type="text"
-            bind:value={totpCode}
-            placeholder="000000"
-            maxlength="6"
-            autocomplete="one-time-code"
-            autofocus
-            required
-          />
-        </div>
+        <form class="form-state" on:submit={handleSubmit}>
+          <div class="section-label">verificación 2FA</div>
+
+          <div class="totp-hint">
+            Introduce el código de 6 dígitos de tu app autenticadora <span class="app">(Authy, Google Authenticator, 1Password…)</span>
+          </div>
+
+          <div class="field">
+            <label class="field-label" for="totp">
+              <span>código TOTP</span>
+              <span class="kb">2</span>
+            </label>
+            <!-- svelte-ignore a11y_autofocus -->
+            <input
+              type="text"
+              id="totp"
+              class="totp-input"
+              value={totpCode}
+              on:input={onTotpInput}
+              placeholder="••••••"
+              maxlength="6"
+              inputmode="numeric"
+              autocomplete="one-time-code"
+              disabled={loading}
+              autofocus
+              required
+            />
+          </div>
+
+          {#if error}
+            <div class="error">
+              <span class="err-tag">err</span>
+              <span>{error}</span>
+            </div>
+          {/if}
+
+          <button class="btn-submit" type="submit" disabled={loading}>
+            {#if loading}
+              <span class="spinner"></span>
+              Verificando…
+            {:else}
+              Verificar
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            {/if}
+          </button>
+
+          <button class="btn-back" type="button" on:click={cancel2FA} disabled={loading}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 18 9 12 15 6"/>
+            </svg>
+            Cancelar
+          </button>
+        </form>
       {/if}
 
-      {#if error}
-        <div class="error">
-          <span class="err-tag">ERR</span>
-          <span>{error}</span>
+      <!-- ═══ FOOTER ═══ -->
+      <div class="card-footer">
+        <div class="item">
+          <span class="daemon-led"></span>
+          <span class="k">daemon</span>
+          <span class="v">running</span>
         </div>
-      {/if}
-
-      <div class="actions">
-        <BevelButton variant="primary" size="md" disabled={loading} type="submit">
-          {loading ? '▸ auth...' : '▸ enter'}
-        </BevelButton>
+        <div class="item">
+          <span class="k">build</span>
+          <span class="v">0.8.1-alpha</span>
+        </div>
       </div>
 
-    </form>
-
-    <div class="footer-strip">
-      <span class="k">build</span> <span class="v">0.8.1-alpha</span>
-      <span class="sep">·</span>
-      <span class="k">theme</span> <span class="v">retro-v3</span>
     </div>
 
   </div>
-
 </div>
 
 <style>
   .login-screen {
     width: 100%;
     height: 100vh;
-    background: var(--wallpaper);
     display: flex;
     align-items: center;
     justify-content: center;
-    font-family: var(--font-mono);
+    padding: 20px;
+    overflow: hidden;
+    font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
+    background:
+      /* Glow verde en esquinas */
+      radial-gradient(ellipse 800px 600px at 20% 30%, rgba(0, 80, 50, 0.12) 0%, transparent 65%),
+      radial-gradient(ellipse 600px 400px at 80% 70%, rgba(0, 100, 70, 0.06) 0%, transparent 60%),
+      /* Grid muy sutil */
+      linear-gradient(rgba(0, 255, 159, 0.012) 1px, transparent 1px) 0 0 / 24px 24px,
+      linear-gradient(90deg, rgba(0, 255, 159, 0.012) 1px, transparent 1px) 0 0 / 24px 24px,
+      #050507;
+  }
+
+  .login-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+    width: 100%;
+    max-width: 380px;
+  }
+
+  .login-card {
+    width: 100%;
+    background: rgba(22, 22, 26, 0.85);
+    backdrop-filter: blur(24px) saturate(1.4);
+    -webkit-backdrop-filter: blur(24px) saturate(1.4);
+    border: 1px solid var(--bd-2, #20202a);
+    border-radius: 14px;
+    padding: 32px 32px 26px;
+    box-shadow:
+      0 24px 60px rgba(0, 0, 0, 0.5),
+      0 0 0 1px rgba(0, 0, 0, 0.4),
+      inset 0 1px 0 rgba(255, 255, 255, 0.04);
     position: relative;
     overflow: hidden;
   }
 
-  /* Boot log en esquina superior izquierda */
-  .boot-log {
-    position: absolute;
-    top: 20px;
-    left: 20px;
-    font-size: 10px;
-    color: var(--fg-mute);
-    line-height: 1.7;
-    pointer-events: none;
-  }
-  .boot-log .line {
-    display: flex;
-    gap: 8px;
-  }
-  .boot-log .ts { color: var(--fg-faint); }
-  .boot-log .lvl.ok   { color: var(--accent); }
-  .boot-log .lvl.info { color: var(--info); }
-  .cursor {
-    animation: cursor-blink 1s steps(2) infinite;
-    color: var(--accent);
-  }
-
-  /* Login box */
-  .login-box {
-    width: 420px;
-    background: var(--bg);
-    border: 1px solid var(--accent);
-    box-shadow:
-      4px 4px 0 rgba(0, 0, 0, 0.7),
-      0 0 30px rgba(0, 255, 159, 0.1);
-    padding: 28px 32px;
-    clip-path: polygon(
-      0 0, calc(100% - var(--bev-md)) 0, 100% var(--bev-md),
-      100% 100%, var(--bev-md) 100%, 0 calc(100% - var(--bev-md))
-    );
-    position: relative;
-  }
-  .login-box::before, .login-box::after {
-    content: '';
-    position: absolute;
-    width: 14px; height: 14px;
-    border-color: var(--accent);
-    opacity: 0.6;
-  }
-  .login-box::before {
-    top: 10px; left: 10px;
-    border-top: 1px solid; border-left: 1px solid;
-  }
-  .login-box::after {
-    bottom: 10px; right: 10px;
-    border-bottom: 1px solid; border-right: 1px solid;
-  }
-
-  .login-header {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    padding-bottom: 18px;
-    border-bottom: 1px solid var(--border);
-  }
-  .header-logo {
-    width: 28px; height: 28px;
-    background: var(--accent);
-    clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
-    box-shadow: 0 0 10px var(--accent-glow);
-  }
-  .header-text {
+  /* ─── Brand ─── */
+  .brand {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 26px;
   }
-  .title {
-    font-size: 18px;
-    font-weight: 700;
-    color: var(--fg);
-    letter-spacing: 2px;
-  }
-  .subtitle {
-    font-size: 8px;
-    color: var(--fg-mute);
-    letter-spacing: 2px;
-  }
-
-  .login-brackets {
+  .brand-logo {
+    width: 56px;
+    height: 56px;
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 14px 0 18px;
-    font-size: 9px;
-    color: var(--fg-mute);
-    letter-spacing: 1.8px;
-    text-transform: uppercase;
+    justify-content: center;
   }
-  .login-brackets .lbl { color: var(--accent); }
-  .login-brackets .line-fill {
+  .brand-title {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--fg, #f0f0f0);
+    letter-spacing: -0.3px;
+  }
+  .brand-tagline {
+    font-size: 11px;
+    color: var(--fg-4, #7a7a82);
+    letter-spacing: 0.3px;
+    margin-top: -8px;
+  }
+  .brand-tagline .nas {
+    color: var(--nim-green, #00ff9f);
+    font-weight: 600;
+  }
+
+  /* ─── Section label ─── */
+  .section-label {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 10px;
+    color: var(--fg-5, #5a5a62);
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .section-label::after {
+    content: '';
     flex: 1;
     height: 1px;
-    background: linear-gradient(to right, var(--border), transparent);
+    background: var(--bd-2, #20202a);
   }
 
-  /* Fields */
+  /* ─── Fields ─── */
   .field {
-    margin-bottom: 14px;
+    margin-bottom: 12px;
   }
-  label {
+  .field-label {
     display: flex;
     justify-content: space-between;
-    align-items: center;
-    margin-bottom: 4px;
-    font-size: 9px;
-    color: var(--fg-mute);
-    letter-spacing: 1.5px;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 10px;
+    color: var(--fg-4, #7a7a82);
     text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-bottom: 6px;
+    font-weight: 500;
   }
-  label .lk {
-    color: var(--fg-faint);
-    font-size: 8px;
-    border: 1px solid var(--border);
-    padding: 0 4px;
+  .field-label .kb {
+    font-size: 9px;
+    color: var(--fg-5, #5a5a62);
+    padding: 1px 5px;
+    border: 1px solid var(--bd-2, #20202a);
+    border-radius: 3px;
   }
-  input {
+  .field input {
     width: 100%;
-    background: var(--bg-1);
-    border: 1px solid var(--border);
-    padding: 9px 12px;
-    color: var(--fg);
+    background: var(--bg-inner, #101015);
+    border: 1px solid var(--bd-2, #20202a);
+    border-radius: 7px;
+    padding: 10px 12px;
+    color: var(--fg, #f0f0f0);
     font-family: inherit;
-    font-size: 12px;
-    letter-spacing: 1px;
+    font-size: 13px;
     outline: none;
-    transition: border-color 0.12s;
+    transition: border-color 0.12s, background 0.12s;
   }
-  input:focus {
-    border-color: var(--accent);
+  .field input::placeholder {
+    color: var(--fg-5, #5a5a62);
   }
-  input::placeholder {
-    color: var(--fg-mute);
+  .field input:focus {
+    border-color: rgba(0, 255, 159, 0.35);
+    background: rgba(0, 255, 159, 0.03);
+  }
+  .field input:disabled {
+    opacity: 0.6;
   }
 
+  /* ─── TOTP grande centrado ─── */
+  .totp-input {
+    font-family: var(--font-mono, ui-monospace, monospace) !important;
+    text-align: center;
+    font-size: 22px !important;
+    letter-spacing: 8px;
+    padding: 14px 12px !important;
+    font-variant-numeric: tabular-nums;
+  }
+  .totp-hint {
+    font-size: 11px;
+    color: var(--fg-4, #7a7a82);
+    text-align: center;
+    margin-bottom: 16px;
+    line-height: 1.5;
+  }
+  .totp-hint .app {
+    color: var(--fg-2, #d0d0d4);
+    font-weight: 500;
+  }
+
+  /* ─── Error ─── */
   .error {
-    margin: 14px 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
     padding: 9px 12px;
     background: rgba(255, 90, 90, 0.08);
-    border: 1px solid rgba(255, 90, 90, 0.4);
-    color: var(--crit);
-    font-size: 10px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
+    border: 1px solid rgba(255, 90, 90, 0.25);
+    border-radius: 6px;
+    margin-bottom: 12px;
+    font-size: 12px;
+    color: var(--fg-2, #d0d0d4);
   }
   .err-tag {
-    background: var(--crit);
-    color: var(--bg);
-    padding: 1px 6px;
+    font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 9px;
+    color: var(--st-crit, #ff5a5a);
     font-weight: 700;
-    letter-spacing: 1px;
-  }
-
-  .actions {
-    margin-top: 20px;
-    display: flex;
-    justify-content: flex-end;
-  }
-
-  .footer-strip {
-    margin-top: 22px;
-    padding-top: 14px;
-    border-top: 1px solid var(--border);
-    display: flex;
-    gap: 10px;
-    font-size: 9px;
-    color: var(--fg-mute);
+    text-transform: uppercase;
     letter-spacing: 0.8px;
+    padding: 1px 6px;
+    border: 1px solid rgba(255, 90, 90, 0.4);
+    border-radius: 3px;
+    flex-shrink: 0;
   }
-  .footer-strip .k { color: var(--fg-faint); }
-  .footer-strip .v { color: var(--fg-dim); }
-  .footer-strip .sep { color: var(--fg-faint); }
+
+  /* ─── Submit ─── */
+  .btn-submit {
+    width: 100%;
+    padding: 11px 14px;
+    background: var(--nim-green, #00ff9f);
+    color: var(--bg-window, #16161a);
+    border: none;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: filter 0.12s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 6px;
+  }
+  .btn-submit:hover:not(:disabled) {
+    filter: brightness(1.08);
+  }
+  .btn-submit:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .btn-submit svg {
+    width: 13px;
+    height: 13px;
+  }
+
+  .spinner {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(22, 22, 26, 0.3);
+    border-top-color: var(--bg-window, #16161a);
+    animation: spin 0.6s linear infinite;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  /* ─── Back (cancelar 2FA) ─── */
+  .btn-back {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: transparent;
+    border: 1px solid var(--bd-2, #20202a);
+    border-radius: 7px;
+    color: var(--fg-3, #9c9ca4);
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    width: 100%;
+    justify-content: center;
+    margin-top: 8px;
+    transition: color 0.12s, border-color 0.12s;
+  }
+  .btn-back:hover:not(:disabled) {
+    color: var(--fg, #f0f0f0);
+    border-color: var(--bd-3, #2a2a32);
+  }
+  .btn-back:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-back svg { width: 12px; height: 12px; }
+
+  /* ─── Footer del card ─── */
+  .card-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 22px;
+    padding-top: 16px;
+    border-top: 1px solid var(--bd-2, #20202a);
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 10px;
+    color: var(--fg-5, #5a5a62);
+    letter-spacing: 0.3px;
+  }
+  .card-footer .item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .card-footer .k {
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    font-weight: 600;
+  }
+  .card-footer .v {
+    color: var(--fg-3, #9c9ca4);
+  }
+  .daemon-led {
+    width: 6px;
+    height: 6px;
+    border-radius: 1.5px;
+    background: var(--st-ok, #00ff9f);
+    box-shadow: 0 0 4px rgba(0, 255, 159, 0.5);
+    animation: pulse 2.5s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.6; }
+  }
+
+  /* ─── Transición entre estados ─── */
+  .form-state {
+    animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
 </style>
