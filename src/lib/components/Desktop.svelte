@@ -16,6 +16,7 @@
   } from '$lib/stores/notifications.js';
   import Taskbar from './Taskbar.svelte';
   import WindowFrame from './WindowFrame.svelte';
+  import WidgetLayer from './WidgetLayer.svelte';
   import NimosLogo from '$lib/ui/NimosLogo.svelte';
 
   let pollInterval;
@@ -77,6 +78,9 @@
       <NimosLogo size={60} />
     </div>
   {/if}
+
+  <!-- Capa de widgets · sobre wallpaper, bajo ventanas -->
+  <WidgetLayer />
 
   <!-- Ventanas flotantes -->
   {#each $windowList as win (win.id)}

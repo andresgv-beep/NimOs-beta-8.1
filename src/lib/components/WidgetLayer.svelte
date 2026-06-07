@@ -1,0 +1,479 @@
+<script>
+  /**
+   * WidgetLayer · Capa de widgets de escritorio · NimOS Beta 8.1
+   * ═════════════════════════════════════════════════════════════
+   * Contenedor estructural. SOLO sabe de:
+   *   - Grid de celdas fijas (CELL × CELL, gap GAP)
+   *   - Colocar cajas según el catálogo (tamaños fijos w×h)
+   *   - Drag con snap a celda y detección de colisión
+   *   - Menú contextual: activar/desactivar widgets, restablecer
+   *   - Persistencia en prefs.widgetLayout
+   *
+   * NO sabe qué pinta cada widget. El contenido viene del catálogo
+   * (src/lib/widgets/index.js): si `component` es null se renderiza
+   * un placeholder; cuando el widget exista, se registra allí y esta
+   * capa no cambia.
+   *
+   * Persistencia con INTENCIÓN, sin clampar:
+   *   col/row negativos = anclado al borde derecho/inferior
+   *   (col -1 = última columna). La resolución a celdas absolutas y
+   *   el clamping ocurren SOLO en render. Así el layout sobrevive a
+   *   cambios de resolución sin corromper lo guardado.
+   *
+   * Capas: z-index 2 → sobre wallpaper/logo (z1), bajo ventanas
+   * (z≥100) y taskbar (z9000). pointer-events: none en la capa,
+   * auto solo en widgets y menú → el escritorio vacío sigue siendo
+   * del escritorio.
+   */
+  import { onMount } from 'svelte';
+  import { prefs, setPref } from '$lib/stores/theme.js';
+  import { WIDGET_CATALOG, WIDGET_BY_ID, DEFAULT_LAYOUT } from '$lib/widgets/index.js';
+
+  // ─── Geometría del grid ───
+  const CELL = 116;   // lado de celda en px (pre-zoom)
+  const GAP  = 12;    // separación entre celdas
+  const PAD  = 20;    // margen interior de la capa
+
+  let layerEl;
+  let gridCols = 0;
+  let gridRows = 0;
+
+  // ─── Layout (intención) desde prefs · Desktop monta post-loadPrefs ───
+  $: layout = Array.isArray($prefs.widgetLayout)
+    ? $prefs.widgetLayout
+    : DEFAULT_LAYOUT.map(x => ({ ...x }));
+
+  // ─── Resolución intención → celdas absolutas (clamp + colisiones) ───
+  $: placed = resolvePlacements(layout, gridCols, gridRows);
+
+  function resolvePlacements(items, cols, rows) {
+    if (!cols || !rows) return [];
+    const occupied = new Set();
+    const out = [];
+
+    const isFree = (c, r, w, h) => {
+      if (c < 0 || r < 0 || c + w > cols || r + h > rows) return false;
+      for (let i = c; i < c + w; i++)
+        for (let j = r; j < r + h; j++)
+          if (occupied.has(`${i},${j}`)) return false;
+      return true;
+    };
+    const mark = (c, r, w, h) => {
+      for (let i = c; i < c + w; i++)
+        for (let j = r; j < r + h; j++)
+          occupied.add(`${i},${j}`);
+    };
+
+    for (const item of items) {
+      const def = WIDGET_BY_ID[item.id];
+      if (!def) continue; // id desconocido en prefs viejas → ignorar
+
+      // Intención → absoluto
+      let c = item.col >= 0 ? item.col : cols + item.col;
+      let r = item.row >= 0 ? item.row : rows + item.row;
+      // Clamp solo en render
+      c = Math.max(0, Math.min(c, cols - def.w));
+      r = Math.max(0, Math.min(r, rows - def.h));
+
+      // Colisión → primero bajar filas, luego primer hueco libre
+      if (!isFree(c, r, def.w, def.h)) {
+        let found = false;
+        for (let rr = r + 1; rr <= rows - def.h && !found; rr++) {
+          if (isFree(c, rr, def.w, def.h)) { r = rr; found = true; }
+        }
+        for (let rr = 0; rr <= rows - def.h && !found; rr++) {
+          for (let cc = cols - def.w; cc >= 0 && !found; cc--) {
+            if (isFree(cc, rr, def.w, def.h)) { c = cc; r = rr; found = true; }
+          }
+        }
+        // sin hueco: se queda clampado (solapa antes que perderse)
+      }
+      mark(c, r, def.w, def.h);
+
+      out.push({
+        id: item.id, def, col: c, row: r,
+        x: PAD + c * (CELL + GAP),
+        y: PAD + r * (CELL + GAP),
+        w: def.w * CELL + (def.w - 1) * GAP,
+        h: def.h * CELL + (def.h - 1) * GAP,
+      });
+    }
+    return out;
+  }
+
+  // Codifica intención al guardar: mitad derecha/inferior → negativo
+  function encodeIntent(col, row, def) {
+    const centerC = col + def.w / 2;
+    const centerR = row + def.h / 2;
+    return {
+      col: centerC > gridCols / 2 ? col - gridCols : col,
+      row: centerR > gridRows / 2 ? row - gridRows : row,
+    };
+  }
+
+  function saveLayout(next) {
+    setPref('widgetLayout', next); // localStorage + debounce a servidor
+  }
+
+  // ─── Medición del grid ───
+  function measure() {
+    if (!layerEl) return;
+    const w = layerEl.offsetWidth;
+    const h = layerEl.offsetHeight;
+    gridCols = Math.max(1, Math.floor((w - 2 * PAD + GAP) / (CELL + GAP)));
+    gridRows = Math.max(1, Math.floor((h - 2 * PAD + GAP) / (CELL + GAP)));
+  }
+
+  onMount(() => {
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  });
+
+  // ─── Drag con snap a celda ───
+  let drag = null; // { id, def, originX, originY, startCX, startCY, zoom, moving, ghostX, ghostY, target }
+
+  // Ratio coordenadas visuales/layout · maneja root.style.zoom (uiScale)
+  function zoomRatio() {
+    if (!layerEl) return 1;
+    const r = layerEl.getBoundingClientRect().width / layerEl.offsetWidth;
+    return r || 1;
+  }
+
+  function onWidgetPointerDown(e, p) {
+    if (e.button !== 0) return;
+    // Elementos interactivos del contenido del widget NO inician drag
+    if (e.target.closest('button, a, input, select, textarea')) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    drag = {
+      id: p.id, def: p.def,
+      originX: p.x, originY: p.y,
+      startCX: e.clientX, startCY: e.clientY,
+      zoom: zoomRatio(),
+      moving: false,
+      ghostX: p.x, ghostY: p.y,
+      target: null,
+    };
+  }
+
+  function onWidgetPointerMove(e) {
+    if (!drag) return;
+    const dx = (e.clientX - drag.startCX) / drag.zoom;
+    const dy = (e.clientY - drag.startCY) / drag.zoom;
+    if (!drag.moving && Math.hypot(dx, dy) < 4) return;
+    drag.moving = true;
+
+    const pxW = drag.def.w * CELL + (drag.def.w - 1) * GAP;
+    const pxH = drag.def.h * CELL + (drag.def.h - 1) * GAP;
+    const maxX = layerEl.offsetWidth - PAD - pxW;
+    const maxY = layerEl.offsetHeight - PAD - pxH;
+    drag.ghostX = Math.max(PAD, Math.min(drag.originX + dx, maxX));
+    drag.ghostY = Math.max(PAD, Math.min(drag.originY + dy, maxY));
+
+    // Celda destino más cercana al ghost
+    let c = Math.round((drag.ghostX - PAD) / (CELL + GAP));
+    let r = Math.round((drag.ghostY - PAD) / (CELL + GAP));
+    c = Math.max(0, Math.min(c, gridCols - drag.def.w));
+    r = Math.max(0, Math.min(r, gridRows - drag.def.h));
+
+    drag.target = { col: c, row: r, ok: targetFree(c, r, drag.def, drag.id) };
+    drag = drag; // trigger reactividad
+  }
+
+  function targetFree(c, r, def, selfId) {
+    for (const p of placed) {
+      if (p.id === selfId) continue;
+      const overlapC = c < p.col + p.def.w && c + def.w > p.col;
+      const overlapR = r < p.row + p.def.h && r + def.h > p.row;
+      if (overlapC && overlapR) return false;
+    }
+    return true;
+  }
+
+  function onWidgetPointerUp() {
+    if (!drag) return;
+    if (drag.moving && drag.target?.ok) {
+      const intent = encodeIntent(drag.target.col, drag.target.row, drag.def);
+      saveLayout(layout.map(it =>
+        it.id === drag.id ? { ...it, ...intent } : it
+      ));
+    }
+    // destino inválido o sin movimiento → revert implícito (no se guarda)
+    drag = null;
+  }
+
+  // ─── Menú contextual ───
+  let menu = null; // { x, y, widgetId }
+
+  function openMenu(e, widgetId = null) {
+    e.preventDefault();
+    const z = zoomRatio();
+    menu = { x: e.clientX / z, y: e.clientY / z, widgetId };
+  }
+
+  function onLayerContextMenu(e) {
+    // Solo si el click es sobre la capa vacía (los widgets abren el suyo)
+    if (e.target === layerEl) openMenu(e, null);
+  }
+
+  function closeMenu() { menu = null; }
+
+  function isActive(id) {
+    return layout.some(it => it.id === id);
+  }
+
+  function toggleWidget(id) {
+    if (isActive(id)) {
+      saveLayout(layout.filter(it => it.id !== id));
+    } else {
+      // Posición por defecto si existe; si no, primer hueco libre
+      // escaneando desde arriba a la derecha
+      const def = WIDGET_BY_ID[id];
+      const preset = DEFAULT_LAYOUT.find(d => d.id === id);
+      let entry = preset ? { ...preset } : null;
+      if (!entry) {
+        outer:
+        for (let r = 0; r <= gridRows - def.h; r++) {
+          for (let c = gridCols - def.w; c >= 0; c--) {
+            if (targetFree(c, r, def, null)) {
+              entry = { id, ...encodeIntent(c, r, def) };
+              break outer;
+            }
+          }
+        }
+      }
+      if (!entry) entry = { id, col: -def.w, row: 0 }; // grid lleno: arriba derecha
+      saveLayout([...layout, entry]);
+    }
+    closeMenu();
+  }
+
+  function resetLayout() {
+    saveLayout(DEFAULT_LAYOUT.map(x => ({ ...x })));
+    closeMenu();
+  }
+
+  function onWindowKeydown(e) {
+    if (e.key === 'Escape') closeMenu();
+  }
+</script>
+
+<svelte:window on:keydown={onWindowKeydown} />
+
+<!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+<div
+  class="widget-layer"
+  bind:this={layerEl}
+  on:contextmenu={onLayerContextMenu}
+  role="presentation"
+>
+  <!-- Indicador de celda destino durante drag -->
+  {#if drag?.moving && drag.target}
+    <div
+      class="drop-hint"
+      class:invalid={!drag.target.ok}
+      style="
+        left:{PAD + drag.target.col * (CELL + GAP)}px;
+        top:{PAD + drag.target.row * (CELL + GAP)}px;
+        width:{drag.def.w * CELL + (drag.def.w - 1) * GAP}px;
+        height:{drag.def.h * CELL + (drag.def.h - 1) * GAP}px;
+      "
+    ></div>
+  {/if}
+
+  {#each placed as p (p.id)}
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div
+      class="widget"
+      class:dragging={drag?.id === p.id && drag.moving}
+      style="
+        left:{drag?.id === p.id && drag.moving ? drag.ghostX : p.x}px;
+        top:{drag?.id === p.id && drag.moving ? drag.ghostY : p.y}px;
+        width:{p.w}px;
+        height:{p.h}px;
+      "
+      on:pointerdown={(e) => onWidgetPointerDown(e, p)}
+      on:pointermove={onWidgetPointerMove}
+      on:pointerup={onWidgetPointerUp}
+      on:pointercancel={onWidgetPointerUp}
+      on:contextmenu|stopPropagation={(e) => openMenu(e, p.id)}
+    >
+      {#if p.def.component}
+        <svelte:component this={p.def.component} widget={p} />
+      {:else}
+        <!-- Placeholder · fase contenedor · se sustituye al registrar
+             el componente en el catálogo -->
+        <div class="ph">
+          <span class="ph-name">{p.def.name}</span>
+          <span class="ph-meta">{p.def.w}×{p.def.h} · pendiente</span>
+        </div>
+      {/if}
+    </div>
+  {/each}
+
+  <!-- Menú contextual -->
+  {#if menu}
+    <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+    <div class="menu-overlay" on:pointerdown={closeMenu} on:contextmenu|preventDefault={closeMenu}></div>
+    <div class="ctx-menu" style="left:{menu.x}px; top:{menu.y}px;">
+      {#if menu.widgetId}
+        <button class="ctx-item" on:click={() => toggleWidget(menu.widgetId)}>
+          Ocultar {WIDGET_BY_ID[menu.widgetId]?.name}
+        </button>
+        <div class="ctx-sep"></div>
+      {/if}
+      <div class="ctx-label">Widgets</div>
+      {#each WIDGET_CATALOG as w (w.id)}
+        <button class="ctx-item" on:click={() => toggleWidget(w.id)}>
+          <span class="ctx-check">{isActive(w.id) ? '✓' : ''}</span>
+          {w.name}
+        </button>
+      {/each}
+      <div class="ctx-sep"></div>
+      <button class="ctx-item" on:click={resetLayout}>
+        Restablecer disposición
+      </button>
+    </div>
+  {/if}
+</div>
+
+<style>
+  /* ═══════════════════════════════════════════════════════════
+     CAPA · sobre wallpaper (z1), bajo ventanas (z≥100)
+     pointer-events: auto · necesario para el contextmenu de fondo;
+     no bloquea nada funcional (ventanas y taskbar están por encima,
+     el escritorio vacío no tiene interacciones propias en Beta 8.1)
+     ═══════════════════════════════════════════════════════════ */
+  .widget-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: var(--taskbar-height, 52px);
+    z-index: 2;
+    pointer-events: auto;
+    background: transparent;
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     WIDGET · frame canónico Beta 8.1
+     bg-card + line + radius 12 · alineado con AppShell
+     ═══════════════════════════════════════════════════════════ */
+  .widget {
+    position: absolute;
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    cursor: grab;
+    user-select: none;
+    touch-action: none;
+    pointer-events: auto;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .widget:hover {
+    border-color: var(--line-bright);
+  }
+  .widget.dragging {
+    cursor: grabbing;
+    border-color: var(--signal);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+    transition: none;
+    z-index: 3;
+  }
+
+  /* ─── Placeholder fase contenedor ─── */
+  .ph {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 12px;
+  }
+  .ph-name {
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink-dim);
+  }
+  .ph-meta {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--ink-faint);
+    letter-spacing: 0.04em;
+  }
+
+  /* ─── Indicador de celda destino ─── */
+  .drop-hint {
+    position: absolute;
+    border: 1px dashed var(--signal);
+    border-radius: 12px;
+    background: var(--signal-soft);
+    pointer-events: none;
+  }
+  .drop-hint.invalid {
+    border-color: var(--crit);
+    background: var(--crit-dim);
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     MENÚ CONTEXTUAL
+     ═══════════════════════════════════════════════════════════ */
+  .menu-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9600;
+    pointer-events: auto;
+  }
+  .ctx-menu {
+    position: fixed;
+    z-index: 9610;
+    min-width: 190px;
+    padding: 6px;
+    background: var(--panel-elev);
+    border: 1px solid var(--line-bright);
+    border-radius: 10px;
+    box-shadow: 0 10px 32px rgba(0, 0, 0, 0.5);
+    pointer-events: auto;
+  }
+  .ctx-label {
+    padding: 5px 10px 3px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-faint);
+  }
+  .ctx-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 7px 10px;
+    border: none;
+    background: transparent;
+    border-radius: 6px;
+    font-family: var(--font-sans);
+    font-size: 12.5px;
+    color: var(--ink);
+    text-align: left;
+    cursor: pointer;
+  }
+  .ctx-item:hover {
+    background: var(--signal-soft);
+    color: var(--signal);
+  }
+  .ctx-check {
+    width: 14px;
+    color: var(--signal);
+    font-size: 11px;
+  }
+  .ctx-sep {
+    height: 1px;
+    margin: 5px 4px;
+    background: var(--line);
+  }
+</style>
