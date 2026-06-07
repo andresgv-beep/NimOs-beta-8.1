@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -116,21 +115,13 @@ var shieldWhitelist = map[string]bool{
 }
 
 func shieldIsWhitelisted(ip string) bool {
-	if shieldWhitelist[ip] {
-		return true
-	}
-	// Always whitelist local network
-	parsed := net.ParseIP(ip)
-	if parsed == nil {
-		return false
-	}
-	_, local24, _ := net.ParseCIDR("192.168.0.0/16")
-	_, local20, _ := net.ParseCIDR("172.16.0.0/12")
-	_, local8, _ := net.ParseCIDR("10.0.0.0/8")
-	if local24.Contains(parsed) || local20.Contains(parsed) || local8.Contains(parsed) {
-		return false // LAN IPs are NOT whitelisted by default — only 127.0.0.1
-	}
-	return false
+	shieldBlockMu.RLock()
+	ok := shieldWhitelist[ip]
+	shieldBlockMu.RUnlock()
+	return ok
+	// Nota: la LAN NO se whitelistea por defecto (solo loopback y las IPs que
+	// el admin añada explícitamente). El bloque de CIDRs privados anterior era
+	// lógica muerta (calculaba Contains y siempre devolvía false); eliminado.
 }
 
 // ── Honeypots ────────────────────────────────────────────────────────────────
@@ -377,6 +368,7 @@ func startShieldEngine() {
 
 	// Load persisted blocks
 	loadPersistedBlocks()
+	loadPersistedWhitelist()
 
 	logMsg("shield: engine started (honeypots: %d, scanner UAs: %d, XSS patterns: %d)",
 		len(honeypotPaths), len(scannerUAs), len(xssPatterns))

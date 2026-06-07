@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 )
@@ -43,13 +44,62 @@ func dbShieldInit() {
 			created_at TEXT DEFAULT (datetime('now'))
 		);
 		CREATE INDEX IF NOT EXISTS idx_shield_blocks_ip ON shield_blocks(ip);
+
+		CREATE TABLE IF NOT EXISTS shield_whitelist (
+			ip TEXT PRIMARY KEY,
+			note TEXT,
+			created_at TEXT DEFAULT (datetime('now'))
+		);
 	`)
 	if err != nil {
 		logMsg("shield DB init error: %v", err)
 	}
 }
 
-// ── Event Storage ────────────────────────────────────────────────────────────
+// ── Whitelist persistence ────────────────────────────────────────────────────
+// IPs de confianza que NimShield NUNCA bloquea (p.ej. la IP de auditoría del
+// admin). Persisten en BD y se cargan en memoria al arrancar. La fuente de
+// verdad en caliente es el mapa shieldWhitelist (shield.go); la BD lo respalda.
+
+func dbShieldWhitelistGetAll() []map[string]string {
+	rows, err := db.Query(`SELECT ip, note, created_at FROM shield_whitelist ORDER BY created_at DESC`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []map[string]string
+	for rows.Next() {
+		var ip, note, created string
+		if err := rows.Scan(&ip, &note, &created); err == nil {
+			out = append(out, map[string]string{"ip": ip, "note": note, "created_at": created})
+		}
+	}
+	return out
+}
+
+func dbShieldWhitelistAdd(ip, note string) error {
+	_, err := db.Exec(`INSERT OR REPLACE INTO shield_whitelist (ip, note) VALUES (?, ?)`, ip, note)
+	return err
+}
+
+func dbShieldWhitelistRemove(ip string) error {
+	_, err := db.Exec(`DELETE FROM shield_whitelist WHERE ip = ?`, ip)
+	return err
+}
+
+// loadPersistedWhitelist carga las IPs de confianza de BD al mapa en memoria.
+// Se llama al arrancar el shield, junto a loadPersistedBlocks.
+func loadPersistedWhitelist() {
+	entries := dbShieldWhitelistGetAll()
+	shieldBlockMu.Lock()
+	for _, e := range entries {
+		shieldWhitelist[e["ip"]] = true
+	}
+	shieldBlockMu.Unlock()
+	if len(entries) > 0 {
+		logMsg("shield: loaded %d whitelisted IPs", len(entries))
+	}
+}
 
 func dbShieldEventInsert(event ShieldEvent) {
 	rule := ""
@@ -220,6 +270,67 @@ func handleShieldRoutes(w http.ResponseWriter, r *http.Request) {
 		shieldEnabled = !shieldEnabled
 		logMsg("shield: %s by %s", map[bool]string{true: "enabled", false: "disabled"}[shieldEnabled], session.Username)
 		jsonOk(w, map[string]interface{}{"ok": true, "enabled": shieldEnabled})
+
+	// GET /api/shield/whitelist — lista IPs de confianza
+	case path == "/api/shield/whitelist" && method == "GET":
+		if session.Role != "admin" {
+			jsonError(w, 403, "Admin required")
+			return
+		}
+		jsonOk(w, map[string]interface{}{"ok": true, "whitelist": dbShieldWhitelistGetAll()})
+
+	// POST /api/shield/whitelist — body: {"ip": "1.2.3.4", "note": "auditoría"}
+	case path == "/api/shield/whitelist" && method == "POST":
+		if session.Role != "admin" {
+			jsonError(w, 403, "Admin required")
+			return
+		}
+		body, _ := readBody(r)
+		ip := bodyStr(body, "ip")
+		note := bodyStr(body, "note")
+		// Validar que es una IP real, no basura arbitraria.
+		if net.ParseIP(ip) == nil {
+			jsonError(w, 400, "IP inválida")
+			return
+		}
+		if err := dbShieldWhitelistAdd(ip, note); err != nil {
+			jsonError(w, 500, "No se pudo guardar")
+			return
+		}
+		// Aplicar en caliente: añadir al mapa en memoria y quitar bloqueo activo.
+		shieldBlockMu.Lock()
+		shieldWhitelist[ip] = true
+		shieldBlockMu.Unlock()
+		shieldUnblockIP(ip) // si estaba bloqueada, liberarla ya
+		logMsg("shield: whitelisted %s by %s", ip, session.Username)
+		jsonOk(w, map[string]interface{}{"ok": true, "ip": ip})
+
+	// POST /api/shield/whitelist/remove — body: {"ip": "1.2.3.4"}
+	case path == "/api/shield/whitelist/remove" && method == "POST":
+		if session.Role != "admin" {
+			jsonError(w, 403, "Admin required")
+			return
+		}
+		body, _ := readBody(r)
+		ip := bodyStr(body, "ip")
+		if ip == "" {
+			jsonError(w, 400, "IP required")
+			return
+		}
+		// No permitir quitar loopback (rompería el acceso local de Caddy).
+		if ip == "127.0.0.1" || ip == "::1" {
+			jsonError(w, 400, "No se puede quitar loopback de la whitelist")
+			return
+		}
+		if err := dbShieldWhitelistRemove(ip); err != nil {
+			jsonError(w, 500, "No se pudo quitar")
+			return
+		}
+		shieldBlockMu.Lock()
+		delete(shieldWhitelist, ip)
+		shieldBlockMu.Unlock()
+		logMsg("shield: un-whitelisted %s by %s", ip, session.Username)
+		jsonOk(w, map[string]interface{}{"ok": true, "ip": ip})
 
 	default:
 		jsonError(w, 404, "Not found")
