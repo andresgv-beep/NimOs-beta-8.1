@@ -27,7 +27,7 @@
    */
   import { onMount } from 'svelte';
   import { prefs, setPref } from '$lib/stores/theme.js';
-  import { WIDGET_CATALOG, WIDGET_BY_ID, DEFAULT_LAYOUT } from '$lib/widgets/index.js';
+  import { WIDGET_CATALOG, WIDGET_BY_ID, DEFAULT_LAYOUT, widgetSize } from '$lib/widgets/index.js';
 
   // ─── Geometría del grid ───
   // 1×1 = 144×144 · 2×1 = 302×144 (px CSS, pre-uiScale).
@@ -69,44 +69,46 @@
     for (const item of items) {
       const def = WIDGET_BY_ID[item.id];
       if (!def) continue; // id desconocido en prefs viejas → ignorar
+      const sz = widgetSize(item, def); // talla efectiva (por instancia)
 
       // Intención → absoluto
       let c = item.col >= 0 ? item.col : cols + item.col;
       let r = item.row >= 0 ? item.row : rows + item.row;
       // Clamp solo en render
-      c = Math.max(0, Math.min(c, cols - def.w));
-      r = Math.max(0, Math.min(r, rows - def.h));
+      c = Math.max(0, Math.min(c, cols - sz.w));
+      r = Math.max(0, Math.min(r, rows - sz.h));
 
       // Colisión → primero bajar filas, luego primer hueco libre
-      if (!isFree(c, r, def.w, def.h)) {
+      if (!isFree(c, r, sz.w, sz.h)) {
         let found = false;
-        for (let rr = r + 1; rr <= rows - def.h && !found; rr++) {
-          if (isFree(c, rr, def.w, def.h)) { r = rr; found = true; }
+        for (let rr = r + 1; rr <= rows - sz.h && !found; rr++) {
+          if (isFree(c, rr, sz.w, sz.h)) { r = rr; found = true; }
         }
-        for (let rr = 0; rr <= rows - def.h && !found; rr++) {
-          for (let cc = cols - def.w; cc >= 0 && !found; cc--) {
-            if (isFree(cc, rr, def.w, def.h)) { c = cc; r = rr; found = true; }
+        for (let rr = 0; rr <= rows - sz.h && !found; rr++) {
+          for (let cc = cols - sz.w; cc >= 0 && !found; cc--) {
+            if (isFree(cc, rr, sz.w, sz.h)) { c = cc; r = rr; found = true; }
           }
         }
         // sin hueco: se queda clampado (solapa antes que perderse)
       }
-      mark(c, r, def.w, def.h);
+      mark(c, r, sz.w, sz.h);
 
       out.push({
         id: item.id, def, col: c, row: r,
+        cw: sz.w, ch: sz.h, // talla efectiva en celdas
         x: PAD + c * (CELL + GAP),
         y: PAD + r * (CELL + GAP),
-        w: def.w * CELL + (def.w - 1) * GAP,
-        h: def.h * CELL + (def.h - 1) * GAP,
+        w: sz.w * CELL + (sz.w - 1) * GAP,
+        h: sz.h * CELL + (sz.h - 1) * GAP,
       });
     }
     return out;
   }
 
   // Codifica intención al guardar: mitad derecha/inferior → negativo
-  function encodeIntent(col, row, def) {
-    const centerC = col + def.w / 2;
-    const centerR = row + def.h / 2;
+  function encodeIntent(col, row, w, h) {
+    const centerC = col + w / 2;
+    const centerR = row + h / 2;
     return {
       col: centerC > gridCols / 2 ? col - gridCols : col,
       row: centerR > gridRows / 2 ? row - gridRows : row,
@@ -150,6 +152,7 @@
     e.currentTarget.setPointerCapture(e.pointerId);
     drag = {
       id: p.id, def: p.def,
+      cw: p.cw, ch: p.ch, // talla efectiva en celdas
       originX: p.x, originY: p.y,
       startCX: e.clientX, startCY: e.clientY,
       zoom: zoomRatio(),
@@ -166,8 +169,8 @@
     if (!drag.moving && Math.hypot(dx, dy) < 4) return;
     drag.moving = true;
 
-    const pxW = drag.def.w * CELL + (drag.def.w - 1) * GAP;
-    const pxH = drag.def.h * CELL + (drag.def.h - 1) * GAP;
+    const pxW = drag.cw * CELL + (drag.cw - 1) * GAP;
+    const pxH = drag.ch * CELL + (drag.ch - 1) * GAP;
     const maxX = layerEl.offsetWidth - PAD - pxW;
     const maxY = layerEl.offsetHeight - PAD - pxH;
     drag.ghostX = Math.max(PAD, Math.min(drag.originX + dx, maxX));
@@ -176,18 +179,18 @@
     // Celda destino más cercana al ghost
     let c = Math.round((drag.ghostX - PAD) / (CELL + GAP));
     let r = Math.round((drag.ghostY - PAD) / (CELL + GAP));
-    c = Math.max(0, Math.min(c, gridCols - drag.def.w));
-    r = Math.max(0, Math.min(r, gridRows - drag.def.h));
+    c = Math.max(0, Math.min(c, gridCols - drag.cw));
+    r = Math.max(0, Math.min(r, gridRows - drag.ch));
 
-    drag.target = { col: c, row: r, ok: targetFree(c, r, drag.def, drag.id) };
+    drag.target = { col: c, row: r, ok: targetFree(c, r, drag.cw, drag.ch, drag.id) };
     drag = drag; // trigger reactividad
   }
 
-  function targetFree(c, r, def, selfId) {
+  function targetFree(c, r, w, h, selfId) {
     for (const p of placed) {
       if (p.id === selfId) continue;
-      const overlapC = c < p.col + p.def.w && c + def.w > p.col;
-      const overlapR = r < p.row + p.def.h && r + def.h > p.row;
+      const overlapC = c < p.col + p.cw && c + w > p.col;
+      const overlapR = r < p.row + p.ch && r + h > p.row;
       if (overlapC && overlapR) return false;
     }
     return true;
@@ -196,7 +199,7 @@
   function onWidgetPointerUp() {
     if (!drag) return;
     if (drag.moving && drag.target?.ok) {
-      const intent = encodeIntent(drag.target.col, drag.target.row, drag.def);
+      const intent = encodeIntent(drag.target.col, drag.target.row, drag.cw, drag.ch);
       saveLayout(layout.map(it =>
         it.id === drag.id ? { ...it, ...intent } : it
       ));
@@ -238,8 +241,8 @@
         outer:
         for (let r = 0; r <= gridRows - def.h; r++) {
           for (let c = gridCols - def.w; c >= 0; c--) {
-            if (targetFree(c, r, def, null)) {
-              entry = { id, ...encodeIntent(c, r, def) };
+            if (targetFree(c, r, def.w, def.h, null)) {
+              entry = { id, ...encodeIntent(c, r, def.w, def.h) };
               break outer;
             }
           }
@@ -248,6 +251,30 @@
       if (!entry) entry = { id, col: -def.w, row: 0 }; // grid lleno: arriba derecha
       saveLayout([...layout, entry]);
     }
+    closeMenu();
+  }
+
+  // ─── Talla por instancia ───
+  function currentSize(id) {
+    const p = placed.find(x => x.id === id);
+    return p ? [p.cw, p.ch] : null;
+  }
+
+  function setSize(id, w, h) {
+    const def = WIDGET_BY_ID[id];
+    saveLayout(layout.map(it => {
+      if (it.id !== id) return it;
+      const next = { ...it };
+      if (w === def.w && h === def.h) {
+        delete next.size; // talla de serie → no se guarda nada
+      } else {
+        next.size = [w, h];
+      }
+      return next;
+    }));
+    // Si la nueva talla colisiona, resolvePlacements recoloca a los
+    // vecinos en el siguiente render (mismo mecanismo que el resize
+    // de viewport). El widget redimensionado conserva su intención.
     closeMenu();
   }
 
@@ -308,7 +335,7 @@
              el componente en el catálogo -->
         <div class="ph">
           <span class="ph-name">{p.def.name}</span>
-          <span class="ph-meta">{p.def.w}×{p.def.h} · pendiente</span>
+          <span class="ph-meta">{p.cw}×{p.ch} · pendiente</span>
         </div>
       {/if}
     </div>
@@ -320,6 +347,18 @@
     <div class="menu-overlay" on:pointerdown={closeMenu} on:contextmenu|preventDefault={closeMenu}></div>
     <div class="ctx-menu" style="left:{menu.x}px; top:{menu.y}px;">
       {#if menu.widgetId}
+        {@const mdef = WIDGET_BY_ID[menu.widgetId]}
+        {@const msize = currentSize(menu.widgetId)}
+        {#if mdef && (mdef.sizes || []).length > 1 && msize}
+          <div class="ctx-label">Tamaño</div>
+          {#each mdef.sizes as [sw, sh] (sw + 'x' + sh)}
+            <button class="ctx-item" on:click={() => setSize(menu.widgetId, sw, sh)}>
+              <span class="ctx-check">{msize[0] === sw && msize[1] === sh ? '✓' : ''}</span>
+              {sw}×{sh}
+            </button>
+          {/each}
+          <div class="ctx-sep"></div>
+        {/if}
         <button class="ctx-item" on:click={() => toggleWidget(menu.widgetId)}>
           Ocultar {WIDGET_BY_ID[menu.widgetId]?.name}
         </button>
