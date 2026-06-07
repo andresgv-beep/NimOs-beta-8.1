@@ -78,6 +78,26 @@ export const currentTheme = derived(prefs, $p => $p.theme || 'dark');
 let saveTimeout = null;
 
 /**
+ * Acumulador de guardados pendientes al servidor.
+ * Bug latente corregido (jun 2026): el timeout era único y cada
+ * setPref CANCELABA el guardado pendiente de la clave anterior —
+ * solo la última clave llegaba al servidor. Ahora el flush envía
+ * todas las claves acumuladas en un solo PUT.
+ */
+let pendingSaves = {};
+
+function scheduleSave(updates) {
+  Object.assign(pendingSaves, updates);
+  if (saveTimeout) clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(() => {
+    const batch = pendingSaves;
+    pendingSaves = {};
+    saveTimeout = null;
+    saveToServer(null, null, batch);
+  }, 1500);
+}
+
+/**
  * Factor de escala de la UI.
  * ──────────────────────────
  * 'auto' = 1.0 · confiar en el navegador.
@@ -259,8 +279,7 @@ export function setPref(key, value) {
     const updated = { ...p, [key]: value };
     if (!NON_VISUAL_KEYS.has(key)) applyToDOM(updated);
     localStorage.setItem('nimos-prefs', JSON.stringify(updated));
-    if (saveTimeout) clearTimeout(saveTimeout);
-    saveTimeout = setTimeout(() => saveToServer(key, value), 1500);
+    scheduleSave({ [key]: value });
     return updated;
   });
 }
@@ -271,10 +290,26 @@ export function setPrefs(updates) {
     const updated = { ...p, ...updates };
     if (hasVisual) applyToDOM(updated);
     localStorage.setItem('nimos-prefs', JSON.stringify(updated));
-    if (saveTimeout) clearTimeout(saveTimeout);
-    saveTimeout = setTimeout(() => saveToServer(null, null, updates), 1500);
+    scheduleSave(updates);
     return updated;
   });
+}
+
+/**
+ * Guardado INMEDIATO al servidor, sin debounce. Para acciones
+ * discretas que no pueden permitirse ventana de pérdida (layout de
+ * widgets en drop/talla): un reinicio o logout dentro del debounce
+ * perdía el cambio en el servidor (cazado en hardware, jun 2026).
+ */
+export function setPrefImmediate(key, value) {
+  prefs.update(p => {
+    const updated = { ...p, [key]: value };
+    if (!NON_VISUAL_KEYS.has(key)) applyToDOM(updated);
+    localStorage.setItem('nimos-prefs', JSON.stringify(updated));
+    return updated;
+  });
+  delete pendingSaves[key]; // ya no está pendiente: va ahora mismo
+  saveToServer(key, value);
 }
 
 /**
@@ -306,12 +341,15 @@ async function saveToServer(key, value, bulk = null) {
   if (!token) return;
   try {
     const body = bulk || { [key]: value };
-    await fetch('/api/user/preferences', {
+    const r = await fetch('/api/user/preferences', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
       body: JSON.stringify(body),
     });
-  } catch {}
+    if (!r.ok) console.warn('[prefs] guardado en servidor falló:', r.status, Object.keys(body));
+  } catch (e) {
+    console.warn('[prefs] guardado en servidor falló:', e?.message);
+  }
 }
 
 export { ACCENT_COLORS, DEFAULTS, THEMES };
