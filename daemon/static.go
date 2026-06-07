@@ -265,7 +265,7 @@ func resolveTorrentSavePath(w http.ResponseWriter, session *DBSession, body []by
 		jsonError(w, 400, "Ruta de destino inválida")
 		return nil, false
 	}
-	os.MkdirAll(savePath, 0755)
+	ensureTorrentDir(savePath, shareName)
 
 	// Reescribir body: quitar `share`, fijar `save_path` real validado.
 	delete(req, "share")
@@ -276,6 +276,28 @@ func resolveTorrentSavePath(w http.ResponseWriter, session *DBSession, body []by
 		return nil, false
 	}
 	return out, true
+}
+
+// ensureTorrentDir crea (si no existe) la subcarpeta <share>/torrents con el
+// MISMO modelo de permisos que el share padre, y REPARA carpetas existentes
+// con permisos rotos.
+//
+// Bug que corrige (regresión B5→8.1, diagnosticada 2026-06-03): la carpeta se
+// creaba con os.MkdirAll(path, 0755) y quedaba drwxr-s--- (grupo sin w). El
+// daemon de torrent corre como usuario `nimos` (miembro del grupo del share)
+// y no podía abrir los ficheros en escritura: libtorrent recibía piezas, no
+// las persistía (total_done=0, progress=0), las descartaba y los peers
+// entraban/salían en bucle a velocidades de KB/s.
+//
+// Patrón replicado del share padre (main.go, share.create):
+//   chown root:<nimos-share-NAME>  +  chmod 2770
+// Se aplica SIEMPRE (también si la carpeta ya existía), para sanear destinos
+// creados por versiones anteriores con el bug.
+func ensureTorrentDir(savePath, shareName string) {
+	os.MkdirAll(savePath, 0755)
+	group := groupName(shareName)
+	runSafe("chown", "root:"+group, savePath)
+	runSafe("chmod", "2770", savePath)
 }
 
 // Torrent file upload: parse multipart, save .torrent to disk, forward as JSON to NimTorrent
@@ -311,7 +333,7 @@ func handleTorrentUploadGo(w http.ResponseWriter, r *http.Request, session *DBSe
 		jsonError(w, 400, "Ruta de destino inválida")
 		return
 	}
-	os.MkdirAll(savePath, 0755)
+	ensureTorrentDir(savePath, shareName)
 
 	file, header, err := r.FormFile("torrent")
 	if err != nil {
