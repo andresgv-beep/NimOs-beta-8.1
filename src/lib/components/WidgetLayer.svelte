@@ -26,7 +26,7 @@
    * del escritorio.
    */
   import { onMount } from 'svelte';
-  import { prefs, setPref } from '$lib/stores/theme.js';
+  import { prefs, setPrefImmediate } from '$lib/stores/theme.js';
   import { WIDGET_CATALOG, WIDGET_BY_ID, DEFAULT_LAYOUT, widgetSize } from '$lib/widgets/index.js';
 
   // ─── Geometría del grid ───
@@ -132,7 +132,10 @@
   }
 
   function saveLayout(next) {
-    setPref('widgetLayout', next); // localStorage + debounce a servidor
+    // INMEDIATO a localStorage + servidor, sin debounce: un drop o
+    // cambio de talla es una acción discreta y debe sobrevivir a un
+    // logout/reinicio en el segundo siguiente.
+    setPrefImmediate('widgetLayout', next);
   }
 
   // ─── Medición del grid ───
