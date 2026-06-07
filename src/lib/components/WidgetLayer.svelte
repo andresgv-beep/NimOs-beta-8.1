@@ -41,9 +41,25 @@
   let gridRows = 0;
 
   // ─── Layout (intención) desde prefs · Desktop monta post-loadPrefs ───
-  $: layout = Array.isArray($prefs.widgetLayout)
-    ? $prefs.widgetLayout
-    : DEFAULT_LAYOUT.map(x => ({ ...x }));
+  // SANEADO SIEMPRE: entradas con col/row ausentes, null o NaN
+  // (datos envenenados por bugs históricos o a saber qué) se reparan
+  // con el preset del DEFAULT_LAYOUT o un fallback seguro. Sin esto,
+  // una coordenada undefined produce left:NaNpx → widget clavado a
+  // la izquierda y drag horizontal muerto (cazado con datos reales
+  // de localStorage, jun 2026).
+  $: layout = sanitizeLayout($prefs.widgetLayout);
+
+  function sanitizeLayout(raw) {
+    const src = Array.isArray(raw) ? raw : DEFAULT_LAYOUT;
+    return src.map((it, i) => {
+      const def = WIDGET_BY_ID[it.id];
+      if (!def) return { ...it };
+      const preset = DEFAULT_LAYOUT.find(d => d.id === it.id);
+      const col = Number.isFinite(it.col) ? it.col : (preset ? preset.col : -def.w);
+      const row = Number.isFinite(it.row) ? it.row : (preset ? preset.row : i);
+      return { ...it, col, row };
+    });
+  }
 
   // ─── Resolución intención → celdas absolutas (clamp + colisiones) ───
   $: placed = resolvePlacements(layout, gridCols, gridRows);
@@ -216,9 +232,13 @@
     if (!drag) return;
     if (drag.moving && drag.target?.ok) {
       const intent = encodeIntent(drag.target.col, drag.target.row, drag.cw, drag.ch);
-      saveLayout(layout.map(it =>
-        it.id === drag.id ? { ...it, ...intent } : it
-      ));
+      // Blindaje: una coordenada no finita NUNCA se persiste.
+      // Antes que envenenar prefs, se descarta el drop (revert).
+      if (Number.isFinite(intent.col) && Number.isFinite(intent.row)) {
+        saveLayout(layout.map(it =>
+          it.id === drag.id ? { ...it, ...intent } : it
+        ));
+      }
     }
     // destino inválido o sin movimiento → revert implícito (no se guarda)
     drag = null;
