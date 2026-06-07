@@ -74,8 +74,27 @@
       const data = await api.listExposure();
       apps = data.apps;
       certs = data.certs;
+      // SHIELD-P2 · estado del candado de cada app (para la tarjeta)
+      installedApps = await api.listInstalledApps().catch(() => installedApps);
     } catch (e) {
       msg = `Error: ${e.message}`;
+    }
+  }
+
+  // SHIELD-P2 · cerrar/abrir el puerto directo de una app (recrea el stack)
+  async function onLock(e) {
+    busy = true;
+    msg = '';
+    try {
+      const r = await api.setAppAccessMode(e.detail.appId, e.detail.mode);
+      msg = e.detail.mode === 'caddy_only'
+        ? `🔒 Puerto directo cerrado (${r.portsRewritten} binding${r.portsRewritten === 1 ? '' : 's'}) — Caddy es la única puerta.`
+        : 'Puerto directo reabierto en LAN.';
+      await refresh();
+    } catch (err) {
+      msg = `Error: ${err.message}`;
+    } finally {
+      busy = false;
     }
   }
 
@@ -160,6 +179,14 @@
     if (!confirm(`¿Dejar de exponer "${e.detail.app.display_name || e.detail.app.app_id}"?`)) return;
     busy = true;
     try {
+      // GUARDARRAÍL SHIELD-P2: si el puerto directo está cerrado y quitas
+      // la exposición, la app quedaría inaccesible por completo. Reabrimos
+      // LAN primero para no dejarte fuera.
+      const inst = installedApps.find((x) => x.id === e.detail.app.app_id);
+      if (inst && inst.accessMode === 'caddy_only') {
+        await api.setAppAccessMode(inst.id, 'lan');
+        msg = 'Puerto LAN reabierto (la app dejará de estar tras Caddy).';
+      }
       await api.unexposeApp(e.detail.app.id, e.detail.app.convergence?.desired_generation);
       await refresh();
     } catch (err) {
@@ -231,6 +258,7 @@
           {config}
           {apps}
           {certs}
+          {installedApps}
           {busy}
           {msg}
           on:save-config={onSaveConfig}
@@ -238,6 +266,7 @@
           on:edit={onEdit}
           on:toggle={onToggle}
           on:remove={onRemove}
+          on:lock={onLock}
         />
       </div>
     {/if}
