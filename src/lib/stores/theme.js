@@ -78,45 +78,26 @@ export const currentTheme = derived(prefs, $p => $p.theme || 'dark');
 let saveTimeout = null;
 
 /**
- * Cache del factor de escala 'auto' · UNA VEZ por sesión.
- * ──────────────────────────────────────────────────────
- * Bug Beta 8.1 (junio 2026): computeUiScale('auto') usa
- * window.innerWidth, que CAMBIA con el zoom del navegador
- * (Ctrl+rueda). Como applyToDOM se re-ejecuta en cada setPref
- * (tema, accent, widgetLayout...), cada recálculo devolvía un
- * scale distinto al que el usuario veía → la UI se "ampliaba"
- * sola y peleaba contra el zoom manual del usuario.
- * Fix: el auto-scale se calcula al cargar y se memoiza; solo se
- * invalida cuando el usuario cambia la pref uiScale en Settings.
- */
-let cachedAutoScale = null;
-
-function invalidateAutoScale() {
-  cachedAutoScale = null;
-}
-
-/**
- * Calcula el factor de escala automático según resolución/DPR.
- * Mismo algoritmo que Beta 7 — funcionaba bien.
+ * Factor de escala de la UI.
+ * ──────────────────────────
+ * 'auto' = 1.0 · confiar en el navegador.
+ *
+ * Historia (junio 2026): la heurística heredada de Beta 7 calculaba
+ * un zoom a partir de innerWidth/devicePixelRatio. Pero el navegador
+ * YA gestiona pantallas HiDPI vía DPR — los píxeles CSS son
+ * independientes de la densidad por diseño. Aplicar zoom encima era
+ * escalar dos veces: en paneles con escalado de SO la UI cargaba
+ * "ampliada" en cada recarga, y como innerWidth depende del zoom del
+ * navegador (Ctrl+rueda), cada recálculo aterrizaba en un valor
+ * distinto y peleaba contra el usuario. Irreparable con APIs web
+ * (no se puede separar zoom de navegador de escalado de SO).
+ *
+ * El escalado manual (85–150% en Settings → Escala) se mantiene:
+ * es determinista y no depende de nada del entorno.
  */
 function computeUiScale(setting) {
   if (setting !== 'auto' && typeof setting === 'number') return setting / 100;
-  if (cachedAutoScale !== null) return cachedAutoScale;
-
-  const w = window.innerWidth;
-  const dpr = window.devicePixelRatio || 1;
-  const physicalWidth = w * dpr;
-  const baseline = 1920;
-
-  let scale;
-  if (dpr > 1 && physicalWidth > baseline * 1.5) {
-    scale = w / baseline;
-  } else {
-    scale = physicalWidth / baseline;
-  }
-
-  cachedAutoScale = Math.max(0.75, Math.min(1.5, Math.round(scale * 20) / 20));
-  return cachedAutoScale;
+  return 1;
 }
 
 /**
@@ -274,7 +255,6 @@ export async function loadPrefs() {
 const NON_VISUAL_KEYS = new Set(['widgetLayout', 'pinnedApps']);
 
 export function setPref(key, value) {
-  if (key === 'uiScale') invalidateAutoScale();
   prefs.update(p => {
     const updated = { ...p, [key]: value };
     if (!NON_VISUAL_KEYS.has(key)) applyToDOM(updated);
@@ -286,7 +266,6 @@ export function setPref(key, value) {
 }
 
 export function setPrefs(updates) {
-  if ('uiScale' in updates) invalidateAutoScale();
   const hasVisual = Object.keys(updates).some(k => !NON_VISUAL_KEYS.has(k));
   prefs.update(p => {
     const updated = { ...p, ...updates };
