@@ -33,6 +33,7 @@
   export let config = { base_domain: '', caddy_admin_url: '', enabled: false };
   export let apps = [];
   export let certs = null;
+  export let installedApps = []; // SHIELD-P2 · para el estado del candado
   export let busy = false;
   export let msg = '';
 
@@ -270,6 +271,16 @@
             <button class="nx-act" disabled={busy} on:click={() => dispatch('toggle', { app, enabled: !app.enabled })}>
               {app.enabled ? 'Pausar' : 'Activar'}
             </button>
+            {#if app.enabled}
+              {@const inst = installedApps.find((x) => x.id === app.app_id)}
+              {#if inst && inst.accessMode === 'caddy_only'}
+                <button class="nx-act nx-locked" disabled={busy} title="El puerto directo está cerrado (bind 127.0.0.1) — solo se llega vía Caddy. Click para reabrir en LAN."
+                  on:click={() => dispatch('lock', { appId: inst.id, mode: 'lan' })}>🔒 solo Caddy</button>
+              {:else if inst}
+                <button class="nx-act" disabled={busy} title="Cerrar el puerto directo de la LAN: NimOS recrea el stack con bind 127.0.0.1 y Caddy queda como única puerta."
+                  on:click={() => dispatch('lock', { appId: inst.id, mode: 'caddy_only' })}>Cerrar LAN</button>
+              {/if}
+            {/if}
             <button class="nx-act" disabled={busy} on:click={() => dispatch('edit', { app })}>Editar</button>
             <button class="nx-act danger" disabled={busy} on:click={() => dispatch('remove', { app })}>Quitar</button>
           </div>
@@ -390,6 +401,11 @@
   .nx-cert-warn { color: var(--st-warn, #ffc857); }
 
   .nx-app-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .nx-locked {
+    border-color: var(--nim-green, #00ff9f) !important;
+    color: var(--nim-green, #00ff9f) !important;
+    background: rgba(0, 255, 159, 0.06);
+  }
   .nx-act {
     font-family: ui-monospace, monospace; font-size: 10px; padding: 5px 10px;
     background: transparent; color: var(--fg-3, #9c9ca4);
