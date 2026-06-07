@@ -229,5 +229,22 @@ export async function listInstalledApps() {
   const apps = Array.isArray(body) ? body : body.apps || [];
   return apps
     .filter((a) => a && a.id && Number(a.port) > 0)
-    .map((a) => ({ id: a.id, name: a.name || a.id, icon: a.icon || '', port: Number(a.port) }));
+    .map((a) => ({
+      id: a.id, name: a.name || a.id, icon: a.icon || '', port: Number(a.port),
+      accessMode: a.accessMode || 'lan', // SHIELD-P2
+    }));
+}
+
+/**
+ * setAppAccessMode — SHIELD-P2 · candado de puerto directo.
+ * 'caddy_only' reescribe el compose a bind 127.0.0.1 y recrea la app:
+ * el puerto desaparece de la LAN y Caddy queda como única puerta.
+ */
+export async function setAppAccessMode(appId, mode) {
+  const res = await fetch(`/api/installed-apps/${encodeURIComponent(appId)}/access-mode`, {
+    method: 'POST',
+    headers: jsonHdrs(),
+    body: JSON.stringify({ mode }),
+  });
+  return unwrap(res, 'set access mode');
 }
