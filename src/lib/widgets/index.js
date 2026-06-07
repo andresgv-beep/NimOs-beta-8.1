@@ -18,6 +18,8 @@
  * topic → clave de polling en widgetData.js que el widget necesita.
  */
 
+import Clock from './Clock.svelte';
+
 export const WIDGET_CATALOG = [
   {
     id: 'clock',
@@ -25,7 +27,7 @@ export const WIDGET_CATALOG = [
     w: 1,
     h: 1,
     topic: null,          // no necesita datos del backend
-    component: null,      // → src/lib/widgets/Clock.svelte (pendiente)
+    component: Clock,
     defaultOn: true,
     sizes: [[1, 1], [2, 1]],
   },
