@@ -220,7 +220,13 @@ function applyToDOM(p) {
  * Carga prefs desde servidor con fallback a localStorage y defaults.
  */
 export async function loadPrefs() {
-  // 1 · Prefs inyectadas server-side (instant)
+  // 1 · Prefs inyectadas server-side: PINTURA INSTANTÁNEA, no verdad
+  // final. La inyección pasa por una whitelist en el daemon y puede
+  // venir PARCIAL (le faltaban claves como widgetLayout) — tratarla
+  // como completa machacaba localStorage y se saltaba el fetch,
+  // perdiendo el layout de widgets en cada recarga (cazado jun 2026).
+  // Por eso: se aplica para pintar rápido, NO se persiste, y SIEMPRE
+  // se continúa al fetch del servidor (fuente completa).
   if (typeof document !== 'undefined') {
     const el = document.getElementById('__nimos_prefs_v1');
     if (el) {
@@ -229,14 +235,12 @@ export async function loadPrefs() {
         const p = { ...DEFAULTS, ...serverPrefs };
         prefs.set(p);
         applyToDOM(p);
-        localStorage.setItem('nimos-prefs', JSON.stringify(p));
         el.remove();
-        return;
       } catch {}
     }
   }
 
-  // 2 · Defaults + localStorage
+  // 2 · Defaults + localStorage (cache local completa de la última sesión)
   applyToDOM({ ...DEFAULTS });
   try {
     const cached = localStorage.getItem('nimos-prefs');
@@ -247,7 +251,7 @@ export async function loadPrefs() {
     }
   } catch {}
 
-  // 3 · Fetch al backend
+  // 3 · Fetch al backend · LA fuente de verdad completa
   const token = getToken();
   if (!token) return;
 
