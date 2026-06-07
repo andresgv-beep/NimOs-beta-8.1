@@ -16,6 +16,7 @@
   export let appId = '';
   export let port = 0;
   export let name = '';
+  export let externalUrl = ''; // SHIELD-P2 · URL Caddy cuando el puerto directo está cerrado
 
   const wc = getContext('windowControls');
 
