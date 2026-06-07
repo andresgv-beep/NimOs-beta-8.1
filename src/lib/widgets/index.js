@@ -1,144 +1,118 @@
-/**
- * Catálogo de widgets · NimOS Beta 8.1
- * ─────────────────────────────────────
- * Registro central de los widgets de escritorio. WidgetLayer consume
- * este catálogo para colocar y arrastrar cajas — NO sabe qué pinta
- * cada widget. Cada widget es un componente Svelte autocontenido en
- * src/lib/widgets/ que recibe `widget` como prop y consume datos de
- * widgetData.js.
- *
- * Reglas (decisión de diseño, junio 2026):
- *   - Tamaños FIJOS por widget (w×h en celdas). Sin redimensión.
- *   - Catálogo cerrado: estos 5 widgets existen, el usuario activa
- *     o desactiva los que quiera desde el menú contextual.
- *   - `component: null` → WidgetLayer renderiza placeholder (fase
- *     contenedor). Al implementar cada widget, se importa aquí y
- *     se asigna. WidgetLayer no cambia.
- *
- * topic → clave de polling en widgetData.js que el widget necesita.
- */
+<script>
+  /**
+   * Clock · Widget de reloj · NimOS Beta 8.1
+   * ─────────────────────────────────────────
+   * IMPLEMENTACIÓN DE REFERENCIA del contrato de widget
+   * (documents/WIDGETS-SYSTEM.md). Todo widget nuevo copia esta forma.
+   *
+   *   - Props: solo `w`/`h` (talla en celdas). Nada del grid.
+   *   - Sin chrome: el frame lo pone WidgetLayer.
+   *   - Sin datos backend (topic null en catálogo) → no usa widgetData.
+   *   - Limpieza: el intervalo muere con el componente.
+   *
+   * Tallas: 1×1 (hora + fecha apiladas) · 2×1 (hora grande + bloque
+   * de fecha al lado). Sin segundos por diseño: los dos puntos
+   * parpadeando ya dicen "vivo"; el tick de 1s solo existe para que
+   * el cambio de minuto sea inmediato.
+   */
+  import { onMount } from 'svelte';
 
-import Clock from './Clock.svelte';
+  export let w = 1;
+  export const h = 1; // no usado aún (única altura: 1) · contrato
 
-export const WIDGET_CATALOG = [
-  {
-    id: 'clock',
-    name: 'Reloj',
-    w: 1,
-    h: 1,
-    topic: null,          // no necesita datos del backend
-    component: Clock,
-    defaultOn: true,
-    sizes: [[1, 1], [2, 1]],
-  },
-  {
-    id: 'sysmon',
-    name: 'Sistema',
-    w: 2,
-    h: 1,
-    topic: 'system',      // /api/hardware/stats · CPU + RAM rings
-    component: null,      // → src/lib/widgets/SysMon.svelte (pendiente)
-    defaultOn: true,
-    sizes: [[2, 1]],
-  },
-  {
-    id: 'cpu',
-    name: 'CPU',
-    w: 1,
-    h: 1,
-    topic: 'system',      // mismo topic que sysmon · un solo polling compartido
-    component: null,      // → src/lib/widgets/RingSolo.svelte metric="cpu" (pendiente)
-    defaultOn: false,
-    sizes: [[1, 1]],
-  },
-  {
-    id: 'ram',
-    name: 'RAM',
-    w: 1,
-    h: 1,
-    topic: 'system',      // mismo topic que sysmon
-    component: null,      // → src/lib/widgets/RingSolo.svelte metric="ram" (pendiente)
-    defaultOn: false,
-    sizes: [[1, 1]],
-  },
-  {
-    id: 'storage',
-    name: 'Storage',
-    w: 2,
-    h: 1,
-    topic: 'storage',     // /api/storage/v2/pools (+smart en el widget)
-    component: null,      // → src/lib/widgets/Storage.svelte (pendiente)
-    defaultOn: true,
-    sizes: [[2, 1], [2, 2]],
-  },
-  {
-    id: 'network',
-    name: 'Red',
-    w: 2,
-    h: 1,
-    topic: 'network',     // /api/network · sparklines DL/UL
-    component: null,      // → src/lib/widgets/Network.svelte (pendiente)
-    defaultOn: true,
-    sizes: [[2, 1], [2, 2]],
-  },
-  {
-    id: 'services',
-    name: 'Servicios',
-    w: 2,
-    h: 1,
-    topic: 'services',    // /api/services · NimHealth
-    component: null,      // → src/lib/widgets/Services.svelte (pendiente)
-    defaultOn: true,
-    sizes: [[1, 1], [2, 1], [2, 2]],
-    // Orden en el widget: failed/error primero, luego degraded/stopped,
-    // running al final. Lo que falla sube arriba solo.
-  },
-  {
-    id: 'nimtorrent',
-    name: 'NimTorrent',
-    w: 2,
-    h: 1,
-    topic: 'torrent',     // definido al implementar el widget
-    component: null,      // → src/lib/widgets/Torrent.svelte (pendiente)
-    defaultOn: false,     // existe en catálogo, apagado por defecto
-    sizes: [[2, 1], [2, 2]],
-  },
-];
+  let now = new Date();
 
-/** Lookup rápido por id. */
-export const WIDGET_BY_ID = Object.fromEntries(
-  WIDGET_CATALOG.map(w => [w.id, w])
-);
+  onMount(() => {
+    const t = setInterval(() => { now = new Date(); }, 1000);
+    return () => clearInterval(t);
+  });
 
-/**
- * Talla efectiva de una instancia de widget.
- * ──────────────────────────────────────────
- * `sizes` en el catálogo = tallas soportadas [[w,h],...]; w/h del
- * catálogo = talla de serie. El layout puede llevar `size: [w,h]`
- * por instancia (elegida en el menú contextual). Una talla guardada
- * que el catálogo ya no soporte cae a la de serie — nunca rompe.
- */
-export function widgetSize(item, def) {
-  if (Array.isArray(item?.size) && item.size.length === 2) {
-    const [w, h] = item.size;
-    if ((def.sizes || []).some(([sw, sh]) => sw === w && sh === h)) {
-      return { w, h };
-    }
+  $: hh = String(now.getHours()).padStart(2, '0');
+  $: mm = String(now.getMinutes()).padStart(2, '0');
+  $: dateStr = now
+    .toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' })
+    .replace(/\./g, '')
+    .toUpperCase();
+  $: dowStr = now.toLocaleDateString(undefined, { weekday: 'long' });
+</script>
+
+{#if w >= 2}
+  <!-- 2×1 · hora protagonista + bloque fecha -->
+  <div class="clock wide">
+    <div class="time xl">{hh}<span class="col">:</span>{mm}</div>
+    <div class="datecol">
+      <div class="dow">{dowStr}</div>
+      <div class="date">{dateStr}</div>
+    </div>
+  </div>
+{:else}
+  <!-- 1×1 · apilado -->
+  <div class="clock">
+    <div class="time">{hh}<span class="col">:</span>{mm}</div>
+    <div class="date">{dateStr}</div>
+    <div class="dow">{dowStr}</div>
+  </div>
+{/if}
+
+<style>
+  .clock {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 12px;
+    user-select: none;
   }
-  return { w: def.w, h: def.h };
-}
+  .clock.wide {
+    flex-direction: row;
+    gap: 18px;
+  }
 
-/**
- * Layout por defecto · columna anclada al borde derecho.
- * col/row negativos = intención "desde el borde derecho/inferior":
- *   col -1 → última columna · col -2 → penúltima (origen de un 2×1)
- * La resolución a celdas absolutas y el clamping ocurren SOLO en
- * render (WidgetLayer), nunca aquí ni al guardar.
- */
-export const DEFAULT_LAYOUT = [
-  { id: 'clock',    col: -1, row: 0 },
-  { id: 'sysmon',   col: -2, row: 1 },
-  { id: 'storage',  col: -2, row: 2 },
-  { id: 'network',  col: -2, row: 3 },
-  { id: 'services', col: -2, row: 4 },
-];
+  .time {
+    font-family: var(--font-mono);
+    font-size: 30px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1;
+    color: var(--ink);
+  }
+  .time.xl { font-size: 44px; }
+
+  .col {
+    color: var(--signal);
+    animation: clock-blink 1.1s steps(1) infinite;
+  }
+  @keyframes clock-blink {
+    50% { opacity: 0.25; }
+  }
+
+  .date {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--ink-mute);
+    letter-spacing: 0.05em;
+    margin-top: 9px;
+  }
+  .dow {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: var(--signal);
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    margin-top: 3px;
+  }
+
+  /* en 2×1 el bloque de fecha va en columna, sin márgenes apilados */
+  .wide .datecol {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    text-align: left;
+  }
+  .wide .date, .wide .dow { margin-top: 0; }
+  .wide .dow { font-size: 10px; }
+  .wide .date { font-size: 11px; }
+</style>

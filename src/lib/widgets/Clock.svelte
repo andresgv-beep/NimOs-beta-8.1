@@ -1,118 +1,76 @@
 <script>
   /**
-   * Clock · Widget de reloj · NimOS Beta 8.1
-   * ─────────────────────────────────────────
-   * IMPLEMENTACIÓN DE REFERENCIA del contrato de widget
-   * (documents/WIDGETS-SYSTEM.md). Todo widget nuevo copia esta forma.
+   * Ring · Pieza presentacional compartida (widgets)
+   * ─────────────────────────────────────────────────
+   * Rosco SVG con % y etiqueta dentro. NO es un widget: es una pieza
+   * interna de src/lib/widgets/parts/ que usan SysMon, CPU y RAM.
+   * Sin datos propios, sin stores — recibe todo por props.
    *
-   *   - Props: solo `w`/`h` (talla en celdas). Nada del grid.
-   *   - Sin chrome: el frame lo pone WidgetLayer.
-   *   - Sin datos backend (topic null en catálogo) → no usa widgetData.
-   *   - Limpieza: el intervalo muere con el componente.
+   * Umbrales de color (mismos en todos los roscos del sistema):
+   *   < 80 → --signal · ≥ 80 → --warn · ≥ 90 → --crit
    *
-   * Tallas: 1×1 (hora + fecha apiladas) · 2×1 (hora grande + bloque
-   * de fecha al lado). Sin segundos por diseño: los dos puntos
-   * parpadeando ya dicen "vivo"; el tick de 1s solo existe para que
-   * el cambio de minuto sea inmediato.
+   * pct null → estado skeleton ("—", rosco vacío).
    */
-  import { onMount } from 'svelte';
+  export let pct = null;        // 0..100 | null (sin datos)
+  export let label = '';        // CPU / RAM ...
+  export let size = 78;         // diámetro px
+  export let thick = 6;         // grosor del trazo
 
-  export let w = 1;
-  export const h = 1; // no usado aún (única altura: 1) · contrato
-
-  let now = new Date();
-
-  onMount(() => {
-    const t = setInterval(() => { now = new Date(); }, 1000);
-    return () => clearInterval(t);
-  });
-
-  $: hh = String(now.getHours()).padStart(2, '0');
-  $: mm = String(now.getMinutes()).padStart(2, '0');
-  $: dateStr = now
-    .toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' })
-    .replace(/\./g, '')
-    .toUpperCase();
-  $: dowStr = now.toLocaleDateString(undefined, { weekday: 'long' });
+  $: r = (size - thick) / 2 - 1;
+  $: circ = 2 * Math.PI * r;
+  $: offset = pct == null ? circ : circ * (1 - Math.min(100, Math.max(0, pct)) / 100);
+  $: color = pct == null ? 'var(--ink-trace)'
+    : pct >= 90 ? 'var(--crit)'
+    : pct >= 80 ? 'var(--warn)'
+    : 'var(--signal)';
 </script>
 
-{#if w >= 2}
-  <!-- 2×1 · hora protagonista + bloque fecha -->
-  <div class="clock wide">
-    <div class="time xl">{hh}<span class="col">:</span>{mm}</div>
-    <div class="datecol">
-      <div class="dow">{dowStr}</div>
-      <div class="date">{dateStr}</div>
-    </div>
+<div class="ring" style="width:{size}px;height:{size}px">
+  <svg width={size} height={size}>
+    <circle cx={size / 2} cy={size / 2} {r}
+      fill="none" stroke="rgba(255,255,255,.08)" stroke-width={thick} />
+    <circle cx={size / 2} cy={size / 2} {r}
+      fill="none" stroke={color} stroke-width={thick} stroke-linecap="round"
+      stroke-dasharray={circ} stroke-dashoffset={offset} class="arc" />
+  </svg>
+  <div class="val">
+    <span class="num">{pct == null ? '—' : pct}{#if pct != null}<small>%</small>{/if}</span>
+    {#if label}<span class="lbl">{label}</span>{/if}
   </div>
-{:else}
-  <!-- 1×1 · apilado -->
-  <div class="clock">
-    <div class="time">{hh}<span class="col">:</span>{mm}</div>
-    <div class="date">{dateStr}</div>
-    <div class="dow">{dowStr}</div>
-  </div>
-{/if}
+</div>
 
 <style>
-  .clock {
-    height: 100%;
+  .ring { position: relative; }
+  svg { transform: rotate(-90deg); display: block; }
+  .arc { transition: stroke-dashoffset 0.6s cubic-bezier(0.4, 0, 0.2, 1), stroke 0.3s ease; }
+
+  .val {
+    position: absolute;
+    inset: 0;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    text-align: center;
-    padding: 12px;
-    user-select: none;
-  }
-  .clock.wide {
-    flex-direction: row;
-    gap: 18px;
-  }
-
-  .time {
-    font-family: var(--font-mono);
-    font-size: 30px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
+    gap: 1px;
     line-height: 1;
+  }
+  .num {
+    font-family: var(--font-mono);
+    font-size: 17px;
+    font-weight: 600;
     color: var(--ink);
   }
-  .time.xl { font-size: 44px; }
-
-  .col {
-    color: var(--signal);
-    animation: clock-blink 1.1s steps(1) infinite;
+  .num small {
+    font-size: 8px;
+    color: var(--ink-faint);
+    margin-left: 1px;
   }
-  @keyframes clock-blink {
-    50% { opacity: 0.25; }
-  }
-
-  .date {
+  .lbl {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: 7.5px;
+    font-weight: 500;
+    letter-spacing: 0.16em;
     color: var(--ink-mute);
-    letter-spacing: 0.05em;
-    margin-top: 9px;
-  }
-  .dow {
-    font-family: var(--font-mono);
-    font-size: 9px;
-    color: var(--signal);
     text-transform: uppercase;
-    letter-spacing: 0.18em;
-    margin-top: 3px;
   }
-
-  /* en 2×1 el bloque de fecha va en columna, sin márgenes apilados */
-  .wide .datecol {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 4px;
-    text-align: left;
-  }
-  .wide .date, .wide .dow { margin-top: 0; }
-  .wide .dow { font-size: 10px; }
-  .wide .date { font-size: 11px; }
 </style>
