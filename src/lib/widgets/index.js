@@ -22,6 +22,8 @@ import Clock from './Clock.svelte';
 import SysMon from './SysMon.svelte';
 import Storage from './Storage.svelte';
 import Network from './Network.svelte';
+import RingSolo from './RingSolo.svelte';
+import Services from './Services.svelte';
 
 export const WIDGET_CATALOG = [
   {
@@ -50,7 +52,8 @@ export const WIDGET_CATALOG = [
     w: 1,
     h: 1,
     topic: 'system',      // mismo topic que sysmon · un solo polling compartido
-    component: null,      // → src/lib/widgets/RingSolo.svelte metric="cpu" (pendiente)
+    component: RingSolo,
+    props: { metric: 'cpu' },
     defaultOn: false,
     sizes: [[1, 1]],
   },
@@ -60,7 +63,8 @@ export const WIDGET_CATALOG = [
     w: 1,
     h: 1,
     topic: 'system',      // mismo topic que sysmon
-    component: null,      // → src/lib/widgets/RingSolo.svelte metric="ram" (pendiente)
+    component: RingSolo,
+    props: { metric: 'ram' },
     defaultOn: false,
     sizes: [[1, 1]],
   },
@@ -90,7 +94,7 @@ export const WIDGET_CATALOG = [
     w: 2,
     h: 1,
     topic: 'services',    // /api/services · NimHealth
-    component: null,      // → src/lib/widgets/Services.svelte (pendiente)
+    component: Services,
     defaultOn: true,
     sizes: [[1, 1], [2, 1], [2, 2]],
     // Orden en el widget: failed/error primero, luego degraded/stopped,
