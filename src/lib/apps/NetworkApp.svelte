@@ -18,7 +18,7 @@
    * migrará al patrón modular en sprints siguientes. No se porta el código
    * legacy: se rehará limpio (regla del proyecto).
    */
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import AppShell from '$lib/components/AppShell.svelte';
   import { Spinner } from '$lib/ui';
 
@@ -54,6 +54,17 @@
   let modalError = '';
 
   onMount(loadExposure);
+
+  // ─── Polling suave ───
+  // El cert de una app recién expuesta se emite a los ~30-60s y el observer
+  // lo publica, pero sin esto la UI se quedaba en "emitiendo certificado…"
+  // congelada hasta cerrar y reabrir la ventana. Refresco cada 15s mientras
+  // la ventana viva; se salta el tick si hay una mutación en vuelo (busy)
+  // para no pisar estados intermedios.
+  const pollTimer = setInterval(() => {
+    if (!busy && !loading) refresh();
+  }, 15000);
+  onDestroy(() => clearInterval(pollTimer));
 
   async function loadExposure() {
     loading = true;
