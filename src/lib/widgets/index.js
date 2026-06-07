@@ -27,6 +27,7 @@ export const WIDGET_CATALOG = [
     topic: null,          // no necesita datos del backend
     component: null,      // → src/lib/widgets/Clock.svelte (pendiente)
     defaultOn: true,
+    sizes: [[1, 1], [2, 1]],
   },
   {
     id: 'sysmon',
@@ -36,6 +37,27 @@ export const WIDGET_CATALOG = [
     topic: 'system',      // /api/hardware/stats · CPU + RAM rings
     component: null,      // → src/lib/widgets/SysMon.svelte (pendiente)
     defaultOn: true,
+    sizes: [[2, 1]],
+  },
+  {
+    id: 'cpu',
+    name: 'CPU',
+    w: 1,
+    h: 1,
+    topic: 'system',      // mismo topic que sysmon · un solo polling compartido
+    component: null,      // → src/lib/widgets/RingSolo.svelte metric="cpu" (pendiente)
+    defaultOn: false,
+    sizes: [[1, 1]],
+  },
+  {
+    id: 'ram',
+    name: 'RAM',
+    w: 1,
+    h: 1,
+    topic: 'system',      // mismo topic que sysmon
+    component: null,      // → src/lib/widgets/RingSolo.svelte metric="ram" (pendiente)
+    defaultOn: false,
+    sizes: [[1, 1]],
   },
   {
     id: 'storage',
@@ -45,6 +67,7 @@ export const WIDGET_CATALOG = [
     topic: 'storage',     // /api/storage/v2/pools (+smart en el widget)
     component: null,      // → src/lib/widgets/Storage.svelte (pendiente)
     defaultOn: true,
+    sizes: [[2, 1], [2, 2]],
   },
   {
     id: 'network',
@@ -54,6 +77,19 @@ export const WIDGET_CATALOG = [
     topic: 'network',     // /api/network · sparklines DL/UL
     component: null,      // → src/lib/widgets/Network.svelte (pendiente)
     defaultOn: true,
+    sizes: [[2, 1], [2, 2]],
+  },
+  {
+    id: 'services',
+    name: 'Servicios',
+    w: 2,
+    h: 1,
+    topic: 'services',    // /api/services · NimHealth
+    component: null,      // → src/lib/widgets/Services.svelte (pendiente)
+    defaultOn: true,
+    sizes: [[1, 1], [2, 1], [2, 2]],
+    // Orden en el widget: failed/error primero, luego degraded/stopped,
+    // running al final. Lo que falla sube arriba solo.
   },
   {
     id: 'nimtorrent',
@@ -63,6 +99,7 @@ export const WIDGET_CATALOG = [
     topic: 'torrent',     // definido al implementar el widget
     component: null,      // → src/lib/widgets/Torrent.svelte (pendiente)
     defaultOn: false,     // existe en catálogo, apagado por defecto
+    sizes: [[2, 1], [2, 2]],
   },
 ];
 
@@ -72,6 +109,24 @@ export const WIDGET_BY_ID = Object.fromEntries(
 );
 
 /**
+ * Talla efectiva de una instancia de widget.
+ * ──────────────────────────────────────────
+ * `sizes` en el catálogo = tallas soportadas [[w,h],...]; w/h del
+ * catálogo = talla de serie. El layout puede llevar `size: [w,h]`
+ * por instancia (elegida en el menú contextual). Una talla guardada
+ * que el catálogo ya no soporte cae a la de serie — nunca rompe.
+ */
+export function widgetSize(item, def) {
+  if (Array.isArray(item?.size) && item.size.length === 2) {
+    const [w, h] = item.size;
+    if ((def.sizes || []).some(([sw, sh]) => sw === w && sh === h)) {
+      return { w, h };
+    }
+  }
+  return { w: def.w, h: def.h };
+}
+
+/**
  * Layout por defecto · columna anclada al borde derecho.
  * col/row negativos = intención "desde el borde derecho/inferior":
  *   col -1 → última columna · col -2 → penúltima (origen de un 2×1)
@@ -79,8 +134,9 @@ export const WIDGET_BY_ID = Object.fromEntries(
  * render (WidgetLayer), nunca aquí ni al guardar.
  */
 export const DEFAULT_LAYOUT = [
-  { id: 'clock',   col: -1, row: 0 },
-  { id: 'sysmon',  col: -2, row: 1 },
-  { id: 'storage', col: -2, row: 2 },
-  { id: 'network', col: -2, row: 3 },
+  { id: 'clock',    col: -1, row: 0 },
+  { id: 'sysmon',   col: -2, row: 1 },
+  { id: 'storage',  col: -2, row: 2 },
+  { id: 'network',  col: -2, row: 3 },
+  { id: 'services', col: -2, row: 4 },
 ];
