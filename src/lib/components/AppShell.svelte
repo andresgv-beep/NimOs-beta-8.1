@@ -157,6 +157,12 @@
           {/if}
         </div>
 
+        {#if $$slots['sidebar-foot']}
+          <div class="sb-foot-slot">
+            <slot name="sidebar-foot" />
+          </div>
+        {/if}
+
         {#if showDaemonStatus}
           <div class="sb-footer">
             <div class="sb-footer-row">
@@ -436,6 +442,14 @@
   }
 
   /* Sidebar footer · daemon status */
+  .sb-foot-slot {
+    margin-top: auto;
+    padding: 10px 8px 0;
+  }
+  .sb-foot-slot + .sb-footer {
+    margin-top: 0;
+  }
+
   .sb-footer {
     padding: 12px 16px;
     border-top: 1px solid var(--side-border, rgba(255, 255, 255, 0.04));
