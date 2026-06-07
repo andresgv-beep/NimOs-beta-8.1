@@ -139,7 +139,7 @@ func requireAppAccess(w http.ResponseWriter, r *http.Request, appId string) *DBS
 	return session
 }
 
-// Get client IP — only trusts proxy headers from localhost (nginx)
+// Get client IP — only trusts proxy headers from localhost (Caddy)
 func clientIP(r *http.Request) string {
 	// RemoteAddr is host:port
 	addr := r.RemoteAddr
@@ -147,7 +147,7 @@ func clientIP(r *http.Request) string {
 		addr = addr[:idx]
 	}
 	// SECURITY: Only trust X-Forwarded-For/X-Real-IP if request comes from
-	// local proxy (nginx on 127.0.0.1). External clients can spoof these headers.
+	// local proxy (Caddy on 127.0.0.1). External clients can spoof these headers.
 	if addr == "127.0.0.1" || addr == "::1" || addr == "@" {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			parts := strings.Split(xff, ",")

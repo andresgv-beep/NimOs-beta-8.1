@@ -689,7 +689,7 @@ func handleFileUpload(w http.ResponseWriter, r *http.Request) {
 
 	// Legacy multipart upload — ONLY for small files (Notes save, config import, etc.)
 	// Large files (20GB+) MUST use /api/files/upload-chunk which streams to disk
-	// via io.Copy without RAM buffering. Nginx has proxy_request_buffering off.
+	// via io.Copy without RAM buffering. Caddy streams request bodies by default.
 	if r.ContentLength > 50*1024*1024 {
 		jsonError(w, 413, "File too large. Use chunked upload for files over 50MB.")
 		return

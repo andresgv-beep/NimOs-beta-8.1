@@ -281,3 +281,42 @@ func handleAppAccessMode(w http.ResponseWriter, r *http.Request, appID string) {
 	}
 	jsonOk(w, result)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// URL externa (Caddy) de una app — para launcher/iframe cuando el puerto
+// directo está cerrado
+// ─────────────────────────────────────────────────────────────────────────────
+
+// externalURLForApp devuelve la URL Caddy (https://sub.dominio[:puerto] o
+// https://dominio[:puerto]/ruta) de la app si está expuesta y la exposición
+// activa. "" si no hay exposición utilizable. Lectura simple del módulo
+// network vía su repo (una dirección, sin acoplamiento inverso).
+func externalURLForApp(ctx context.Context, appID string) string {
+	if networkRepo == nil {
+		return ""
+	}
+	cfg, err := networkRepo.GetExposureConfig(ctx)
+	if err != nil || !cfg.Enabled || cfg.BaseDomain == "" {
+		return ""
+	}
+	apps, err := networkRepo.ListExposedApps(ctx)
+	if err != nil {
+		return ""
+	}
+	for _, a := range apps {
+		if a.AppID != appID || !a.Enabled {
+			continue
+		}
+		portPart := ""
+		if cfg.HTTPSPort != 0 && cfg.HTTPSPort != 443 {
+			portPart = fmt.Sprintf(":%d", cfg.HTTPSPort)
+		}
+		if a.Subdomain != "" {
+			return "https://" + a.Subdomain + "." + cfg.BaseDomain + portPart
+		}
+		if a.Path != "" {
+			return "https://" + cfg.BaseDomain + portPart + a.Path
+		}
+	}
+	return ""
+}

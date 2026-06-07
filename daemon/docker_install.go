@@ -97,13 +97,22 @@ func dockerInstalledApps(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		apps = append(apps, map[string]interface{}{
+		entry := map[string]interface{}{
 			"id": reg.ID, "name": reg.Name, "icon": reg.Icon,
 			"color": reg.Color, "port": reg.Port, "image": reg.Image,
 			"status": containerStatus, "category": "installed",
-			"isStack":  reg.Type == "stack",
-			"external": reg.OpenMode == "external",
-		})
+			"isStack":    reg.Type == "stack",
+			"external":   reg.OpenMode == "external",
+			"accessMode": reg.AccessMode,
+		}
+		// SHIELD-P2 · con el puerto directo cerrado, el launcher/iframe
+		// necesita la URL Caddy para llegar a la app.
+		if reg.AccessMode == "caddy_only" {
+			if url := externalURLForApp(r.Context(), reg.ID); url != "" {
+				entry["externalUrl"] = url
+			}
+		}
+		apps = append(apps, entry)
 	}
 
 	// Containers running no registrados + con port expuesto · "orphans con UI".
