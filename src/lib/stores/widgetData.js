@@ -25,7 +25,7 @@ const TOPICS = {
   storage:  { url: '/api/storage/v2/pools',     interval: 15000 },
   smart:    { url: '/api/disks/smart/summary',  interval: 60000 },
   services: { url: '/api/services',             interval: 10000 },
-  // 'torrent' se define cuando se implemente el widget NimTorrent.
+  torrent:  { url: '/api/torrent/torrents',     interval: 5000  }, // proxy Go → torrentd
 };
 
 // Estado interno por topic: { store, refs, timer }
