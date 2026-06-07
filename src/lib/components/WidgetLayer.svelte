@@ -329,7 +329,9 @@
       on:contextmenu|stopPropagation={(e) => openMenu(e, p.id)}
     >
       {#if p.def.component}
-        <svelte:component this={p.def.component} widget={p} />
+        <!-- Contrato mínimo: el widget SOLO conoce su talla en celdas.
+             Nada de col/row/px — el grid es asunto del contenedor. -->
+        <svelte:component this={p.def.component} w={p.cw} h={p.ch} />
       {:else}
         <!-- Placeholder · fase contenedor · se sustituye al registrar
              el componente en el catálogo -->
