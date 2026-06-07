@@ -130,8 +130,24 @@
 
   onMount(() => {
     measure();
-    window.addEventListener('resize', measure);
-    return () => window.removeEventListener('resize', measure);
+    // ResizeObserver sobre la PROPIA capa, no window.resize:
+    // en el arranque la primera medición puede pillar el layout a
+    // medio asentar (zoom de uiScale, fuentes) y window.resize NO se
+    // dispara cuando cambia el tamaño interno del elemento → el grid
+    // se quedaba mal medido toda la sesión y los widgets clampaban a
+    // la izquierda (bug cazado en arranques reales, jun 2026).
+    // El observer re-mide ante cualquier cambio real de tamaño.
+    let ro = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(measure);
+      ro.observe(layerEl);
+    } else {
+      window.addEventListener('resize', measure);
+    }
+    return () => {
+      if (ro) ro.disconnect();
+      else window.removeEventListener('resize', measure);
+    };
   });
 
   // ─── Drag con snap a celda ───
