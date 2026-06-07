@@ -20,10 +20,11 @@ import { getToken } from './auth.js';
  */
 
 const TOPICS = {
-  system:  { url: '/api/hardware/stats',        interval: 3000  },
-  network: { url: '/api/network',               interval: 3000  },
-  storage: { url: '/api/storage/v2/pools',      interval: 15000 },
-  smart:   { url: '/api/disks/smart/summary',   interval: 60000 },
+  system:   { url: '/api/hardware/stats',       interval: 3000  },
+  network:  { url: '/api/network',              interval: 3000  },
+  storage:  { url: '/api/storage/v2/pools',     interval: 15000 },
+  smart:    { url: '/api/disks/smart/summary',  interval: 60000 },
+  services: { url: '/api/services',             interval: 10000 },
   // 'torrent' se define cuando se implemente el widget NimTorrent.
 };
 
