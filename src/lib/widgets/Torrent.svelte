@@ -69,6 +69,14 @@
   }
   function pct(t) { return Math.round((t.progress || 0) * 100); }
   function isDone(t) { return rank(t) === 3; }
+  // estado → color de la BARRA (el texto va siempre en blanco):
+  // azul descargando · ámbar pausa · verde completo · rojo error
+  function barState(t) {
+    if (t.state === 'error') return 'err';
+    if (isDone(t)) return 'done';
+    if (t.paused || t.state === 'paused') return 'paused';
+    return 'dl';
+  }
 </script>
 
 <div class="tor">
@@ -88,9 +96,9 @@
     <div class="list">
       {#each visible as t (t.hash)}
         <div class="row">
-          <div class="tn" class:done={isDone(t)} class:err={t.state === 'error'}>{t.name}</div>
+          <div class="tn">{t.name}</div>
           <div class="bar">
-            <i class:done={isDone(t)} class:err={t.state === 'error'} style="width:{pct(t)}%"></i>
+            <i class={barState(t)} style="width:{pct(t)}%"></i>
           </div>
           <div class="meta">
             {#if isDone(t)}
@@ -159,14 +167,12 @@
   .tn {
     font-family: var(--font-mono);
     font-size: 9.5px;
-    color: var(--ink-dim);
+    color: var(--ink); /* SIEMPRE blanco · el estado lo dice la barra */
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     margin-bottom: 4px;
   }
-  .tn.done { color: var(--signal); }
-  .tn.err { color: var(--crit); }
 
   .bar {
     height: 4px;
@@ -178,11 +184,20 @@
     display: block;
     height: 100%;
     border-radius: 4px;
+    transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1), background 0.3s ease;
+  }
+  .bar i.dl {
+    background: linear-gradient(90deg, var(--nim-remote), #2e9fe6);
+    box-shadow: 0 0 8px rgba(77, 184, 255, 0.35);
+  }
+  .bar i.paused {
+    background: linear-gradient(90deg, var(--warn), #f59e0b);
+    box-shadow: 0 0 8px rgba(251, 191, 36, 0.3);
+  }
+  .bar i.done {
     background: linear-gradient(90deg, var(--signal), hsl(155, 100%, 42%));
     box-shadow: 0 0 8px var(--signal-glow);
-    transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .bar i.done { opacity: 0.55; box-shadow: none; }
   .bar i.err {
     background: linear-gradient(90deg, var(--crit), #ef4444);
     box-shadow: 0 0 8px var(--crit);
