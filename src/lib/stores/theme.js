@@ -58,6 +58,12 @@ const DEFAULTS = {
 
   // ─── Apps ancladas al taskbar ───
   pinnedApps: ['files', 'appstore', 'nimsettings', 'nimhealth'],
+
+  // ─── Widgets de escritorio ───
+  // null = layout por defecto (DEFAULT_LAYOUT en src/lib/widgets/).
+  // Array de { id, col, row } con intención sin clampar:
+  // col/row negativos = anclado a borde derecho/inferior.
+  widgetLayout: null,
 };
 
 export const prefs = writable({ ...DEFAULTS });
