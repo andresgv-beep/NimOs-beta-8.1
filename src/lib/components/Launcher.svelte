@@ -71,6 +71,9 @@
           category: 'docker',
           running: app.running || false,
           description: app.description || 'app docker',
+          // SHIELD-P2 · puerto directo cerrado → se llega vía Caddy
+          accessMode: app.accessMode || 'lan',
+          externalUrl: app.externalUrl || '',
         }));
       }
     } catch {}
@@ -112,14 +115,19 @@
   function launch(app) {
     visible = false;
     if (app.isWebApp) {
+      // SHIELD-P2 · candado activo: el puerto directo no existe en la LAN,
+      // la única puerta es la URL Caddy.
+      const lockedUrl = app.accessMode === 'caddy_only' ? app.externalUrl : '';
       if (app.external) {
-        window.open(`${window.location.protocol}//${window.location.hostname}:${app.port}`, '_blank');
+        const url = lockedUrl || `${window.location.protocol}//${window.location.hostname}:${app.port}`;
+        window.open(url, '_blank');
         return;
       }
       openWindow(app.id, { width: 1100, height: 700 }, {
         isWebApp: true,
         port: app.port,
         appName: app.name,
+        externalUrl: lockedUrl,
       });
     } else {
       const meta = APP_META[app.id];
