@@ -443,15 +443,27 @@ func startHTTPServer() {
 	// ── Static file serving (frontend) — must be last ──
 	mux.HandleFunc("/", serveStatic)
 
+	// ── Bind del daemon: LOOPBACK por defecto (SHIELD) ──
+	// El daemon NO debe ser alcanzable desde fuera del host: Caddy (en
+	// loopback) es la única puerta, y por delante vive NimShield. Bindear a
+	// 0.0.0.0 permitía saltarse TODA la defensa apuntando directo a :5000
+	// desde LAN/WAN, y por HTTP plano (credenciales en claro). Brecha
+	// verificada en producción. El socket Unix sigue para admin local, y un
+	// túnel SSH (ssh -L 5000:127.0.0.1:5000) es la puerta de rescate.
+	// NIMOS_HTTP_BIND permite override para topologías con Caddy externo.
+	bindAddr := os.Getenv("NIMOS_HTTP_BIND")
+	if bindAddr == "" {
+		bindAddr = "127.0.0.1"
+	}
 	server := &http.Server{
-		Addr:         fmt.Sprintf("0.0.0.0:%d", httpPort),
+		Addr:         fmt.Sprintf("%s:%d", bindAddr, httpPort),
 		Handler:      corsMiddleware(mux),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 120 * time.Second,
 	}
 
 	go func() {
-		logMsg("HTTP server listening on 0.0.0.0:%d", httpPort)
+		logMsg("HTTP server listening on %s:%d", bindAddr, httpPort)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logMsg("HTTP server error: %v", err)
 		}

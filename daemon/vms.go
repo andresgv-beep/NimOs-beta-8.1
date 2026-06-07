@@ -254,7 +254,11 @@ func vmsCreate(w http.ResponseWriter, r *http.Request, session *DBSession) {
 		"--memory", fmt.Sprintf("%d", ramMB),
 		"--disk", fmt.Sprintf("path=%s,format=qcow2", diskPath),
 		"--os-variant", "generic",
-		"--graphics", "vnc,listen=0.0.0.0",
+		// SHIELD · consola VNC solo en loopback. En 0.0.0.0 quedaba expuesta
+		// a la LAN/WAN sin auth de NimOS ni NimShield — control total de la
+		// VM para cualquiera. Consola remota vía túnel SSH
+		// (ssh -L 5900:127.0.0.1:5900) o proxy noVNC tras Caddy.
+		"--graphics", "vnc,listen=127.0.0.1",
 	}
 
 	switch networkType {
