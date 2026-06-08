@@ -23,6 +23,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -1014,15 +1015,26 @@ func (s *StorageService) AddDevice(ctx context.Context, req AddDeviceRequest) (*
 	}
 
 	// ─── Ejecutar btrfs device add ─────────────────────────────────────
-	// ByIDPath es la identidad estable preferida, pero algunos discos (USB,
-	// ciertos SSD) no exponen un /dev/disk/by-id estable y el campo queda
-	// vacío. En ese caso caemos a CurrentPath (/dev/sdX) para no fallar.
-	addPath := device.ByIDPath
-	if addPath == "" {
-		addPath = device.CurrentPath
+	// ByIDPath es la identidad estable preferida, PERO puede estar obsoleto
+	// (el symlink /dev/disk/by-id/... ya no existe: disco recolocado, valor
+	// viejo en DB, etc.). Verificamos que el path exista de verdad antes de
+	// usarlo; si no, caemos a CurrentPath (/dev/sdX), que sí está vivo.
+	addPath := ""
+	if device.ByIDPath != "" {
+		if _, statErr := os.Stat(device.ByIDPath); statErr == nil {
+			addPath = device.ByIDPath // existe → usar el estable
+		}
+	}
+	if addPath == "" && device.CurrentPath != "" {
+		if _, statErr := os.Stat(device.CurrentPath); statErr == nil {
+			addPath = device.CurrentPath // fallback al path actual
+		}
 	}
 	if addPath == "" {
-		s.markOperationFailed(ctx, op.ID, "el device no tiene ni by-id ni current path resoluble", ErrCodeBtrfsCommandFailed)
+		s.markOperationFailed(ctx, op.ID,
+			fmt.Sprintf("ningún path del device existe en /dev (by-id=%q current=%q); reconecta el disco o re-escanea",
+				device.ByIDPath, device.CurrentPath),
+			ErrCodeBtrfsCommandFailed)
 		return s.repo.GetOperation(ctx, op.ID)
 	}
 	if err := s.btrfs.AddDevice(ctx, pool.MountPoint, addPath); err != nil {
