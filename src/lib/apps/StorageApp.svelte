@@ -49,6 +49,7 @@
   import CreatePoolWizard from './storage/CreatePoolWizard.svelte';
   import ImportOrphanModal from './storage/ImportOrphanModal.svelte';
   import DestroyOrphanModal from './storage/DestroyOrphanModal.svelte';
+  import UpgradeRaidModal from './storage/UpgradeRaidModal.svelte';
   import StorageScrub from './storage/StorageScrub.svelte';
   import StorageSmart from './storage/StorageSmart.svelte';
   import StorageSnapshots from './storage/StorageSnapshots.svelte';
@@ -68,6 +69,7 @@
 
   // Create pool wizard state
   let creatingPool = false;  // true = wizard abierto
+  let upgradingPool = null;  // pool en proceso de upgrade a RAID1 (modal abierto)
 
   // Formatear disco (wipe)
   let wipeDisk = null;         // path del disco a formatear (null = dialog cerrado)
@@ -391,6 +393,12 @@
     active = 'overview'; // salta a resumen para ver el pool recién creado
   }
 
+  // ─── Upgrade a RAID1 ───
+  async function handleUpgradeRaidDone() {
+    upgradingPool = null;
+    await loadAll(); // refleja el nuevo profile + el disco que entró al pool
+  }
+
   // ─── Scrub ───
   async function startScrub(poolName) {
     if (!confirm(`¿Iniciar scrub del pool "${poolName}"? El sistema puede ir más lento mientras corre.`)) return;
@@ -503,6 +511,7 @@
         on:create-pool={openCreatePoolWizard}
         on:refresh-observed={refreshObserved}
         on:scrub={(e) => startScrub(e.detail.poolName)}
+        on:upgrade-raid={(e) => upgradingPool = e.detail.pool}
         on:export-pool={(e) => openExportPoolWizard(e.detail.poolName)}
         on:import-orphan={(e) => openImportModal(e.detail.fs)}
         on:destroy-orphan={(e) => openDestroyOrphanModal(e.detail.fs)}
@@ -611,6 +620,16 @@
     suggestedName={suggestedImportName}
     on:done={handleImportDone}
     on:cancel={closeImportModal}
+  />
+{/if}
+
+<!-- Modal: Mejorar pool single a RAID1 (añadir disco + convertir) -->
+{#if upgradingPool}
+  <UpgradeRaidModal
+    pool={upgradingPool}
+    eligibleDisks={disks.eligible || []}
+    on:done={handleUpgradeRaidDone}
+    on:cancel={() => upgradingPool = null}
   />
 {/if}
 
