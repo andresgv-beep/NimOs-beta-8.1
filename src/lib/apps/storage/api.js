@@ -166,11 +166,11 @@ export async function startScrub(poolName) {
 // balance corre en background. El progreso se consulta con getBalanceStatus.
 // ────────────────────────────────────────────────────────────────────────
 
-export async function addDeviceToPool(poolId, deviceId) {
+export async function addDeviceToPool(poolId, devicePath) {
   const res = await fetch(`${BASE}/pools/${poolId}/devices`, {
     method: 'POST',
     headers: jsonHdrs(),
-    body: JSON.stringify({ device_id: deviceId }),
+    body: JSON.stringify({ device_path: devicePath }),
   });
   return unwrap(res, 'add device');
 }

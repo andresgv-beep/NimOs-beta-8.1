@@ -62,7 +62,11 @@
       // 1. Añadir el disco si hace falta / se eligió
       if (selectedDisk) {
         phase = 'adding';
-        await api.addDeviceToPool(pool.id, selectedDisk.id);
+        // Asegurar que el disco está registrado en storage_devices antes de
+        // referenciarlo por path (un disco recién conectado puede no estarlo).
+        try { await api.scanDisks(); } catch (e) { /* el scan es best-effort */ }
+        const devPath = selectedDisk.path || `/dev/${selectedDisk.name}`;
+        await api.addDeviceToPool(pool.id, devPath);
       }
 
       // 2. Lanzar la conversión (async: devuelve op in_progress al instante)
@@ -177,7 +181,7 @@
               {#each eligibleDisks as d}
                 <button
                   class="disk-option"
-                  class:selected={selectedDisk?.id === d.id}
+                  class:selected={(selectedDisk?.path || selectedDisk?.name) === (d.path || d.name)}
                   on:click={() => selectedDisk = d}
                 >
                   <span class="disk-radio" aria-hidden="true"></span>
