@@ -354,6 +354,15 @@ func (h *StorageHTTPHandler) handlePoolByID(w http.ResponseWriter, r *http.Reque
 		}
 		h.resolvePoolRecovery(w, r, id)
 
+	case rest == "balance-status":
+		// Progreso del balance en curso (para el polling del frontend
+		// durante una conversión de profile async).
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w, "GET")
+			return
+		}
+		h.poolBalanceStatus(w, r, id)
+
 	case rest == "devices":
 		if r.Method != http.MethodPost {
 			methodNotAllowed(w, "POST")
@@ -515,6 +524,18 @@ func (h *StorageHTTPHandler) resolvePoolRecovery(w http.ResponseWriter, r *http.
 		"ok":     true,
 		"action": body.Action,
 	})
+}
+
+// ─── /pools/{id}/balance-status ──────────────────────────────────────────────
+// Progreso del balance en curso (conversión de profile async).
+
+func (h *StorageHTTPHandler) poolBalanceStatus(w http.ResponseWriter, r *http.Request, id string) {
+	pool, err := h.service.GetPool(r.Context(), id)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, readBalanceStatus(pool.MountPoint))
 }
 
 // ─── /pools/{id}/devices ──────────────────────────────────────────────────────

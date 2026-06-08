@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 )
 
 // Helper: crea pool con N devices y devuelve poolID + deviceIDs.
@@ -343,6 +344,26 @@ func TestStorageServiceReplaceDeviceNewInUse(t *testing.T) {
 // ConvertProfile
 // ─────────────────────────────────────────────────────────────────────────────
 
+// waitForOperation espera (polling corto) a que una operation alcance estado
+// terminal. Para tests del modelo async (ConvertProfile corre en goroutine).
+func waitForOperation(t *testing.T, service *StorageService, ctx context.Context, opID string, timeout time.Duration) *Operation {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		op, err := service.repo.GetOperation(ctx, opID)
+		if err != nil {
+			t.Fatalf("waitForOperation: %v", err)
+		}
+		switch op.Status {
+		case OpStatusCompleted, OpStatusFailed, OpStatusRolledBack, OpStatusCancelled:
+			return op
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("waitForOperation: la op %s no terminó en %v", opID, timeout)
+	return nil
+}
+
 func TestStorageServiceConvertProfileHappy(t *testing.T) {
 	service, mock, cleanup := setupTestService(t)
 	defer cleanup()
@@ -359,8 +380,15 @@ func TestStorageServiceConvertProfileHappy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConvertProfile: %v", err)
 	}
-	if op.Status != OpStatusCompleted {
-		t.Errorf("op.Status: got %q", op.Status)
+	// Modelo ASYNC: la op vuelve in_progress (el balance corre en background).
+	if op.Status != OpStatusInProgress {
+		t.Errorf("op.Status inmediato: got %q, want in_progress (async)", op.Status)
+	}
+
+	// Esperar a que el background complete (el mock es instantáneo).
+	final := waitForOperation(t, service, ctx, op.ID, 3*time.Second)
+	if final.Status != OpStatusCompleted {
+		t.Errorf("op.Status final: got %q, want completed", final.Status)
 	}
 
 	if len(mock.ConvertProfileCalls) != 1 {

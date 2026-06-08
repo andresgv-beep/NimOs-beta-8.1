@@ -1279,33 +1279,43 @@ func (s *StorageService) ConvertProfile(ctx context.Context, req ConvertProfileR
 			fmt.Sprintf("another layout operation is in progress on pool %s", pool.ID))
 	}
 
-	// Ejecutar btrfs balance con conversión
-	if err := s.btrfs.ConvertProfile(ctx, pool.MountPoint, req.NewProfile); err != nil {
-		s.markOperationFailed(ctx, op.ID, err.Error(), ErrCodeBtrfsCommandFailed)
-		return s.repo.GetOperation(ctx, op.ID)
-	}
-
-	// Persistir el nuevo profile en la DB
-	err = s.runInTx(ctx, func(tx *sql.Tx) error {
-		// El profile no tiene un setter dedicado en el repo (los profiles
-		// no son una columna que se cambia desde UI normalmente). Lo hago
-		// vía UPDATE directo dentro de la tx para mantener atomicidad.
-		_, e := tx.ExecContext(ctx,
-			`UPDATE storage_pools SET profile = ?, generation = generation + 1 WHERE id = ?`,
-			string(req.NewProfile), pool.ID)
-		if e != nil {
-			return fmt.Errorf("update profile: %w", e)
+	// ─── ASYNC: el balance corre en background ─────────────────────────────
+	// Un balance de conversión puede tardar de minutos a HORAS según el
+	// tamaño del array. Si lo ejecutáramos inline con r.Context():
+	//   1. el HTTP del navegador se quedaría colgado hasta el final, y
+	//   2. si el navegador corta (timeout/cerrar pestaña), r.Context() se
+	//      cancela y MATARÍA el balance a medias → drift de layout.
+	// Por eso: goroutine con context.Background() (vive lo que viva el
+	// daemon) y devolvemos la Operation in_progress ya. El frontend hace
+	// polling de la operation y de /balance-status para el progreso.
+	//
+	// Exclusión: la Operation in_progress en BD (índice único
+	// idx_one_layout_op_per_pool) bloquea cualquier otra op de layout sobre
+	// este pool hasta que termine. Si el daemon muere a media conversión,
+	// el recovery (inconclusive) + STOR-01 (drift de layout) lo detectan.
+	poolID, mountPoint, newProfile := pool.ID, pool.MountPoint, req.NewProfile
+	go func() {
+		bgCtx := context.Background()
+		if err := s.btrfs.ConvertProfile(bgCtx, mountPoint, newProfile); err != nil {
+			s.markOperationFailed(bgCtx, op.ID, err.Error(), ErrCodeBtrfsCommandFailed)
+			logMsg("ConvertProfile async: balance falló en pool %s: %v", poolID, err)
+			return
 		}
-		if _, e := s.repo.incrementGlobalGeneration(ctx, tx); e != nil {
-			return e
+		// Persistir el nuevo profile + cerrar la operation, atómico.
+		err := s.runInTx(bgCtx, func(tx *sql.Tx) error {
+			if e := s.repo.SetPoolProfile(bgCtx, tx, poolID, newProfile); e != nil {
+				return e
+			}
+			return s.repo.UpdateOperationStatus(bgCtx, tx, op.ID, OpStatusCompleted, nil, nil)
+		})
+		if err != nil {
+			s.markOperationFailed(bgCtx, op.ID, err.Error(), ErrCodeInternal)
+			return
 		}
-		return s.repo.UpdateOperationStatus(ctx, tx, op.ID, OpStatusCompleted, nil, nil)
-	})
-	if err != nil {
-		s.markOperationFailed(ctx, op.ID, err.Error(), ErrCodeInternal)
-		return s.repo.GetOperation(ctx, op.ID)
-	}
+		logMsg("ConvertProfile async: pool %s convertido a %s", poolID, newProfile)
+	}()
 
+	// Devolver la operation in_progress inmediatamente.
 	return s.repo.GetOperation(ctx, op.ID)
 }
 

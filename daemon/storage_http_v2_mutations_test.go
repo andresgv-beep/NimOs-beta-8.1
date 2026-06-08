@@ -16,8 +16,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -369,6 +371,18 @@ func TestStorageHTTPConvertProfileHappy(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("status: got %d (body: %s)", rec.Code, rec.Body.String())
 	}
+
+	// Modelo ASYNC: el endpoint devuelve la op in_progress; el balance corre
+	// en background. Esperar a que complete antes de verificar el profile.
+	var resp struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil || resp.Data.ID == "" {
+		t.Fatalf("no se pudo extraer op.ID de la respuesta: %v (body: %s)", err, rec.Body.String())
+	}
+	waitForOperation(t, service, context.Background(), resp.Data.ID, 3*time.Second)
 
 	pool, _ := service.GetPool(context.Background(), poolID)
 	if pool.Profile != ProfileRaid1 {
