@@ -36,19 +36,40 @@ func enrichPool(p *Pool, primaryPool string) {
 
 	p.IsPrimary = p.Name == primaryPool
 
-	// Detect mount status + usage
+	// Detect mount status
 	p.Mounted = isPoolMounted(p.MountPoint)
 	if p.Mounted {
+		// ── Regla 16 · External Systems Own Their Facts ──────────────────
+		// Reconciliar PRIMERO: BTRFS es la autoridad del profile/compresión.
+		// Si la BD diverge, servimos el valor real (+ self-heal). Hacerlo
+		// antes de calcular capacidad asegura que usamos el profile REAL
+		// (p.ej. raid1 recién convertido por CLI), no el cacheado.
+		reconcilePoolProfileWithReality(p)
+
 		p.Usage = computePoolUsage(p.MountPoint)
 
-		// ── Regla 16 · External Systems Own Their Facts ──────────────────
-		// BTRFS es la autoridad del profile y de la composición de devices.
-		// Leemos la realidad en vivo y, si la BD diverge, servimos el valor
-		// REAL y disparamos self-heal en background para corregir la BD.
-		// Esto cierra SOT-01 (profile) y la detección de SOT-02 (devices):
-		// un cambio por terminal (btrfs balance/device add) se refleja al
-		// instante, sin esperar a un reinicio.
-		reconcilePoolProfileWithReality(p)
+		// Capacidad TOTAL estable: la calculamos de la geometría de discos
+		// (profile + tamaños), NO del `free` de btrfs, que en RAID1 asimétrico
+		// es engañoso y "baila" según el llenado. Así el TOTAL mostrado es la
+		// capacidad usable real y no cambia al escribir datos.
+		if p.Usage != nil && len(p.Devices) > 0 {
+			sizes := make([]int64, 0, len(p.Devices))
+			for _, d := range p.Devices {
+				if d.SizeBytes > 0 {
+					sizes = append(sizes, d.SizeBytes)
+				}
+			}
+			if usable := computeUsableCapacity(p.Profile, sizes); usable > 0 {
+				p.Usage.TotalBytes = usable
+				// Available coherente con el total estable (nunca negativo).
+				avail := usable - p.Usage.UsedBytes
+				if avail < 0 {
+					avail = 0
+				}
+				p.Usage.AvailableBytes = avail
+				p.Usage.UsagePercent = int(float64(p.Usage.UsedBytes) / float64(usable) * 100)
+			}
+		}
 	}
 
 	// Compute health using the existing diagnostic engine + enrich each
@@ -123,6 +144,73 @@ func isPoolMounted(mountPoint string) bool {
 //
 // Bug fix histórico (2026-05): el cálculo ingenuo "Free (estimated)" sobrestima
 // en RAID1 con discos asimétricos. "Free (statfs, df)" da el valor real.
+// computeUsableCapacity calcula la capacidad USABLE real de un pool según su
+// profile y los tamaños de sus discos. Es estable: no depende del estado de
+// llenado (a diferencia del `free` de btrfs, que en RAID asimétrico "baila").
+//
+// BTRFS no replica como el RAID clásico (que se limita al disco menor y
+// desperdicia el resto del mayor). Reparte copias mientras pueda colocarlas en
+// discos distintos. La capacidad usable resultante por profile:
+//
+//   single  : suma de todos (sin redundancia)
+//   raid1   : 2 copias en 2 discos distintos →
+//             usable = min(suma/2, suma − disco_mayor)
+//             (el disco mayor no puede emparejarse consigo mismo: el cuello de
+//              botella es cuánto pueden absorber "los demás")
+//   raid1c3 : 3 copias → usable = min(suma/3, suma − (mayor1 + mayor2))... pero
+//             se generaliza como suma/copias con el límite de los menores.
+//   raid10  : stripe sobre mirrors → ~suma/2 (requiere ≥4 discos balanceados)
+//
+// Para raid1, la fórmula min(suma/2, suma−mayor) captura exactamente el caso
+// asimétrico: con 120+320, suma=440, mayor=320 → min(220, 120)=120 GiB usables.
+func computeUsableCapacity(profile Profile, sizes []int64) int64 {
+	if len(sizes) == 0 {
+		return 0
+	}
+	var sum int64
+	var max int64
+	for _, s := range sizes {
+		sum += s
+		if s > max {
+			max = s
+		}
+	}
+
+	switch profile {
+	case ProfileSingle:
+		return sum
+
+	case ProfileRaid1, ProfileRaid1c3, ProfileRaid10:
+		copies := profileCopies(profile)
+		// Capacidad por número de copias.
+		byCopies := sum / int64(copies)
+		// Límite por asimetría: lo que pueden absorber los discos que NO son
+		// el mayor (el mayor necesita pareja en otro disco para cada copia).
+		// Para 2 copias: suma − mayor. Generalizamos restando el mayor una vez
+		// (cuello de botella dominante en arrays típicos de 2-4 discos).
+		byAsymmetry := sum - max
+		// En raid1 el usable es min(suma/2, suma−mayor). Para raid1c3/raid10
+		// la cota por copias domina en discos balanceados; mantenemos el min
+		// con la asimetría como salvaguarda conservadora.
+		if byAsymmetry < byCopies {
+			return byAsymmetry
+		}
+		return byCopies
+	}
+	return sum
+}
+
+// profileCopies devuelve el nº de copias que mantiene cada profile.
+func profileCopies(p Profile) int {
+	switch p {
+	case ProfileRaid1, ProfileRaid10:
+		return 2
+	case ProfileRaid1c3:
+		return 3
+	}
+	return 1
+}
+
 func computePoolUsage(mountPoint string) *PoolUsage {
 	if mountPoint == "" {
 		return nil
