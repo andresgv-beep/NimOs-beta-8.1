@@ -476,6 +476,7 @@
     },
   ]}
   bind:active
+  bodyPadding={false}
 >
 
   <!-- Page header: cambia según vista activa (Resumen, Discos, etc.) -->

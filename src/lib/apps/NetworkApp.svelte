@@ -251,6 +251,7 @@
     },
   ]}
   bind:active
+  bodyPadding={false}
 >
   <svelte:fragment slot="page-header">
     <b>{viewMeta.title}</b>

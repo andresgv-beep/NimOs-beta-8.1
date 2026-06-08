@@ -275,6 +275,7 @@
   headerIcon="↓"
   {sections}
   bind:active
+  bodyPadding={false}
 >
   <!-- ═══ HEADER · pool selector + pausar todos + añadir ═══ -->
   <svelte:fragment slot="page-header">

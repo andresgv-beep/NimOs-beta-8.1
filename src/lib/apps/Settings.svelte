@@ -499,6 +499,7 @@
   {sections}
   bind:active={activeView}
   pathSegments={pathSegments}
+  bodyPadding={false}
 >
   <svelte:fragment slot="page-header">
     <b>{activeLabel}</b>

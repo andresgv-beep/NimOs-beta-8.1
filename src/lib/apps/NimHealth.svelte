@@ -289,6 +289,7 @@
     },
   ]}
   bind:active
+  bodyPadding={false}
 >
 
   <!-- ═══ DASHBOARD ═══ -->

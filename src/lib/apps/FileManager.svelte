@@ -391,6 +391,7 @@
   title="Files"
   headerIcon="F"
   pathSegments={titlebarPath}
+  bodyPadding={false}
 >
   <!-- ═══ SIDEBAR · grupos Local/Remoto + TreeNode ═══ -->
   <svelte:fragment slot="sidebar-content">

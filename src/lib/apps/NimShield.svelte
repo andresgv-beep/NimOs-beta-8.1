@@ -486,7 +486,6 @@
 
 <style>
   .ns-sub { color: var(--fg-4, #7a7a82); font-size: 12px; font-weight: 400; }
-  .ns-body { padding-bottom: 8px; }
   .ns-msg {
     padding: 24px;
     text-align: center;
