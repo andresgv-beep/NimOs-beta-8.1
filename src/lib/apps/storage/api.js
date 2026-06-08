@@ -159,3 +159,41 @@ export async function startScrub(poolName) {
   });
   return unwrap(res, 'scrub start');
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// Upgrade de profile (single → raid1): añadir disco + convertir + progreso.
+// El convert es ASYNC en el backend: devuelve la Operation in_progress y el
+// balance corre en background. El progreso se consulta con getBalanceStatus.
+// ────────────────────────────────────────────────────────────────────────
+
+export async function addDeviceToPool(poolId, deviceId) {
+  const res = await fetch(`${BASE}/pools/${poolId}/devices`, {
+    method: 'POST',
+    headers: jsonHdrs(),
+    body: JSON.stringify({ device_id: deviceId }),
+  });
+  return unwrap(res, 'add device');
+}
+
+export async function convertPoolProfile(poolId, newProfile) {
+  const res = await fetch(`${BASE}/pools/${poolId}/convert-profile`, {
+    method: 'POST',
+    headers: jsonHdrs(),
+    body: JSON.stringify({ new_profile: newProfile }),
+  });
+  return unwrap(res, 'convert profile');
+}
+
+export async function getBalanceStatus(poolId) {
+  const res = await fetch(`${BASE}/pools/${poolId}/balance-status`, { headers: hdrs() });
+  return unwrap(res, 'balance status');
+}
+
+export async function getOperations({ poolId, status, limit } = {}) {
+  const params = new URLSearchParams();
+  if (poolId) params.set('pool_id', poolId);
+  if (status) params.set('status', status);
+  if (limit) params.set('limit', String(limit));
+  const res = await fetch(`${BASE}/operations?${params}`, { headers: hdrs() });
+  return unwrap(res, 'operations');
+}

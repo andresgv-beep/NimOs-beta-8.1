@@ -52,6 +52,17 @@
 
   const dispatch = createEventDispatcher();
 
+  // ─── Upgrade a RAID1 (contextual) ────────────────────────────────
+  // Un pool single puede subir a raid1 si hay un disco libre que añadir,
+  // o si ya tiene 2+ discos (conversión directa). Solo pools managed.
+  function canUpgradeToRaid1(pool) {
+    if (!pool || pool.profile !== 'single') return false;
+    if (pool.control_state && pool.control_state !== 'managed') return false;
+    const freeDisks = disks.eligible?.length || 0;
+    const poolDisks = pool.devices?.length || 0;
+    return freeDisks >= 1 || poolDisks >= 2;
+  }
+
   // ─── UI state interno ────────────────────────────────────────────
   let expandedPools = new Set();
   let kebabOpenFor = null;
@@ -141,6 +152,13 @@
                 BTRFS · {pool.profile || 'single'} ·
                 {pool.devices?.length || 0} disco{pool.devices?.length === 1 ? '' : 's'} ·
                 {fmtBytes(pool.usage?.used_bytes)} usados
+                {#if canUpgradeToRaid1(pool)}
+                  <button
+                    class="raid-upgrade-chip"
+                    on:click|stopPropagation={() => dispatch('upgrade-raid', { pool })}
+                    title="Hay disco disponible: convertir este pool a RAID1 (espejo)"
+                  >⇪ raid1 disponible</button>
+                {/if}
               </div>
             </div>
             <div class="pool-bar-wrap">
@@ -194,6 +212,15 @@
                 <span class="pa-num">03</span>
                 <span>Desmontar</span>
               </button>
+              {#if canUpgradeToRaid1(pool)}
+                <button
+                  class="pa-btn"
+                  on:click={() => { dispatch('upgrade-raid', { pool }); kebabOpenFor = null; }}
+                >
+                  <span class="pa-num">04</span>
+                  <span>Mejorar a RAID1</span>
+                </button>
+              {/if}
             </div>
           {/if}
 
@@ -501,6 +528,30 @@
     font-size: 10px;
     color: var(--ink-mute);
     letter-spacing: 0.3px;
+  }
+
+  /* Chip contextual: el pool puede subir a RAID1 (hay disco libre) */
+  .raid-upgrade-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 8px;
+    padding: 1px 8px 2px;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    letter-spacing: 0.4px;
+    color: var(--signal);
+    background: rgba(0, 255, 159, 0.07);
+    border: 1px solid rgba(0, 255, 159, 0.35);
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, box-shadow 0.12s;
+    vertical-align: middle;
+  }
+  .raid-upgrade-chip:hover {
+    background: rgba(0, 255, 159, 0.14);
+    border-color: var(--signal);
+    box-shadow: 0 0 8px rgba(0, 255, 159, 0.25);
   }
 
   .pool-bar-wrap { min-width: 0; }
