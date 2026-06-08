@@ -941,6 +941,27 @@ var devicePathExists = func(path string) bool {
 	return err == nil
 }
 
+// resolveDevicePath devuelve el path utilizable de un device, prefiriendo la
+// identidad estable (by-id) pero verificando que exista de verdad en /dev.
+// Si el by-id está obsoleto (symlink muerto), cae a current_path. Si ninguno
+// existe, devuelve "" (el caller debe fallar la operación con mensaje claro).
+//
+// Regla 16 · SOT-04: nunca confiar en un path cacheado sin verificar que vive.
+// Centraliza la lógica que antes estaba inline solo en AddDevice, para que
+// Remove/Replace/Wipe la compartan.
+func resolveDevicePath(d *Device) string {
+	if d == nil {
+		return ""
+	}
+	if d.ByIDPath != "" && devicePathExists(d.ByIDPath) {
+		return d.ByIDPath
+	}
+	if d.CurrentPath != "" && devicePathExists(d.CurrentPath) {
+		return d.CurrentPath
+	}
+	return ""
+}
+
 func (s *StorageService) AddDevice(ctx context.Context, req AddDeviceRequest) (*Operation, error) {
 	// HARD-3 fix: lock global. Ver comentario en CreatePool.
 	storageMu.Lock()
@@ -1016,24 +1037,24 @@ func (s *StorageService) AddDevice(ctx context.Context, req AddDeviceRequest) (*
 
 	// ─── Wipe defensivo opcional ───────────────────────────────────────
 	if req.WipeFirst {
-		if err := s.btrfs.WipeDevice(ctx, device.ByIDPath); err != nil {
+		wipePath := resolveDevicePath(device)
+		if wipePath == "" {
+			s.markOperationFailed(ctx, op.ID,
+				fmt.Sprintf("ningún path del device existe en /dev para wipe (by-id=%q current=%q)",
+					device.ByIDPath, device.CurrentPath),
+				ErrCodeBtrfsCommandFailed)
+			return s.repo.GetOperation(ctx, op.ID)
+		}
+		if err := s.btrfs.WipeDevice(ctx, wipePath); err != nil {
 			s.markOperationFailed(ctx, op.ID, err.Error(), ErrCodeBtrfsCommandFailed)
 			return s.repo.GetOperation(ctx, op.ID)
 		}
 	}
 
 	// ─── Ejecutar btrfs device add ─────────────────────────────────────
-	// ByIDPath es la identidad estable preferida, PERO puede estar obsoleto
-	// (el symlink /dev/disk/by-id/... ya no existe: disco recolocado, valor
-	// viejo en DB, etc.). Verificamos que el path exista de verdad antes de
-	// usarlo; si no, caemos a CurrentPath (/dev/sdX), que sí está vivo.
-	addPath := ""
-	if device.ByIDPath != "" && devicePathExists(device.ByIDPath) {
-		addPath = device.ByIDPath // existe → usar el estable
-	}
-	if addPath == "" && device.CurrentPath != "" && devicePathExists(device.CurrentPath) {
-		addPath = device.CurrentPath // fallback al path actual
-	}
+	// Regla 16 · SOT-04: resolver el path verificando que existe (by-id
+	// preferido, fallback a current_path). Evita el bug del by-id obsoleto.
+	addPath := resolveDevicePath(device)
 	if addPath == "" {
 		s.markOperationFailed(ctx, op.ID,
 			fmt.Sprintf("ningún path del device existe en /dev (by-id=%q current=%q); reconecta el disco o re-escanea",
@@ -1133,7 +1154,16 @@ func (s *StorageService) RemoveDevice(ctx context.Context, req RemoveDeviceReque
 	}
 
 	// Ejecutar btrfs device remove
-	if err := s.btrfs.RemoveDevice(ctx, pool.MountPoint, device.ByIDPath); err != nil {
+	// Regla 16 · SOT-04: path verificado (by-id obsoleto → fallback).
+	rmPath := resolveDevicePath(device)
+	if rmPath == "" {
+		s.markOperationFailed(ctx, op.ID,
+			fmt.Sprintf("ningún path del device existe en /dev (by-id=%q current=%q); reconecta el disco o re-escanea",
+				device.ByIDPath, device.CurrentPath),
+			ErrCodeBtrfsCommandFailed)
+		return s.repo.GetOperation(ctx, op.ID)
+	}
+	if err := s.btrfs.RemoveDevice(ctx, pool.MountPoint, rmPath); err != nil {
 		s.markOperationFailed(ctx, op.ID, err.Error(), ErrCodeBtrfsCommandFailed)
 		return s.repo.GetOperation(ctx, op.ID)
 	}
@@ -1243,7 +1273,26 @@ func (s *StorageService) ReplaceDevice(ctx context.Context, req ReplaceDeviceReq
 	}
 
 	// Ejecutar btrfs replace (incluye wipefs seguro del old)
-	if err := s.btrfs.ReplaceDevice(ctx, pool.MountPoint, oldDev.ByIDPath, newDev.ByIDPath); err != nil {
+	// Regla 16 · SOT-04: ambos paths verificados. El NEW debe existir sí o sí
+	// (es el disco que entra); el OLD puede estar muerto (justamente por eso
+	// se reemplaza), así que si su by-id no resuelve, btrfs replace admite el
+	// devid — pero priorizamos un path vivo cuando lo haya.
+	newPath := resolveDevicePath(newDev)
+	if newPath == "" {
+		s.markOperationFailed(ctx, op.ID,
+			fmt.Sprintf("el device nuevo no existe en /dev (by-id=%q current=%q); reconecta o re-escanea",
+				newDev.ByIDPath, newDev.CurrentPath),
+			ErrCodeBtrfsCommandFailed)
+		return s.repo.GetOperation(ctx, op.ID)
+	}
+	oldPath := resolveDevicePath(oldDev)
+	if oldPath == "" {
+		// El viejo puede estar físicamente muerto (caso típico de replace).
+		// Usamos su by-id cacheado como mejor esfuerzo: btrfs replace puede
+		// resolverlo por devid aunque el symlink ya no exista.
+		oldPath = oldDev.ByIDPath
+	}
+	if err := s.btrfs.ReplaceDevice(ctx, pool.MountPoint, oldPath, newPath); err != nil {
 		s.markOperationFailed(ctx, op.ID, err.Error(), ErrCodeBtrfsCommandFailed)
 		return s.repo.GetOperation(ctx, op.ID)
 	}
