@@ -566,6 +566,17 @@ func (h *StorageHTTPHandler) addDevice(w http.ResponseWriter, r *http.Request, p
 		writeServiceError(w, err)
 		return
 	}
+	// Si la operación terminó en failed (p.ej. el btrfs device add físico
+	// falló), NO devolver 200: el cliente debe enterarse para no encadenar
+	// un convert sobre un pool que no llegó a crecer.
+	if op != nil && op.Status == OpStatusFailed {
+		msg := "add device failed"
+		if op.Error != nil && *op.Error != "" {
+			msg = *op.Error
+		}
+		writeError(w, ErrCodeBtrfsCommandFailed, msg)
+		return
+	}
 	writeData(w, http.StatusOK, op)
 }
 

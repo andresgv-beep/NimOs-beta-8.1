@@ -1014,7 +1014,18 @@ func (s *StorageService) AddDevice(ctx context.Context, req AddDeviceRequest) (*
 	}
 
 	// ─── Ejecutar btrfs device add ─────────────────────────────────────
-	if err := s.btrfs.AddDevice(ctx, pool.MountPoint, device.ByIDPath); err != nil {
+	// ByIDPath es la identidad estable preferida, pero algunos discos (USB,
+	// ciertos SSD) no exponen un /dev/disk/by-id estable y el campo queda
+	// vacío. En ese caso caemos a CurrentPath (/dev/sdX) para no fallar.
+	addPath := device.ByIDPath
+	if addPath == "" {
+		addPath = device.CurrentPath
+	}
+	if addPath == "" {
+		s.markOperationFailed(ctx, op.ID, "el device no tiene ni by-id ni current path resoluble", ErrCodeBtrfsCommandFailed)
+		return s.repo.GetOperation(ctx, op.ID)
+	}
+	if err := s.btrfs.AddDevice(ctx, pool.MountPoint, addPath); err != nil {
 		s.markOperationFailed(ctx, op.ID, err.Error(), ErrCodeBtrfsCommandFailed)
 		return s.repo.GetOperation(ctx, op.ID)
 	}
