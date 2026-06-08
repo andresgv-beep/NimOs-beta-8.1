@@ -270,7 +270,26 @@ func CollectDiagnostics(input DiagnosticInput) []Diagnostic {
 			}
 
 			// 3. IO errors
-			if ds.ReadErrors > 0 || ds.WriteErrors > 0 || ds.ChecksumErrors > 0 {
+			// SOT-06: distinguir errores ACTIVOS de historia acumulada.
+			// Read/Write errors son siempre señal real de hardware/IO.
+			// Los Checksum (corruption_errs) son un contador acumulativo que
+			// no baja tras reparar; si el ÚLTIMO SCRUB salió limpio, esa
+			// corrupción ya no está activa y no debe marcar el pool unstable.
+			realIoError := ds.ReadErrors > 0 || ds.WriteErrors > 0
+			checksumActive := ds.ChecksumErrors > 0
+			if checksumActive && lastScrubWasClean(input.MountPoint) {
+				// Corrupción histórica ya resuelta (scrub limpio). No cuenta
+				// como error activo, pero lo dejamos visible como nota leve.
+				checksumActive = false
+				diagnostics = append(diagnostics, Diagnostic{
+					Code:     "errors_cleared",
+					Severity: 1,
+					Disk:     name,
+					Detail: fmt.Sprintf("Disco %s: %d errores checksum históricos (último scrub limpio, sin corrupción activa)",
+						name, ds.ChecksumErrors),
+				})
+			}
+			if realIoError || checksumActive {
 				diagnostics = append(diagnostics, Diagnostic{
 					Code:     "io_errors",
 					Severity: 3,

@@ -129,24 +129,34 @@ func reconcilePoolProfileWithReality(p *Pool) {
 		return // sin verdad fiable, respetar lo que haya en BD
 	}
 
-	dbProfile := strings.ToLower(string(p.Profile))
-	if real.Profile == dbProfile {
-		return // BD y realidad coinciden, nada que hacer
+	// ── SOT-05 · compresión (se evalúa siempre, diverja o no el profile) ──
+	// BTRFS es la autoridad: se puede cambiar por `btrfs property set` por
+	// fuera. Si la realidad difiere de la BD, servimos la real.
+	if real.Compression != "" && real.Compression != p.Compression {
+		logMsg("SOT-05: pool '%s' compression diverge — BD=%s realidad=%s; sirviendo real",
+			p.Name, p.Compression, real.Compression)
+		p.Compression = real.Compression
+		// Sin self-heal en BD aquí: el setter legítimo (SetPoolCompression)
+		// valida los valores permitidos. Servir el real evita que la UI
+		// mienta; la BD se alinea en la próxima mutación legítima.
 	}
 
-	// DIVERGENCIA: la realidad manda. Servimos el profile real ya mismo.
-	logMsg("SOT-01: pool '%s' profile diverge — BD=%s realidad=%s; sirviendo real + self-heal",
-		p.Name, dbProfile, real.Profile)
-	realProfile := Profile(real.Profile)
-	p.Profile = realProfile
-
-	// SOT-02: detección de drift en la composición de devices (nº real vs BD).
-	// No auto-reasignamos la membresía aquí (toca la tabla N:M y registros de
-	// device, más delicado que un profile); lo registramos para el reconciler.
+	// ── SOT-02 · drift de composición de devices (solo aviso) ──
 	if len(real.DevicePaths) > 0 && len(real.DevicePaths) != len(p.Devices) {
 		logMsg("SOT-02: pool '%s' device count diverge — BD=%d realidad=%d (real: %s)",
 			p.Name, len(p.Devices), len(real.DevicePaths), strings.Join(real.DevicePaths, ", "))
 	}
+
+	// ── SOT-01 · profile (con self-heal en BD si diverge) ──
+	dbProfile := strings.ToLower(string(p.Profile))
+	if real.Profile == dbProfile {
+		return // profile coincide; ya reconciliamos compression arriba
+	}
+
+	logMsg("SOT-01: pool '%s' profile diverge — BD=%s realidad=%s; sirviendo real + self-heal",
+		p.Name, dbProfile, real.Profile)
+	realProfile := Profile(real.Profile)
+	p.Profile = realProfile
 
 	// Self-heal en background: corregir la BD para que futuras lecturas
 	// (y otros instances) ya partan del valor correcto. No bloquea la request.
@@ -187,6 +197,7 @@ func readRealDataProfile(mountPoint string) string {
 type RealPoolState struct {
 	Profile     string   // profile real de los datos (raid1, single, ...)
 	DevicePaths []string // paths de los devices que forman el FS realmente
+	Compression string   // compresión real (none, zstd:3, lzo...) o "" si no leíble
 	OK          bool     // false si no se pudo leer (FS no montado, btrfs mudo)
 }
 
@@ -224,6 +235,23 @@ func readRealPoolState(mountPoint string) RealPoolState {
 		}
 	}
 	st.OK = true
+
+	// Compresión real (Regla 16 · SOT-05). `btrfs property get <mp> compression`
+	// devuelve p.ej. "compression=zstd:3" o vacío si no hay propiedad fijada.
+	if out, ok := runSafe("btrfs", "property", "get", mountPoint, "compression"); ok {
+		for _, line := range strings.Split(out, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "compression=") {
+				val := strings.TrimPrefix(line, "compression=")
+				val = strings.TrimSpace(val)
+				if val == "" {
+					val = "none"
+				}
+				st.Compression = val
+				break
+			}
+		}
+	}
 	return st
 }
 
@@ -309,4 +337,71 @@ func resolvePoolRecoveryResume(ctx context.Context, poolID string) error {
 	// Tras reanudar (o si no había nada que reanudar), el layout real es la
 	// verdad. Adoptamos ese profile y volvemos a managed.
 	return resolvePoolRecoveryAccept(ctx, poolID)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SOT-06 · Health no pegajoso
+//
+// `btrfs device stats` lleva un contador ACUMULATIVO de errores (corruption,
+// etc.) que NO baja tras reparar/limpiar — solo con `btrfs device stats -z`.
+// El health usaba ese contador para marcar el pool "unstable", dejándolo en
+// WARN eterno aunque los datos ya estuvieran sanos (justo el caso de data8 tras
+// limpiar la corrupción del incidente).
+//
+// La verdad del estado ACTUAL no es el contador histórico, es el ÚLTIMO SCRUB:
+// si el scrub más reciente terminó sin errores irreparables, no hay corrupción
+// activa, por mucho que el contador histórico siga marcado. Regla 16: el scrub
+// es la autoridad del estado de integridad actual; el contador es solo historia.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// lastScrubWasClean indica si el scrub más reciente del pool terminó sin
+// errores irreparables. Inyectable para tests (lee btrfs en producción).
+//
+// Devuelve:
+//   clean=true  → último scrub finished con 0 uncorrectable → corrupción NO activa
+//   clean=false → hay errores en el último scrub, o nunca se hizo scrub, o
+//                 no se pudo determinar (en la duda, NO ocultamos el WARN)
+var lastScrubWasClean = func(mountPoint string) bool {
+	if mountPoint == "" {
+		return false
+	}
+	out, ok := runSafe("btrfs", "scrub", "status", mountPoint)
+	if !ok {
+		return false
+	}
+	finished := false
+	uncorrectable := -1 // -1 = no encontrado
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Status:") && strings.Contains(line, "finished") {
+			finished = true
+		}
+		// btrfs reporta "Uncorrectable: N" (formato nuevo) o
+		// "error summary: ... csum=N" — buscamos la cuenta de irreparables.
+		if strings.HasPrefix(line, "Uncorrectable:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				if n, err := parseIntSafe(fields[1]); err == nil {
+					uncorrectable = n
+				}
+			}
+		}
+	}
+	// Limpio = terminó y cero irreparables.
+	return finished && uncorrectable == 0
+}
+
+// parseIntSafe convierte un string a int sin pánico (helper local).
+func parseIntSafe(s string) (int, error) {
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("no numérico: %q", s)
+		}
+		n = n*10 + int(c-'0')
+	}
+	if s == "" {
+		return 0, fmt.Errorf("vacío")
+	}
+	return n, nil
 }

@@ -76,3 +76,74 @@ func TestReconcileProfile_NoMountPoint_NoOp(t *testing.T) {
 		t.Errorf("profile: got %q, want single", p.Profile)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SOT-05 · compression en vivo
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestReconcileCompression_RealWins_WhenDiverges(t *testing.T) {
+	// BD dice none, BTRFS dice zstd:3 (alguien lo cambió por CLI) → servir real
+	withStubRealState(t, RealPoolState{Profile: "raid1", Compression: "zstd:3", OK: true})
+
+	p := &Pool{Name: "data8", MountPoint: "/nimos/pools/data8", Profile: ProfileRaid1,
+		Compression: "none", Devices: []Device{{}, {}}}
+	reconcilePoolProfileWithReality(p)
+
+	if p.Compression != "zstd:3" {
+		t.Errorf("compression: got %q, want zstd:3 (la realidad manda)", p.Compression)
+	}
+}
+
+func TestReconcileCompression_EvaluatedEvenIfProfileMatches(t *testing.T) {
+	// Profile coincide (no hay early-return que bloquee la compresión).
+	withStubRealState(t, RealPoolState{Profile: "raid1", Compression: "lzo", OK: true})
+
+	p := &Pool{Name: "data8", MountPoint: "/nimos/pools/data8", Profile: ProfileRaid1,
+		Compression: "none", Devices: []Device{{}, {}}}
+	reconcilePoolProfileWithReality(p)
+
+	if p.Compression != "lzo" {
+		t.Errorf("compression: got %q, want lzo (debe evaluarse aunque el profile coincida)", p.Compression)
+	}
+}
+
+func TestReconcileCompression_RespectsDB_WhenRealEmpty(t *testing.T) {
+	// Compresión real vacía (no leíble) → respetar la BD, no poner "".
+	withStubRealState(t, RealPoolState{Profile: "raid1", Compression: "", OK: true})
+
+	p := &Pool{Name: "data8", MountPoint: "/nimos/pools/data8", Profile: ProfileRaid1,
+		Compression: "zstd:3", Devices: []Device{{}, {}}}
+	reconcilePoolProfileWithReality(p)
+
+	if p.Compression != "zstd:3" {
+		t.Errorf("compression: got %q, want zstd:3 (real vacío, respetar BD)", p.Compression)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SOT-06 · parseIntSafe (helper del health no pegajoso)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestParseIntSafe(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    int
+		wantErr bool
+	}{
+		{"0", 0, false},
+		{"47", 47, false},
+		{"138", 138, false},
+		{"", 0, true},
+		{"12x", 0, true},
+		{"-5", 0, true}, // el signo no es dígito → error (los contadores btrfs no son negativos)
+	}
+	for _, c := range cases {
+		got, err := parseIntSafe(c.in)
+		if c.wantErr && err == nil {
+			t.Errorf("parseIntSafe(%q): esperaba error", c.in)
+		}
+		if !c.wantErr && (err != nil || got != c.want) {
+			t.Errorf("parseIntSafe(%q): got %d,%v want %d,nil", c.in, got, err, c.want)
+		}
+	}
+}
