@@ -66,7 +66,12 @@
         // referenciarlo por path (un disco recién conectado puede no estarlo).
         try { await api.scanDisks(); } catch (e) { /* el scan es best-effort */ }
         const devPath = selectedDisk.path || `/dev/${selectedDisk.name}`;
-        await api.addDeviceToPool(pool.id, devPath);
+        const addOp = await api.addDeviceToPool(pool.id, devPath);
+        // Si el add no completó (btrfs device add falló), abortar aquí con el
+        // error real en vez de encadenar un convert que vería 1 disco.
+        if (addOp && addOp.status === 'failed') {
+          throw new Error(addOp.error || 'No se pudo añadir el disco al pool');
+        }
       }
 
       // 2. Lanzar la conversión (async: devuelve op in_progress al instante)
