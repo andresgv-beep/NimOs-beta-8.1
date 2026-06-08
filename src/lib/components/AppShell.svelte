@@ -88,6 +88,13 @@
   /* ─── v3.1 props (aditivas) ─────────────────────────────────── */
   /** Si false, oculta el aside completo. TODO: diseño pendiente. */
   export let showSidebar = true;
+
+  // Padding estándar del cuerpo. Por defecto el AppShell aplica el margen
+  // uniforme (alineado con el page-header) para que todas las apps respiren
+  // igual. Las apps con layout propio a sangre completa (scroll interno,
+  // tablas full-bleed, terminal, splits) lo desactivan con bodyPadding={false}
+  // y gestionan su propio espaciado.
+  export let bodyPadding = true;
   /** Ancho del sidebar. Default 220px (canónico Beta 8.1). */
   export let sidebarWidth = '220px';
 
@@ -218,7 +225,11 @@
         </div>
       {/if}
       <slot name="toolbar" />
-      <div class="content" class:no-header={!$$slots['page-header'] && !$$slots['toolbar']}>
+      <div
+        class="content"
+        class:no-header={!$$slots['page-header'] && !$$slots['toolbar']}
+        class:padded={bodyPadding}
+      >
         <slot />
       </div>
       <slot name="footer-raw" />
@@ -495,11 +506,19 @@
     overflow: auto;
     min-height: 0;
   }
+  /* Margen estándar del cuerpo (bodyPadding por defecto). Lateral alineado
+     con el page-header (22px) para que el contenido cuadre con el título. */
+  .content.padded {
+    padding: 14px 22px 20px;
+  }
   /* Sin page-header ni toolbar, el contenido empieza pegado arriba y
      quedaría bajo los controles de ventana flotantes (top:12 right:14).
      Reservamos una franja superior para que no se solapen. */
   .content.no-header {
     padding-top: 40px;
+  }
+  .content.padded.no-header {
+    padding: 40px 22px 20px;
   }
 
   /* Page header opcional · título y descripción (sin titlebar encima) */
