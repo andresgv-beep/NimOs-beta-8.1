@@ -541,8 +541,9 @@ func (h *StorageHTTPHandler) poolBalanceStatus(w http.ResponseWriter, r *http.Re
 // ─── /pools/{id}/devices ──────────────────────────────────────────────────────
 
 type addDeviceBody struct {
-	DeviceID  string `json:"device_id"`
-	WipeFirst bool   `json:"wipe_first,omitempty"`
+	DeviceID   string `json:"device_id"`
+	DevicePath string `json:"device_path,omitempty"`
+	WipeFirst  bool   `json:"wipe_first,omitempty"`
 }
 
 func (h *StorageHTTPHandler) addDevice(w http.ResponseWriter, r *http.Request, poolID string) {
@@ -551,14 +552,15 @@ func (h *StorageHTTPHandler) addDevice(w http.ResponseWriter, r *http.Request, p
 		writeError(w, ErrCodeBadRequest, err.Error())
 		return
 	}
-	if body.DeviceID == "" {
-		writeError(w, ErrCodeBadRequest, "device_id is required")
+	if body.DeviceID == "" && body.DevicePath == "" {
+		writeError(w, ErrCodeBadRequest, "device_id or device_path is required")
 		return
 	}
 	op, err := h.service.AddDevice(r.Context(), AddDeviceRequest{
-		PoolID:    poolID,
-		DeviceID:  body.DeviceID,
-		WipeFirst: body.WipeFirst,
+		PoolID:     poolID,
+		DeviceID:   body.DeviceID,
+		DevicePath: body.DevicePath,
+		WipeFirst:  body.WipeFirst,
 	})
 	if err != nil {
 		writeServiceError(w, err)

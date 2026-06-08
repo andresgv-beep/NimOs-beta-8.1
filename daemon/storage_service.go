@@ -915,9 +915,10 @@ func (s *StorageService) ScanDevices(ctx context.Context) (*ScanResult, error) {
 
 // AddDeviceRequest es el payload de AddDevice.
 type AddDeviceRequest struct {
-	PoolID    string `json:"pool_id"`
-	DeviceID  string `json:"device_id"`
-	WipeFirst bool   `json:"wipe_first,omitempty"`
+	PoolID     string `json:"pool_id"`
+	DeviceID   string `json:"device_id"`
+	DevicePath string `json:"device_path,omitempty"`
+	WipeFirst  bool   `json:"wipe_first,omitempty"`
 }
 
 // AddDevice añade un device a un pool BTRFS existente.
@@ -944,6 +945,26 @@ func (s *StorageService) AddDevice(ctx context.Context, req AddDeviceRequest) (*
 
 	if err := s.checkPolicy(pool, OpTypeAddDevice); err != nil {
 		return nil, err
+	}
+
+	// El frontend identifica el disco libre por su /dev/path (la lista de
+	// discos eligible viene de lsblk, no expone el ID interno). Resolvemos
+	// path → ID buscando en los devices registrados.
+	if req.DeviceID == "" && req.DevicePath != "" {
+		allDevices, err := s.repo.ListDevices(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("AddDevice: list devices: %w", err)
+		}
+		for _, d := range allDevices {
+			if d.CurrentPath == req.DevicePath {
+				req.DeviceID = d.ID
+				break
+			}
+		}
+		if req.DeviceID == "" {
+			return nil, errFromCode(ErrCodeDeviceNotFound,
+				fmt.Sprintf("device path %q not registered (run scan first?)", req.DevicePath))
+		}
 	}
 
 	device, err := s.repo.GetDevice(ctx, req.DeviceID)
