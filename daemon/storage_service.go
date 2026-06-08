@@ -933,6 +933,14 @@ type AddDeviceRequest struct {
 //   4. Ejecutar btrfs device add
 //   5. Persistir la asignación en DB
 //   6. Marcar Operation completed (o failed con rollback)
+// devicePathExists comprueba que un path de device existe realmente en /dev.
+// Es var (no func) para que los tests puedan inyectar un stub: en producción
+// usa os.Stat; en tests se sobreescribe para aceptar paths ficticios.
+var devicePathExists = func(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 func (s *StorageService) AddDevice(ctx context.Context, req AddDeviceRequest) (*Operation, error) {
 	// HARD-3 fix: lock global. Ver comentario en CreatePool.
 	storageMu.Lock()
@@ -1020,15 +1028,11 @@ func (s *StorageService) AddDevice(ctx context.Context, req AddDeviceRequest) (*
 	// viejo en DB, etc.). Verificamos que el path exista de verdad antes de
 	// usarlo; si no, caemos a CurrentPath (/dev/sdX), que sí está vivo.
 	addPath := ""
-	if device.ByIDPath != "" {
-		if _, statErr := os.Stat(device.ByIDPath); statErr == nil {
-			addPath = device.ByIDPath // existe → usar el estable
-		}
+	if device.ByIDPath != "" && devicePathExists(device.ByIDPath) {
+		addPath = device.ByIDPath // existe → usar el estable
 	}
-	if addPath == "" && device.CurrentPath != "" {
-		if _, statErr := os.Stat(device.CurrentPath); statErr == nil {
-			addPath = device.CurrentPath // fallback al path actual
-		}
+	if addPath == "" && device.CurrentPath != "" && devicePathExists(device.CurrentPath) {
+		addPath = device.CurrentPath // fallback al path actual
 	}
 	if addPath == "" {
 		s.markOperationFailed(ctx, op.ID,

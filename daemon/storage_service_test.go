@@ -32,7 +32,17 @@ func setupTestService(t *testing.T) (*StorageService, *MockBtrfsExecutor, func()
 	service := NewStorageService(conn, repo, policy, mock, scanner)
 	service.deviceChecker = noopDeviceChecker // tests no requieren preflight real
 
-	return service, mock, cleanupDB
+	// Los tests usan devices ficticios cuyos paths no existen en /dev. La
+	// verificación real de existencia (devicePathExists) los rechazaría, así
+	// que la hacemos permisiva durante el test y la restauramos al limpiar.
+	origPathExists := devicePathExists
+	devicePathExists = func(string) bool { return true }
+	wrappedCleanup := func() {
+		devicePathExists = origPathExists
+		cleanupDB()
+	}
+
+	return service, mock, wrappedCleanup
 }
 
 // setupTestServiceWithScanner es como setupTestService pero también

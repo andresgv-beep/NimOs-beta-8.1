@@ -40,6 +40,15 @@ func enrichPool(p *Pool, primaryPool string) {
 	p.Mounted = isPoolMounted(p.MountPoint)
 	if p.Mounted {
 		p.Usage = computePoolUsage(p.MountPoint)
+
+		// ── Regla 16 · External Systems Own Their Facts ──────────────────
+		// BTRFS es la autoridad del profile y de la composición de devices.
+		// Leemos la realidad en vivo y, si la BD diverge, servimos el valor
+		// REAL y disparamos self-heal en background para corregir la BD.
+		// Esto cierra SOT-01 (profile) y la detección de SOT-02 (devices):
+		// un cambio por terminal (btrfs balance/device add) se refleja al
+		// instante, sin esperar a un reinicio.
+		reconcilePoolProfileWithReality(p)
 	}
 
 	// Compute health using the existing diagnostic engine + enrich each

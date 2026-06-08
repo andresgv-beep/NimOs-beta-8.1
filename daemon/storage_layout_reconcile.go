@@ -109,6 +109,61 @@ func detectLayoutDrift(ctx context.Context) (*LayoutDriftResult, error) {
 	return result, nil
 }
 
+// readRealPoolStateFn es inyectable para tests (sin btrfs real). En producción
+// apunta a readRealPoolState; en tests se sobreescribe con un stub.
+var readRealPoolStateFn = readRealPoolState
+
+// reconcilePoolProfileWithReality compara el profile que trae el pool (de BD)
+// contra el profile real de BTRFS. Si divergen, MUTA el pool en memoria para
+// servir el valor real (la UI nunca miente) y dispara persistencia en
+// background para corregir la BD (self-heal). Regla 16 · SOT-01.
+//
+// No bloquea: la lectura real es barata (btrfs fi df), y la escritura a BD va
+// en goroutine. Si la lectura falla, se deja el valor de BD (no se inventa).
+func reconcilePoolProfileWithReality(p *Pool) {
+	if p == nil || p.MountPoint == "" {
+		return
+	}
+	real := readRealPoolStateFn(p.MountPoint)
+	if !real.OK || real.Profile == "" {
+		return // sin verdad fiable, respetar lo que haya en BD
+	}
+
+	dbProfile := strings.ToLower(string(p.Profile))
+	if real.Profile == dbProfile {
+		return // BD y realidad coinciden, nada que hacer
+	}
+
+	// DIVERGENCIA: la realidad manda. Servimos el profile real ya mismo.
+	logMsg("SOT-01: pool '%s' profile diverge — BD=%s realidad=%s; sirviendo real + self-heal",
+		p.Name, dbProfile, real.Profile)
+	realProfile := Profile(real.Profile)
+	p.Profile = realProfile
+
+	// SOT-02: detección de drift en la composición de devices (nº real vs BD).
+	// No auto-reasignamos la membresía aquí (toca la tabla N:M y registros de
+	// device, más delicado que un profile); lo registramos para el reconciler.
+	if len(real.DevicePaths) > 0 && len(real.DevicePaths) != len(p.Devices) {
+		logMsg("SOT-02: pool '%s' device count diverge — BD=%d realidad=%d (real: %s)",
+			p.Name, len(p.Devices), len(real.DevicePaths), strings.Join(real.DevicePaths, ", "))
+	}
+
+	// Self-heal en background: corregir la BD para que futuras lecturas
+	// (y otros instances) ya partan del valor correcto. No bloquea la request.
+	poolID := p.ID
+	go func() {
+		if storageService == nil {
+			return
+		}
+		err := storageService.runInTx(context.Background(), func(tx *sql.Tx) error {
+			return storageService.repo.SetPoolProfile(context.Background(), tx, poolID, realProfile)
+		})
+		if err != nil {
+			logMsg("SOT-01 self-heal: no se pudo persistir profile real de '%s': %v", p.Name, err)
+		}
+	}()
+}
+
 // readRealDataProfile lee el profile REAL de los datos del pool desde
 // `btrfs fi df <mp>`, devolviendo p.ej. "raid1" lowercase, o "" si falla.
 // Reutiliza parseProfileFromDfLine (storage_btrfs_probe.go).
@@ -124,6 +179,52 @@ func readRealDataProfile(mountPoint string) string {
 		}
 	}
 	return ""
+}
+
+// RealPoolState es la verdad física de un pool leída de BTRFS en vivo.
+// Regla 16 (DISCIPLINE): BTRFS es la autoridad de estos hechos; NimOS los lee,
+// no los posee.
+type RealPoolState struct {
+	Profile     string   // profile real de los datos (raid1, single, ...)
+	DevicePaths []string // paths de los devices que forman el FS realmente
+	OK          bool     // false si no se pudo leer (FS no montado, btrfs mudo)
+}
+
+// readRealPoolState lee de BTRFS el profile y los devices reales de un pool.
+// Fuente: `btrfs filesystem show <mp>` (devices) + `btrfs fi df` (profile).
+// Es la lectura en vivo que usa enrichPool para reconciliar contra la BD.
+func readRealPoolState(mountPoint string) RealPoolState {
+	st := RealPoolState{}
+	if mountPoint == "" {
+		return st
+	}
+
+	profile := readRealDataProfile(mountPoint)
+	if profile == "" {
+		// Sin profile legible no hay verdad fiable → no reconciliar.
+		return st
+	}
+	st.Profile = profile
+
+	// Devices reales desde `btrfs filesystem show <mp>`. Cada device aparece
+	// como "devid N size X used Y path /dev/sdX".
+	out, ok := runSafe("btrfs", "filesystem", "show", mountPoint)
+	if ok {
+		for _, line := range strings.Split(out, "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "devid") {
+				continue
+			}
+			fields := strings.Fields(line)
+			for i := 0; i < len(fields)-1; i++ {
+				if fields[i] == "path" {
+					st.DevicePaths = append(st.DevicePaths, fields[i+1])
+				}
+			}
+		}
+	}
+	st.OK = true
+	return st
 }
 
 // markPoolRecovery pone el pool en estado recovery (visible/accionable).
