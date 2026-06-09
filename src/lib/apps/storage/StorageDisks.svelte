@@ -224,10 +224,11 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 8px 12px;
-    background: var(--bg);
-    border: 1px solid var(--border);
+    padding: 9px 14px;
+    background: var(--bg-inner, #101015);
+    border: 1px solid var(--bd-2, #20202a);
     border-bottom: none;
+    border-radius: 8px 8px 0 0;
   }
   .pool-group-title {
     display: flex;
@@ -235,10 +236,13 @@
     gap: 8px;
     font-family: var(--font-mono);
   }
-  /* La tabla de discos del grupo (DataTable) pega bajo la cabecera del grupo. */
+  /* La tabla de discos del grupo (DataTable) pega bajo la cabecera del grupo,
+     continuando el borde lateral para formar una sola card. */
   .pool-group-head + :global(.data-table) {
     border-top-left-radius: 0;
     border-top-right-radius: 0;
+    border: 1px solid var(--bd-2, #20202a);
+    border-top: none;
   }
 
   .disk-actions {
