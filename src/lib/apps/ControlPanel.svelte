@@ -19,6 +19,7 @@
   import AppShell from '$lib/components/AppShell.svelte';
   import CPUsers from './controlpanel/CPUsers.svelte';
   import CPShares from './controlpanel/CPShares.svelte';
+  import CPServices from './controlpanel/CPServices.svelte';
 
   let active = 'users';
 
@@ -63,6 +64,8 @@
       <CPUsers />
     {:else if active === 'shares'}
       <CPShares />
+    {:else if active === 'services'}
+      <CPServices />
     {:else}
       <div class="cp-placeholder">
         <div class="cp-ph-icon"></div>
