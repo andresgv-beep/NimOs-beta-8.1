@@ -163,6 +163,10 @@
       {#await import('$lib/apps/Settings.svelte') then module}
         <svelte:component this={module.default} />
       {/await}
+    {:else if win.appId === 'controlpanel'}
+      {#await import('$lib/apps/ControlPanel.svelte') then module}
+        <svelte:component this={module.default} />
+      {/await}
     {:else if win.appId === 'storage'}
       {#await import('$lib/apps/StorageApp.svelte') then module}
         <svelte:component this={module.default} />
