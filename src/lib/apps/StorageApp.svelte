@@ -492,7 +492,9 @@
   {:else}
 
   {#if active === 'overview'}
-    <StorageKPIs pools={pools} disks={disks} alerts={alerts} />
+    <div class="st-kpis-wrap">
+      <StorageKPIs pools={pools} disks={disks} alerts={alerts} />
+    </div>
   {/if}
 
   <div class="st-scroll">
@@ -654,10 +656,15 @@
   }
 
   /* Scroll container que envuelve las vistas (overview, disks, etc.) */
+  .st-kpis-wrap {
+    padding: 14px 22px 0;
+    flex-shrink: 0;
+  }
+
   .st-scroll {
     flex: 1;
     overflow-y: auto;
-    padding: 22px 28px 24px;
+    padding: 18px 22px 24px;
     display: flex;
     flex-direction: column;
     gap: 26px;
