@@ -17,10 +17,10 @@
    *   todavía no genera los bloques en smb.conf (endpoint vacío). Marcado
    *   en la UI como "pendiente de aplicar en backend".
    */
-  import { onMount, createEventDispatcher } from 'svelte';
+  import { onMount } from 'svelte';
   import { hdrs } from '$lib/stores/auth.js';
 
-  const dispatch = createEventDispatcher();
+  export let host = '';
 
   let status = { installed: true, running: false, version: '', port: 445, loading: true };
   let config = { workgroup: 'WORKGROUP', serverString: 'NimOS NAS' };
@@ -29,9 +29,6 @@
   let savingCfg = false;
   let msg = '';
   let msgError = false;
-
-  // host LAN (informativo)
-  let lanHost = '';
 
   // contraseña
   let pwUser = '';
@@ -51,7 +48,6 @@
       } else status.loading = false;
       if (rsh.ok) shares = await rsh.json();
     } catch { status.loading = false; }
-    lanHost = window.location.hostname || 'tu-nas';
   }
 
   async function toggleService() {
@@ -127,20 +123,16 @@
   onMount(load);
 </script>
 
-<div class="svc-page">
-  <!-- Cabecera -->
-  <div class="sp-head">
-    <button class="sp-back" on:click={() => dispatch('back')} title="Volver">‹</button>
-    <span class="sp-led" class:on={status.running}></span>
-    <div class="sp-title">
-      SMB · Samba
-      <span class="sp-sub">
-        {#if status.loading}· comprobando…
-        {:else}· {status.running ? 'activo' : 'detenido'}{status.version ? ` · v${status.version}` : ''}{/if}
-      </span>
+<div class="svc-pane">
+  <!-- Barra de estado + toggle (el título lo pone el contenedor) -->
+  <div class="sp-bar">
+    <div class="sp-status">
+      <span class="sp-led" class:on={status.running}></span>
+      {#if status.loading}comprobando…
+      {:else if !status.installed}Samba no instalado
+      {:else}{status.running ? 'activo' : 'detenido'} · puerto {status.port || 445}{status.version ? ` · v${status.version}` : ''}{/if}
     </div>
-    <div class="sp-spacer"></div>
-    <button class="sp-toggle" class:on={status.running} disabled={busy || !status.installed} on:click={toggleService}>
+    <button class="sp-toggle" class:on={status.running} disabled={busy || !status.installed} on:click={toggleService} title={status.running ? "Detener" : "Iniciar"}>
       <span class="sp-toggle-thumb"></span>
     </button>
   </div>
@@ -149,7 +141,7 @@
 
   <!-- Acceso LAN -->
   <div class="sp-lan">
-    Acceso desde la red local: <b>\\{lanHost}</b> · puerto {status.port || 445}
+    Acceso desde la red local: <b>\\{host || 'tu-nas'}</b> · puerto {status.port || 445}
   </div>
 
   <!-- Carpetas expuestas -->
@@ -169,7 +161,7 @@
               <div class="sp-fpath">{s.pool || '—'}</div>
             </div>
             <span class="sp-ftag" class:ro={s.readOnly}>{s.readOnly ? 'solo lectura' : 'lectura/escritura'}</span>
-            <button class="sp-mini" class:on={s.smb} on:click={() => toggleExpose(s)}>
+            <button class="sp-mini" class:on={s.smb} on:click={() => toggleExpose(s)} title={s.smb ? 'Dejar de exponer en SMB' : 'Exponer en SMB'}>
               <span class="sp-mini-thumb"></span>
             </button>
           </div>
@@ -214,27 +206,13 @@
 </div>
 
 <style>
-  .svc-page { display: flex; flex-direction: column; gap: 18px; max-width: 860px; }
+  .svc-pane { display: flex; flex-direction: column; gap: 18px; max-width: 860px; }
 
-  /* Cabecera */
-  .sp-head { display: flex; align-items: center; gap: 12px; }
-  .sp-back {
-    width: 28px; height: 28px;
-    border: 1px solid var(--bd-2, #20202a);
-    border-radius: 6px;
-    background: var(--bg-inner, #101015);
-    color: var(--fg-3, #9c9ca4);
-    cursor: pointer;
-    font-size: 16px;
-    line-height: 1;
-    flex-shrink: 0;
-  }
-  .sp-back:hover { color: var(--fg, #f0f0f0); border-color: var(--bd-3, #2a2a32); }
+  /* Barra de estado */
+  .sp-bar { display: flex; align-items: center; justify-content: space-between; }
+  .sp-status { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--fg-3, #9c9ca4); font-family: var(--font-mono); }
   .sp-led { width: 9px; height: 9px; border-radius: 2.5px; background: var(--fg-5, #5a5a62); }
   .sp-led.on { background: var(--st-ok, #00ff9f); }
-  .sp-title { font-size: 14px; color: var(--fg, #f0f0f0); font-weight: 600; font-family: var(--font-mono); }
-  .sp-sub { color: var(--fg-4, #7a7a82); font-size: 12px; font-weight: 400; }
-  .sp-spacer { flex: 1; }
   .sp-toggle {
     width: 40px; height: 20px;
     background: var(--bg-inner, #101015);

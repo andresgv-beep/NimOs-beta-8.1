@@ -1,22 +1,24 @@
 <script>
   /**
-   * ServiceSSH · panel de SSH (vive bajo la barra de pestañas de CPServices)
-   * El contenedor pinta el título; aquí solo el contenido.
-   *   GET /api/ssh/status → { running, version } · POST start|stop
+   * ServiceFTP · Panel de Control · página de FTP (vsftpd)
+   * ────────────────────────────────────────────────────────
+   * Backend solo expone status/start/stop (sin config), así que es simple.
+   *   GET  /api/ftp/status → { installed, running }
+   *   POST /api/ftp/start | stop
    */
   import { onMount } from 'svelte';
   import { hdrs } from '$lib/stores/auth.js';
 
   export let host = '';
 
-  let status = { running: false, version: '', loading: true };
+  let status = { installed: true, running: false, loading: true };
   let busy = false;
   let msg = '';
   let msgError = false;
 
   async function load() {
     try {
-      const r = await fetch('/api/ssh/status', { headers: hdrs() });
+      const r = await fetch('/api/ftp/status', { headers: hdrs() });
       if (r.ok) { const d = await r.json(); status = { ...status, ...d, loading: false }; }
       else status.loading = false;
     } catch { status.loading = false; }
@@ -27,7 +29,7 @@
     busy = true; msg = '';
     const action = status.running ? 'stop' : 'start';
     try {
-      const r = await fetch(`/api/ssh/${action}`, { method: 'POST', headers: hdrs() });
+      const r = await fetch(`/api/ftp/${action}`, { method: 'POST', headers: hdrs() });
       if (!r.ok) { const e = await r.json().catch(() => ({})); msg = e.error || 'Error'; msgError = true; }
     } catch { msg = 'Error de red'; msgError = true; }
     setTimeout(load, 600);
@@ -42,24 +44,25 @@
     <div class="sp-status">
       <span class="sp-led" class:on={status.running}></span>
       {#if status.loading}comprobando…
-      {:else}{status.running ? 'activo' : 'detenido'} · puerto 22{status.version ? ` · ${status.version}` : ''}{/if}
+      {:else if !status.installed}vsftpd no instalado
+      {:else}{status.running ? 'activo' : 'detenido'} · puerto 21{/if}
     </div>
-    <button class="sp-toggle" class:on={status.running} disabled={busy} on:click={toggleService} title={status.running ? "Detener" : "Iniciar"}>
+    <button class="sp-toggle" class:on={status.running} disabled={busy || !status.installed} on:click={toggleService} title={status.running ? "Detener" : "Iniciar"}>
       <span class="sp-toggle-thumb"></span>
     </button>
   </div>
 
   {#if msg}<div class="sp-msg" class:error={msgError}>{msg}</div>{/if}
 
-  <div class="sp-lan">Acceso remoto: <b>ssh usuario@{host || 'tu-nas'}</b> · puerto 22</div>
+  <div class="sp-lan">Acceso: <b>ftp://{host || 'tu-nas'}</b> · puerto 21</div>
 
   {#if status.running}
-    <div class="sp-note">⚠ El acceso remoto por terminal está activo. Cualquiera con credenciales válidas puede conectarse. Mantenlo apagado si no lo necesitas.</div>
+    <div class="sp-note">⚠ FTP transmite credenciales sin cifrar. Úsalo solo en redes de confianza; para acceso remoto prefiere SMB o SFTP.</div>
   {/if}
 
   <div class="sp-info">
-    SSH permite administrar el NAS desde una terminal remota. La configuración avanzada
-    (puerto, claves, acceso root) se gestiona desde el sistema; aquí solo el arranque del servicio.
+    FTP clásico (vsftpd) para clientes que lo requieran. La configuración avanzada se gestiona
+    desde el sistema; aquí solo se controla el arranque del servicio.
   </div>
 </div>
 
