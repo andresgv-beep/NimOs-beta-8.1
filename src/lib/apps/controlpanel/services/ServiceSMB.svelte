@@ -155,7 +155,11 @@
       <div class="sp-folders">
         {#each shares as s (s.name)}
           <div class="sp-folder">
-            <div class="sp-fic"></div>
+            <div class="sp-fic">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+              </svg>
+            </div>
             <div class="sp-fid">
               <div class="sp-fnm">{s.displayName || s.name}</div>
               <div class="sp-fpath">{s.pool || '—'}</div>
@@ -283,7 +287,12 @@
     background: rgba(0,255,159,0.08);
     border: 1px solid rgba(0,255,159,0.2);
     flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--nim-green, #00ff9f);
   }
+  .sp-fic svg { width: 15px; height: 15px; }
   .sp-fid { flex: 1; min-width: 0; }
   .sp-fnm { font-size: 13px; color: var(--fg, #f0f0f0); font-family: var(--font-mono); font-weight: 600; }
   .sp-fpath { font-size: 11px; color: var(--fg-5, #5a5a62); font-family: var(--font-mono); margin-top: 2px; }
