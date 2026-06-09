@@ -27,7 +27,7 @@
   import AppIcon from '$lib/ui/AppIcon.svelte';
   import {
     StatCard, DataTable, Sparkline, LED, SectionHead, BevelButton,
-    IconButton, TextInput, Tab, Badge, CmdOutputLog, EmptyState
+    IconButton, FilterBar, Badge, CmdOutputLog, EmptyState
   } from '$lib/ui';
 
   // ─── State ───
@@ -347,36 +347,18 @@
       </StatCard>
     </div>
 
-    <!-- Toolbar: tabs de filtro + búsqueda -->
-    <div class="nh-toolbar">
-      <div class="filter-tabs">
-        <Tab active={filter === 'all'}     onClick={() => filter = 'all'}>
-          Todos <Badge size="sm">{services.length}</Badge>
-        </Tab>
-        <Tab active={filter === 'running'} onClick={() => filter = 'running'}>
-          Activos <Badge size="sm" variant="accent">{runningCount}</Badge>
-        </Tab>
-        <Tab active={filter === 'stopped'} onClick={() => filter = 'stopped'}>
-          Detenidos <Badge size="sm">{stoppedCount}</Badge>
-        </Tab>
-        <Tab active={filter === 'error'}   onClick={() => filter = 'error'} hasError={errorCount > 0}>
-          Errores
-          {#if errorCount > 0}<Badge size="sm" variant="crit">{errorCount}</Badge>{/if}
-        </Tab>
-      </div>
-
-      <div class="tb-right">
-        <div style="width:200px">
-          <TextInput
-            bind:value={search}
-            placeholder="Buscar servicio..."
-            icon="⌕"
-            keyHint="/"
-            size="sm"
-          />
-        </div>
-      </div>
-    </div>
+    <!-- Toolbar: tabs de filtro + búsqueda (FilterBar v3) -->
+    <FilterBar
+      tabs={[
+        { id: 'all',     label: 'Todos',     count: services.length },
+        { id: 'running', label: 'Activos',   count: runningCount },
+        { id: 'stopped', label: 'Detenidos', count: stoppedCount },
+        { id: 'error',   label: 'Errores',   count: errorCount > 0 ? errorCount : null, variant: 'crit' },
+      ]}
+      bind:active={filter}
+      bind:search
+      placeholder="Buscar servicio..."
+    />
 
     <!-- Tabla de servicios -->
     <div class="nh-table-wrap">
@@ -623,26 +605,6 @@
   .nh-spark :global(svg) {
     width: 100%;
     height: 100%;
-  }
-
-  .nh-toolbar {
-    display: flex;
-    align-items: center;
-    padding: 0 4px 0 14px;
-    background: var(--bg-1);
-    border-bottom: 1px solid var(--border);
-    gap: 20px;
-    flex-shrink: 0;
-  }
-  .filter-tabs {
-    display: flex;
-    gap: 4px;
-    flex: 1;
-  }
-  .tb-right {
-    display: flex;
-    align-items: center;
-    padding: 8px 10px;
   }
 
   .nh-table-wrap {
