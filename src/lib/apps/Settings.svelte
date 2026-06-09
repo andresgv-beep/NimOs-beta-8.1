@@ -33,7 +33,6 @@
       label: 'Sistema',
       items: [
         { id: 'monitor',     label: 'Monitor' },
-        { id: 'permissions', label: 'Permisos de apps' },
         { id: 'portal',      label: 'Portal' },
         { id: 'updates',     label: 'Actualizaciones' },
       ],
@@ -367,10 +366,6 @@
     {#if activeView === 'monitor'}
       <div class="section-label">Monitor del sistema</div>
       <div class="coming-soon">Dashboard de métricas — coming soon</div>
-
-    {:else if activeView === 'permissions'}
-      <div class="section-label">Permisos de apps</div>
-      <div class="coming-soon">Sistema de permisos de aplicaciones</div>
 
     {:else if activeView === 'portal'}
       <div class="section-label">Autenticación en dos pasos (2FA)</div>

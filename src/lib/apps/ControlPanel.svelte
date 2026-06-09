@@ -20,6 +20,7 @@
   import CPUsers from './controlpanel/CPUsers.svelte';
   import CPShares from './controlpanel/CPShares.svelte';
   import CPServices from './controlpanel/CPServices.svelte';
+  import CPPermissions from './controlpanel/CPPermissions.svelte';
 
   let active = 'users';
 
@@ -66,6 +67,8 @@
       <CPShares />
     {:else if active === 'services'}
       <CPServices />
+    {:else if active === 'permissions'}
+      <CPPermissions />
     {:else}
       <div class="cp-placeholder">
         <div class="cp-ph-icon"></div>
