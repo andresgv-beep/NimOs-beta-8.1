@@ -30,7 +30,7 @@
    */
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
   import {
-    SectionHead, Badge, LED, EmptyState, StripeProgressBar, DataTable,
+    SectionHead, Badge, LED, EmptyState, DataTable,
   } from '$lib/ui';
   import {
     fmtBytes, fmtDate, inferDiskRole,
@@ -51,6 +51,14 @@
   export let scrubMsg = '';
 
   const dispatch = createEventDispatcher();
+
+  // El backend no siempre rellena usage_percent; lo calculamos desde
+  // used/total igual que las KPIs de cabecera (evita la barra a 0%).
+  function poolPct(pool) {
+    const total = pool?.usage?.total_bytes || 0;
+    const used = pool?.usage?.used_bytes || 0;
+    return total > 0 ? Math.round((used / total) * 100) : 0;
+  }
 
   // ─── Upgrade a RAID1 (contextual) ────────────────────────────────
   // Un pool single puede subir a raid1 si hay un disco libre que añadir,
@@ -140,7 +148,7 @@
           <div class="pool-head" on:click={() => togglePoolExpand(pool.name)}
                on:keydown={(e) => e.key === 'Enter' && togglePoolExpand(pool.name)}
                role="button" tabindex="0">
-            <div class="pool-head-icon">◆</div>
+            <div class="pool-head-icon"></div>
             <div class="pool-ident">
               <div class="pool-name">
                 {pool.name}
@@ -162,11 +170,15 @@
               </div>
             </div>
             <div class="pool-bar-wrap">
-              <StripeProgressBar
-                value={pool.usage?.usage_percent || 0}
-                variant={usageVariant(pool.usage?.usage_percent || 0)}
-                showLabel={true}
-              />
+              <div class="cap-bar">
+                <div class="cap-track">
+                  <div
+                    class="cap-fill {usageVariant(poolPct(pool))}"
+                    style="width:{poolPct(pool)}%"
+                  ></div>
+                </div>
+                <span class="cap-pct">{poolPct(pool)}%</span>
+              </div>
             </div>
             <div class="pool-size">{fmtBytes(pool.usage?.total_bytes)}</div>
             <div class="pool-status">
@@ -193,7 +205,6 @@
               tabindex="-1"
             >
               <button class="pa-btn" disabled title="Disponible en Fase B">
-                <span class="pa-num">01</span>
                 <span>Snapshot</span>
                 <span class="pa-tag">Fase B</span>
               </button>
@@ -202,14 +213,12 @@
                 on:click={() => { dispatch('scrub', { poolName: pool.name }); kebabOpenFor = null; }}
                 disabled={scrubbing[pool.name]}
               >
-                <span class="pa-num">02</span>
                 <span>{scrubbing[pool.name] ? 'Iniciando...' : 'Verificar integridad'}</span>
               </button>
               <button
-                class="pa-btn"
+                class="pa-btn danger"
                 on:click={() => { dispatch('export-pool', { poolName: pool.name }); kebabOpenFor = null; }}
               >
-                <span class="pa-num">03</span>
                 <span>Desmontar</span>
               </button>
               {#if canUpgradeToRaid1(pool)}
@@ -217,7 +226,6 @@
                   class="pa-btn"
                   on:click={() => { dispatch('upgrade-raid', { pool }); kebabOpenFor = null; }}
                 >
-                  <span class="pa-num">04</span>
                   <span>Mejorar a RAID1</span>
                 </button>
               {/if}
@@ -233,7 +241,7 @@
                   <div class="pig-label">Total</div>
                   <div class="pig-value">{fmtBytes(pool.usage?.total_bytes)}</div>
                 </div>
-                <div class="pig-col">
+                <div class="pig-col edge-ok">
                   <div class="pig-label">Usado</div>
                   <div class="pig-value tc-accent">{fmtBytes(pool.usage?.used_bytes)}</div>
                 </div>
@@ -243,20 +251,20 @@
                 </div>
                 <div class="pig-col">
                   <div class="pig-label">Uso</div>
-                  <div class="pig-value" class:warn={pool.usage?.usage_percent > 75} class:crit={pool.usage?.usage_percent > 90}>
-                    {pool.usage?.usage_percent || 0}%
+                  <div class="pig-value" class:warn={poolPct(pool) > 75} class:crit={poolPct(pool) > 90}>
+                    {poolPct(pool)}%
                   </div>
                 </div>
                 <div class="pig-col">
                   <div class="pig-label">Health</div>
-                  <div class="pig-value">
+                  <div class="pig-value pig-flex">
                     <LED size={7} variant={ledVariantForHealth(pool.health?.status)} />
                     <span>{pool.health?.status || '—'}</span>
                   </div>
                 </div>
                 <div class="pig-col">
                   <div class="pig-label">Mount</div>
-                  <div class="pig-value mono sm">{pool.mount_point || '—'}</div>
+                  <div class="pig-value mono sm pig-trunc">{pool.mount_point || '—'}</div>
                 </div>
               </div>
 
@@ -274,7 +282,7 @@
                       <span class="disk-idx">D{i + 1}</span>
                       <span class="mono dt-trunc">{disk.model || '—'}</span>
                       <span class="mono dt-trunc">{disk.current_path || '—'}</span>
-                      <span>{fmtBytes(disk.size_bytes) || '—'}</span>
+                      <span class="disk-cap">{fmtBytes(disk.size_bytes) || '—'}</span>
                       <span>
                         <Badge size="sm" variant={inferDiskRole(pool.devices, i, pool.profile) === 'parity' ? 'warn' : 'default'}>
                           {inferDiskRole(pool.devices, i, pool.profile)}
@@ -496,9 +504,14 @@
   .pool-head:hover { background: var(--side-hover); }
 
   .pool-head-icon {
-    color: var(--signal);
-    font-size: 14px;
-    text-align: center;
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    background: var(--signal, #00ff9f);
+    transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .pool.open .pool-head-icon {
+    transform: rotate(45deg);
   }
 
   .pool-ident {
@@ -605,39 +618,39 @@
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    padding: 6px 10px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--fg-dim);
-    font-family: inherit;
+    padding: 6px 12px;
+    background: var(--bg-inner, #101015);
+    border: 1px solid var(--bd-2, #20202a);
+    border-radius: 5px;
+    color: var(--fg-3, #9c9ca4);
+    font-family: var(--font-mono);
     font-size: 10px;
     letter-spacing: 0.3px;
     cursor: pointer;
-    transition: all 0.1s;
-    clip-path: polygon(
-      0 0, calc(100% - 5px) 0, 100% 5px,
-      100% 100%, 5px 100%, 0 calc(100% - 5px)
-    );
+    transition: all 0.12s;
   }
   .pa-btn:not(:disabled):hover {
-    border-color: var(--accent);
-    color: var(--accent);
-    background: var(--bg-1);
+    border-color: rgba(0, 255, 159, 0.35);
+    color: var(--nim-green, #00ff9f);
+    background: rgba(0, 255, 159, 0.05);
+  }
+  .pa-btn.danger:not(:disabled):hover {
+    border-color: rgba(255, 90, 90, 0.35);
+    color: var(--st-crit, #ff5a5a);
+    background: rgba(255, 90, 90, 0.05);
   }
   .pa-btn:disabled {
     cursor: not-allowed;
-    opacity: 0.5;
-  }
-  .pa-num {
-    color: var(--fg-faint);
-    font-size: 9px;
-    min-width: 22px;
+    opacity: 0.45;
   }
   .pa-tag {
-    color: var(--fg-faint);
+    color: var(--fg-5, #5a5a62);
     font-size: 8px;
     letter-spacing: 0.8px;
     text-transform: uppercase;
+    border: 1px solid var(--bd-3, #2a2a32);
+    border-radius: 3px;
+    padding: 1px 4px;
     margin-left: 2px;
   }
 
@@ -654,56 +667,116 @@
   .pool-info-grid {
     display: grid;
     grid-template-columns: repeat(6, 1fr);
-    gap: 1px;
-    background: var(--border);
-    border: 1px solid var(--border);
+    gap: 8px;
   }
   .pig-col {
-    background: var(--bg-1);
+    background: var(--bg-card, #15151a);
+    border-radius: 7px;
     padding: 10px 12px;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 6px;
     min-width: 0;
+    position: relative;
+    overflow: hidden;
+  }
+  /* Borde de color a la izquierda (variante v3) */
+  .pig-col.edge-ok::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 2px;
+    height: 100%;
+    background: var(--st-ok, #00ff9f);
+    opacity: 0.6;
   }
   .pig-label {
     font-size: 9px;
-    color: var(--fg-mute);
+    color: var(--fg-5, #5a5a62);
     text-transform: uppercase;
-    letter-spacing: 1.2px;
+    letter-spacing: 0.6px;
   }
   .pig-value {
-    font-size: 12px;
-    color: var(--fg);
-    font-weight: 600;
+    font-size: 14px;
+    color: var(--fg, #f0f0f0);
+    font-family: var(--font-mono);
     font-feature-settings: "tnum";
+  }
+  .pig-value.pig-flex {
     display: flex;
     align-items: center;
     gap: 6px;
+  }
+  .pig-value.pig-trunc {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .pig-value.mono { font-family: var(--font-mono); }
-  .pig-value.sm { font-size: 10px; }
+  .pig-value.sm { font-size: 11px; }
+  .pig-value.tc-accent { color: var(--st-ok, #00ff9f); }
   .pig-value.warn { color: var(--warn); }
   .pig-value.crit { color: var(--crit); }
 
-  /* Disk table header ───── */
+  /* Barra de capacidad v3 (cabecera del pool) */
+  .cap-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .cap-track {
+    flex: 1;
+    height: 6px;
+    background: var(--bd-2, #20202a);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .cap-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: var(--st-ok, #00ff9f);
+    transition: width 0.3s;
+  }
+  .cap-fill.warn { background: var(--st-warn, #ffc857); }
+  .cap-fill.crit { background: var(--st-crit, #ff5a5a); }
+  .cap-pct {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-3, #9c9ca4);
+    min-width: 34px;
+    text-align: right;
+  }
+  /* Capacidad de disco en blanco (no apagada) */
+  .disk-cap {
+    color: var(--fg, #f0f0f0);
+    font-feature-settings: "tnum";
+  }
+
+  /* Disk table: cabecera integrada en la card (no flotando) ───── */
+  .pool-disks :global(.data-table) {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+    border: 1px solid var(--bd-2, #20202a);
+    border-top: none;
+  }
   .pd-head {
     font-size: 10px;
-    color: var(--fg-mute);
-    text-transform: uppercase;
-    letter-spacing: 1.3px;
-    margin-bottom: 8px;
-    padding: 0 2px;
+    color: var(--fg-3, #9c9ca4);
+    letter-spacing: 0.5px;
+    font-family: var(--font-mono);
+    padding: 9px 14px;
+    background: var(--bg-inner, #101015);
+    border: 1px solid var(--bd-2, #20202a);
+    border-bottom: none;
+    border-radius: 8px 8px 0 0;
     display: flex;
     align-items: center;
     gap: 10px;
   }
   .pd-head .todo {
     font-size: 9px;
-    text-transform: none;
+    color: var(--fg-5, #5a5a62);
     letter-spacing: 0.3px;
   }
 
