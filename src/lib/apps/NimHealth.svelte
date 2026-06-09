@@ -292,6 +292,20 @@
   bodyPadding={false}
 >
 
+  <!-- ═══ HEADER · reserva la franja superior (controles de ventana) ═══ -->
+  <svelte:fragment slot="page-header">
+    {#if view === 'detail' && selectedService}
+      <b>{svcDisplayName(selectedService)}</b>
+      <span class="nh-ph-sub">· detalle del servicio</span>
+    {:else if active === 'system'}
+      <b>Sistema</b>
+      <span class="nh-ph-sub">· información del host</span>
+    {:else}
+      <b>Task Manager</b>
+      <span class="nh-ph-sub">· {services.length} servicios</span>
+    {/if}
+  </svelte:fragment>
+
   <!-- ═══ DASHBOARD ═══ -->
   {#if view === 'dashboard'}
 
@@ -591,6 +605,11 @@
 </AppShell>
 
 <style>
+  .nh-ph-sub {
+    color: var(--fg-4, #7a7a82);
+    font-size: 12px;
+    font-weight: 400;
+  }
   .nh-kpis {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
