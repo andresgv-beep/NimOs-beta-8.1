@@ -31,7 +31,7 @@
       label: 'Sistema',
       items: [
         { id: 'users',       label: 'Usuarios' },
-        { id: 'shares',      label: 'Compartidas' },
+        { id: 'shares',      label: 'Carpetas compartidas' },
         { id: 'services',    label: 'Servicios' },
         { id: 'permissions', label: 'Permisos de apps' },
         { id: 'portal',      label: 'Portal · 2FA' },
@@ -42,7 +42,7 @@
 
   const meta = {
     users:       { t: 'Usuarios',         s: '· cuentas y accesos' },
-    shares:      { t: 'Compartidas',      s: '· carpetas compartidas' },
+    shares:      { t: 'Carpetas compartidas', s: '· acceso en red' },
     services:    { t: 'Servicios',        s: '· SMB · WebDAV · SSH' },
     permissions: { t: 'Permisos de apps', s: '· qué puede usar cada usuario' },
     portal:      { t: 'Portal · 2FA',     s: '· seguridad de acceso' },
