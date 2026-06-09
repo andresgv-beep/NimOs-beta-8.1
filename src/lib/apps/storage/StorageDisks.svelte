@@ -19,7 +19,7 @@
    *   · wipe        — { detail: { path } } — abrir dialog de wipe en el padre
    */
   import { createEventDispatcher } from 'svelte';
-  import { SectionHead, BevelButton, EmptyState, Badge, LED } from '$lib/ui';
+  import { SectionHead, BevelButton, EmptyState, Badge, LED, DataTable } from '$lib/ui';
   import { fmtBytes, smartVariant } from './formatters.js';
   import './views-styles.css';
 
@@ -116,38 +116,28 @@
           </div>
           <span class="sm tc-faint mono">montado · para destruir, desmóntalo primero</span>
         </div>
-        <div class="disk-table cols-6-assigned">
-          <div class="disk-thead">
-            <div>Dispositivo</div>
-            <div>Modelo</div>
-            <div>Capacidad</div>
-            <div>Pool</div>
-            <div>SMART</div>
-            <div>Acción</div>
-          </div>
+        <DataTable cols="130px 1fr 90px 100px 110px 200px" headers={['Dispositivo', 'Modelo', 'Capacidad', 'Pool', 'SMART', 'Acción']}>
           {#each (pool.devices || []) as disk}
-            <div class="disk-row">
-              <div class="disk-cell mono">{disk.current_path || '—'}</div>
-              <div class="disk-cell mono">{disk.model || '—'}</div>
-              <div class="disk-cell">{fmtBytes(disk.size_bytes) || '—'}</div>
-              <div class="disk-cell">
-                <Badge size="sm" variant="accent">{pool.name}</Badge>
-              </div>
-              <div class="disk-cell">
+            <div class="dt-row">
+              <span class="mono dt-trunc">{disk.current_path || '—'}</span>
+              <span class="mono dt-trunc">{disk.model || '—'}</span>
+              <span>{fmtBytes(disk.size_bytes) || '—'}</span>
+              <span><Badge size="sm" variant="accent">{pool.name}</Badge></span>
+              <span class="dt-flex">
                 <LED size={7} variant={smartVariant(disk.smart_status)} />
                 <span class="tc-dim sm">{disk.smart_status || 'unknown'}</span>
-              </div>
-              <div class="disk-cell disk-actions">
+              </span>
+              <span class="disk-actions">
                 <button class="disk-action-btn" disabled title="Disponible en Fase B7">
                   Desasignar <span class="action-tag">B7</span>
                 </button>
                 <button class="disk-action-btn" disabled title="Disponible en Fase B7">
                   Reemplazar <span class="action-tag">B7</span>
                 </button>
-              </div>
+              </span>
             </div>
           {/each}
-        </div>
+        </DataTable>
       </div>
     {/each}
   {/if}
@@ -158,28 +148,20 @@
     {#if !disks.eligible || disks.eligible.length === 0}
       <EmptyState icon="◌" title="Sin discos libres" hint="Todos los discos están asignados a pools" />
     {:else}
-      <div class="disk-table cols-6-free">
-        <div class="disk-thead">
-          <div>Dispositivo</div>
-          <div>Modelo</div>
-          <div>Capacidad</div>
-          <div>Tipo</div>
-          <div>Estado</div>
-          <div>Acción</div>
-        </div>
+      <DataTable cols="120px 1fr 90px 70px 100px 230px" headers={['Dispositivo', 'Modelo', 'Capacidad', 'Tipo', 'Estado', 'Acción']}>
         {#each disks.eligible as disk}
           {@const dPath = disk.path || '/dev/' + disk.name}
           {@const dStatus = diskStatus(dPath)}
-          <div class="disk-row" class:has-orphan={dStatus.kind === 'orphan'}>
-            <div class="disk-cell mono">{dPath}</div>
-            <div class="disk-cell mono">{disk.model || '—'}</div>
-            <div class="disk-cell">{disk.sizeH || fmtBytes(disk.size)}</div>
-            <div class="disk-cell">
+          <div class="dt-row" class:has-orphan={dStatus.kind === 'orphan'}>
+            <span class="mono dt-trunc">{dPath}</span>
+            <span class="mono dt-trunc">{disk.model || '—'}</span>
+            <span>{disk.sizeH || fmtBytes(disk.size)}</span>
+            <span>
               <Badge size="sm" variant={disk.rotational ? 'default' : 'info'}>
                 {disk.rotational ? 'HDD' : 'SSD'}
               </Badge>
-            </div>
-            <div class="disk-cell" title={dStatus.tooltip || ''}>
+            </span>
+            <span title={dStatus.tooltip || ''}>
               <Badge size="sm" variant={dStatus.variant}>
                 {dStatus.label}
               </Badge>
@@ -188,8 +170,8 @@
                   Datos preservables · ver Observados
                 </div>
               {/if}
-            </div>
-            <div class="disk-cell disk-actions">
+            </span>
+            <span class="disk-actions">
               <button
                 class="disk-action-btn primary"
                 disabled
@@ -206,10 +188,10 @@
               >
                 Formatear
               </button>
-            </div>
+            </span>
           </div>
         {/each}
-      </div>
+      </DataTable>
     {/if}
   </div>
 
@@ -217,24 +199,17 @@
   {#if disks.usb?.length > 0}
     <div style="margin-top:24px">
       <SectionHead count={`· ${disks.usb.length}`}>Dispositivos USB</SectionHead>
-      <div class="disk-table cols-5-disk">
-        <div class="disk-thead">
-          <div>Dispositivo</div>
-          <div>Modelo</div>
-          <div>Capacidad</div>
-          <div>Tipo</div>
-          <div>Estado</div>
-        </div>
+      <DataTable cols="130px 1fr 100px 120px 130px" headers={['Dispositivo', 'Modelo', 'Capacidad', 'Tipo', 'Estado']}>
         {#each disks.usb as disk}
-          <div class="disk-row">
-            <div class="disk-cell mono">{disk.path || '/dev/' + disk.name}</div>
-            <div class="disk-cell mono">{disk.model || '—'}</div>
-            <div class="disk-cell">{disk.sizeH || fmtBytes(disk.size)}</div>
-            <div class="disk-cell"><Badge size="sm" variant="warn">USB</Badge></div>
-            <div class="disk-cell"><Badge size="sm">externo</Badge></div>
+          <div class="dt-row">
+            <span class="mono dt-trunc">{disk.path || '/dev/' + disk.name}</span>
+            <span class="mono dt-trunc">{disk.model || '—'}</span>
+            <span>{disk.sizeH || fmtBytes(disk.size)}</span>
+            <span><Badge size="sm" variant="warn">USB</Badge></span>
+            <span><Badge size="sm">externo</Badge></span>
           </div>
         {/each}
-      </div>
+      </DataTable>
     </div>
   {/if}
 </div>
@@ -322,7 +297,7 @@
   }
 
   /* Bloque C3.3: indicadores en lista de discos */
-  :global(.disk-row.has-orphan) {
+  :global(.dt-row.has-orphan) {
     border-left: 2px solid var(--warn);
   }
 
@@ -330,5 +305,18 @@
     margin-top: 2px;
     font-size: 11px;
     line-height: 1.3;
+  }
+
+  /* Helpers de celda para DataTable v3 */
+  .dt-trunc {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .dt-flex {
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
 </style>

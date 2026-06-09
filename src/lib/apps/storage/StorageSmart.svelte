@@ -12,7 +12,7 @@
    *
    * Sin eventos: vista read-only.
    */
-  import { SectionHead, EmptyState, Badge, LED } from '$lib/ui';
+  import { SectionHead, EmptyState, Badge, LED, DataTable } from '$lib/ui';
   import { fmtBytes } from './formatters.js';
   import { smartVariant } from './formatters.js';
   import './views-styles.css';
@@ -34,40 +34,48 @@
   {#if pools.length === 0 && (!disks.eligible || disks.eligible.length === 0)}
     <EmptyState icon="◌" title="Sin discos" hint="No hay discos detectados en el sistema" />
   {:else}
-    <div class="disk-table cols-6-smart">
-      <div class="disk-thead">
-        <div>Dispositivo</div>
-        <div>Modelo</div>
-        <div>Capacidad</div>
-        <div>Pool</div>
-        <div>SMART</div>
-        <div>Notas</div>
-      </div>
+    <DataTable cols="130px 1fr 90px 100px 130px 1fr" headers={['Dispositivo', 'Modelo', 'Capacidad', 'Pool', 'SMART', 'Notas']}>
       {#each pools as pool}
         {#each (pool.devices || []) as disk}
-          <div class="disk-row">
-            <div class="disk-cell mono">{disk.current_path || '—'}</div>
-            <div class="disk-cell mono">{disk.model || '—'}</div>
-            <div class="disk-cell">{fmtBytes(disk.size_bytes) || '—'}</div>
-            <div class="disk-cell"><Badge size="sm" variant="accent">{pool.name}</Badge></div>
-            <div class="disk-cell">
+          <div class="dt-row">
+            <span class="mono dt-trunc">{disk.current_path || '—'}</span>
+            <span class="mono dt-trunc">{disk.model || '—'}</span>
+            <span>{fmtBytes(disk.size_bytes) || '—'}</span>
+            <span><Badge size="sm" variant="accent">{pool.name}</Badge></span>
+            <span class="dt-smart">
               <LED size={7} variant={smartVariant(disk.smart_status)} />
               <span class="sm">{disk.smart_status || 'unknown'}</span>
-            </div>
-            <div class="disk-cell tc-mute sm">
+            </span>
+            <span class="tc-mute sm dt-trunc">
               {#if disk.smart_status === 'critical'}Reemplazar cuanto antes
               {:else if disk.smart_status === 'warning'}Monitorizar
               {:else if disk.smart_status === 'missing'}Disco desconectado
               {:else if disk.smart_status === 'ok'}Sin incidencias
               {:else}—{/if}
-            </div>
+            </span>
           </div>
         {/each}
       {/each}
-    </div>
+    </DataTable>
 
     <div class="todo-note">
       <b>TODO</b> · temperatura, horas de operación y errores detallados pendientes de añadir al backend.
     </div>
   {/if}
 </div>
+
+<style>
+  /* Celdas con texto largo (modelo, ruta, notas): truncar con ellipsis. */
+  .dt-trunc {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  /* Celda SMART: LED + texto alineados. */
+  .dt-smart {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+</style>
