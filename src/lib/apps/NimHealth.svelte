@@ -26,7 +26,7 @@
   import AppShell from '$lib/components/AppShell.svelte';
   import AppIcon from '$lib/ui/AppIcon.svelte';
   import {
-    KPICard, DenseTable, LED, SectionHead, BevelButton,
+    StatCard, DataTable, Sparkline, LED, SectionHead, BevelButton,
     IconButton, TextInput, Tab, Badge, CmdOutputLog, EmptyState
   } from '$lib/ui';
 
@@ -297,50 +297,54 @@
 
     <!-- KPIs row -->
     <div class="nh-kpis">
-      <KPICard
+      <StatCard
         label="CPU"
         value={cpu.percent}
         unit="% · {cpu.cores}c · load {cpu.load}"
-        state={cpuVariant === 'ok' ? 'nominal' : cpuVariant === 'warn' ? 'high' : 'critical'}
-        stateVariant={cpuVariant}
-        valueVariant={cpuVariant === 'crit' ? 'crit' : cpuVariant === 'warn' ? 'warn' : 'accent'}
-        sparkData={cpuHistory}
-        sparkVariant={cpuVariant === 'crit' ? 'crit' : cpuVariant === 'warn' ? 'warn' : 'accent'}
-        sparkFilled={true}
-        bracketVariant={cpuVariant === 'crit' ? 'crit' : cpuVariant === 'warn' ? 'warn' : 'accent'}
-      />
-      <KPICard
+        variant={cpuVariant === 'crit' ? 'crit' : cpuVariant === 'warn' ? 'warn' : 'ok'}
+        tag={cpuVariant === 'ok' ? 'nominal' : cpuVariant === 'warn' ? 'high' : 'critical'}
+        tagVariant={cpuVariant}
+      >
+        <div class="nh-spark">
+          <Sparkline data={cpuHistory} variant={cpuVariant === 'crit' ? 'crit' : cpuVariant === 'warn' ? 'warn' : 'accent'} filled={true} />
+        </div>
+      </StatCard>
+      <StatCard
         label="Memoria"
         value={fmtBytes(ram.used)}
         unit="/ {fmtBytes(ram.total)} · {ram.percent}%"
-        state={ramVariant === 'ok' ? 'ok' : ramVariant === 'warn' ? 'high' : 'critical'}
-        stateVariant={ramVariant}
-        valueVariant={ramVariant === 'crit' ? 'crit' : ramVariant === 'warn' ? 'warn' : 'default'}
-        sparkData={ramHistory}
-        sparkVariant={ramVariant === 'crit' ? 'crit' : ramVariant === 'warn' ? 'warn' : 'info'}
-        bracketVariant={ramVariant === 'crit' ? 'crit' : ramVariant === 'warn' ? 'warn' : 'info'}
-      />
-      <KPICard
+        variant={ramVariant === 'crit' ? 'crit' : ramVariant === 'warn' ? 'warn' : 'default'}
+        tag={ramVariant === 'ok' ? 'ok' : ramVariant === 'warn' ? 'high' : 'critical'}
+        tagVariant={ramVariant}
+      >
+        <div class="nh-spark">
+          <Sparkline data={ramHistory} variant={ramVariant === 'crit' ? 'crit' : ramVariant === 'warn' ? 'warn' : 'info'} />
+        </div>
+      </StatCard>
+      <StatCard
         label="Disco I/O"
         value={fmtSpeed(diskIO.read + diskIO.write)}
         unit="↓{fmtSpeed(diskIO.read)} ↑{fmtSpeed(diskIO.write)}"
-        state="active"
-        stateVariant="ok"
-        valueVariant="info"
-        sparkData={diskHistory}
-        sparkVariant="info"
-        sparkFilled={true}
-        bracketVariant="info"
-      />
-      <KPICard
+        variant="info"
+        tag="active"
+        tagVariant="ok"
+      >
+        <div class="nh-spark">
+          <Sparkline data={diskHistory} variant="info" filled={true} />
+        </div>
+      </StatCard>
+      <StatCard
         label="Red"
         value={fmtSpeed(netIO.rx + netIO.tx)}
         unit="↓{fmtSpeed(netIO.rx)} ↑{fmtSpeed(netIO.tx)}"
-        state="online"
-        stateVariant="ok"
-        sparkData={netHistory}
-        sparkVariant="dim"
-      />
+        variant="default"
+        tag="online"
+        tagVariant="ok"
+      >
+        <div class="nh-spark">
+          <Sparkline data={netHistory} variant="dim" />
+        </div>
+      </StatCard>
     </div>
 
     <!-- Toolbar: tabs de filtro + búsqueda -->
@@ -383,21 +387,14 @@
           hint={search ? `Nada coincide con "${search}"` : 'No hay servicios registrados en el sistema'}
         />
       {:else}
-        <DenseTable
-          columns="32px 1fr 110px 90px 110px 110px 78px"
-          headers={[
-            { label: '#' },
-            { label: 'Servicio' },
-            { label: 'Estado' },
-            { label: 'CPU', align: 'right' },
-            { label: 'Mem', align: 'right' },
-            { label: 'Uptime', align: 'right' },
-            { label: 'Acciones', align: 'right' },
-          ]}
+        <DataTable
+          cols="32px 1fr 110px 90px 110px 110px 78px"
+          headers={['#', 'Servicio', 'Estado', '>CPU', '>Mem', '>Uptime', '>Acciones']}
+          clickable
         >
           {#each filteredServices as svc, i}
             <div
-              class="tr-row"
+              class="dt-row"
               class:selected={selectedService?.id === svc.id}
               class:crit-row={svc.status === 'error' || svc.status === 'failed'}
               class:muted={svc.status === 'stopped'}
@@ -406,7 +403,7 @@
               role="button"
               tabindex="0"
             >
-              <div class="tr-ln">{String(i + 1).padStart(2, '0')}</div>
+              <span class="tr-ln">{String(i + 1).padStart(2, '0')}</span>
 
               <div class="svc-cell">
                 {#if svcIcon(svc)}
@@ -481,7 +478,7 @@
               </div>
             </div>
           {/each}
-        </DenseTable>
+        </DataTable>
       {/if}
     </div>
 
@@ -615,14 +612,17 @@
   .nh-kpis {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-1);
+    gap: 8px;
+    padding: 14px 18px 0;
   }
-  .nh-kpis :global(.kpi) {
-    border-right: 1px solid var(--border);
+  /* Sparkline embebida en la StatCard (va en su slot) */
+  .nh-spark {
+    margin-top: 8px;
+    height: 20px;
   }
-  .nh-kpis :global(.kpi:last-child) {
-    border-right: none;
+  .nh-spark :global(svg) {
+    width: 100%;
+    height: 100%;
   }
 
   .nh-toolbar {
@@ -650,7 +650,7 @@
     font-family: var(--font-mono);
   }
   /* Altura de fila uniforme · con o sin icono miden lo mismo */
-  .nh-table-wrap :global(.dt-body .tr-row) {
+  .nh-table-wrap :global(.dt-row) {
     min-height: 38px;
   }
 
