@@ -22,6 +22,7 @@
   import CPServices from './controlpanel/CPServices.svelte';
   import CPPermissions from './controlpanel/CPPermissions.svelte';
   import CPPortal from './controlpanel/CPPortal.svelte';
+  import CPUpdates from './controlpanel/CPUpdates.svelte';
 
   let active = 'users';
 
@@ -72,6 +73,8 @@
       <CPPermissions />
     {:else if active === 'portal'}
       <CPPortal />
+    {:else if active === 'updates'}
+      <CPUpdates />
     {:else}
       <div class="cp-placeholder">
         <div class="cp-ph-icon"></div>

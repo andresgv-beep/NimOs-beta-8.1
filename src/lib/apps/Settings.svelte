@@ -33,7 +33,6 @@
       label: 'Sistema',
       items: [
         { id: 'monitor',     label: 'Monitor' },
-        { id: 'updates',     label: 'Actualizaciones' },
       ],
     },
     {
@@ -179,50 +178,6 @@
 
   // ───── Shares ─────
   // ───── Updates ─────
-  let updateData = {};
-  let checking = false;
-  let applying = false;
-  let updateMsg = '';
-  let updateMsgError = false;
-
-  async function loadUpdateInfo() {
-    try {
-      const r = await fetch('/api/updates/info', { headers: hdrs() });
-      if (r.ok) updateData = await r.json();
-    } catch {}
-  }
-
-  async function checkForUpdates() {
-    if (checking) return;
-    checking = true;
-    updateMsg = '';
-    try {
-      const r = await fetch('/api/updates/check', { method: 'POST', headers: hdrs() });
-      if (r.ok) updateData = await r.json();
-      else updateMsg = 'Error al comprobar', updateMsgError = true;
-    } catch {
-      updateMsg = 'Error de red';
-      updateMsgError = true;
-    }
-    checking = false;
-  }
-
-  async function applyUpdate() {
-    if (applying) return;
-    if (!confirm('¿Aplicar la actualización? El sistema puede reiniciarse.')) return;
-    applying = true;
-    updateMsg = '';
-    try {
-      const r = await fetch('/api/updates/apply', { method: 'POST', headers: hdrs() });
-      if (r.ok) updateMsg = 'Actualización en curso...';
-      else updateMsg = 'Error al actualizar', updateMsgError = true;
-    } catch {
-      updateMsg = 'Error de red';
-      updateMsgError = true;
-    }
-    applying = false;
-  }
-
   // ───── About / System info ─────
   let sysInfo = {};
   async function loadSysInfo() {
@@ -234,7 +189,7 @@
 
   // ───── Lazy loading por sección ─────
 
-  $: if (activeView === 'updates' && !updateData.currentVersion) loadUpdateInfo();
+
 
   $: if (activeView === 'about' && !sysInfo.kernel) loadSysInfo();
   $: if (activeView === 'appearance' && systemWallpapers.length === 0 && !wallpapersLoading) loadWallpapers();
@@ -288,36 +243,6 @@
     {#if activeView === 'monitor'}
       <div class="section-label">Monitor del sistema</div>
       <div class="coming-soon">Dashboard de métricas — coming soon</div>
-
-    {:else if activeView === 'updates'}
-      <div class="section-label">Actualizaciones del sistema</div>
-      <div class="field-group">
-        <div class="field-row">
-          <span class="field-label">Versión actual</span>
-          <span class="field-value">{updateData.currentVersion || updateData.current || updateData.version || '—'}</span>
-        </div>
-        <div class="field-row">
-          <span class="field-label">Última versión</span>
-          <span class="field-value">{updateData.latestVersion || updateData.latest || '—'}</span>
-        </div>
-        <div class="field-row">
-          <span class="field-label">Estado</span>
-          <span class="field-value" class:warn={updateData.updateAvailable} class:ok={!updateData.updateAvailable}>
-            ▸ {updateData.updateAvailable ? 'Actualización disponible' : 'Al día'}
-          </span>
-        </div>
-      </div>
-      <div class="update-actions">
-        <button class="btn-secondary" on:click={checkForUpdates} disabled={checking || applying}>
-          {checking ? 'Comprobando...' : 'Comprobar actualizaciones'}
-        </button>
-        {#if updateData.updateAvailable}
-          <button class="btn-accent" on:click={applyUpdate} disabled={applying}>
-            {applying ? 'Actualizando...' : 'Aplicar actualización'}
-          </button>
-        {/if}
-      </div>
-      {#if updateMsg}<div class="form-msg" class:error={updateMsgError} style="margin-top: 14px">{updateMsg}</div>{/if}
 
     {:else if activeView === 'appearance'}
       <!-- Tab nav inline -->
@@ -1182,7 +1107,7 @@
   .field-value { color: var(--ink); font-weight: 500; }
   .field-value.ok { color: var(--signal); text-shadow: 0 0 4px var(--signal-glow); }
   .field-value.warn { color: var(--warn); }
-  .update-actions { display: flex; gap: 10px; }
+
 
   /* ═══════════════════════════════════════════════════════════
      ABOUT
