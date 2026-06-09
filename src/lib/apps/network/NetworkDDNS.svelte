@@ -279,11 +279,11 @@
         </div>
         <div class="status-cell">
           <div class="sc-label">Dominio</div>
-          <div class="sc-value mono tc-accent" style="font-size:12px">{entry.domain}</div>
+          <div class="sc-value mono tc-accent dr-trunc" style="font-size:12px">{entry.domain}</div>
         </div>
         <div class="status-cell">
           <div class="sc-label">Estado</div>
-          <div class="sc-value">
+          <div class="sc-value sc-flex">
             <LED size={7} variant={statusVariant(entry.status)} />
             <span>{statusLabel(entry)}</span>
           </div>
@@ -457,34 +457,41 @@
   /* Status bar (estado actual) */
   .status-bar {
     display: grid;
-    gap: 1px;
-    background: var(--border);
-    border: 1px solid var(--border);
+    gap: 8px;
     margin-bottom: 12px;
   }
   .status-bar.cols-3 {
     grid-template-columns: repeat(3, 1fr);
   }
   .status-cell {
-    background: var(--bg-1);
-    padding: 14px 18px;
+    background: var(--bg-card, #15151a);
+    border-radius: 7px;
+    padding: 10px 12px;
     display: flex;
     flex-direction: column;
     gap: 6px;
+    min-width: 0;
   }
   .sc-label {
     font-size: 9px;
-    color: var(--fg-mute);
+    color: var(--fg-5, #5a5a62);
     text-transform: uppercase;
-    letter-spacing: 1.5px;
+    letter-spacing: 0.6px;
   }
   .sc-value {
     font-size: 13px;
     color: var(--fg);
-    font-weight: 600;
+    font-family: var(--font-mono);
+  }
+  .sc-value.sc-flex {
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+  .sc-value.dr-trunc {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .sc-value.mono { font-family: var(--font-mono); }
   .sc-value.tc-accent { color: var(--accent); }
@@ -505,18 +512,18 @@
     height: 18px;
     background: var(--bg);
     border: 1px solid var(--border);
-    border-radius: 9px;
+    border-radius: 4px;
     position: relative;
     transition: background 0.15s, border-color 0.15s;
   }
   .toggle-thumb {
-    width: 14px;
-    height: 14px;
+    width: 12px;
+    height: 12px;
     background: var(--fg-mute);
-    border-radius: 50%;
+    border-radius: 2px;
     position: absolute;
-    top: 1px;
-    left: 1px;
+    top: 2px;
+    left: 2px;
     transition: left 0.15s, background 0.15s;
   }
   .toggle.on .toggle-track {
@@ -524,7 +531,7 @@
     border-color: var(--accent);
   }
   .toggle.on .toggle-thumb {
-    left: 19px;
+    left: 20px;
     background: var(--accent);
   }
   .toggle-label {
@@ -606,22 +613,23 @@
     gap: 8px;
   }
   .provider-card {
-    background: var(--bg-1);
-    border: 1px solid var(--border);
+    background: var(--bg-card, #15151a);
+    border: 1px solid var(--bd-2, #20202a);
+    border-radius: 7px;
     padding: 14px 16px;
     cursor: pointer;
     color: var(--fg);
     font: inherit;
     text-align: left;
-    transition: border-color 0.1s, background 0.1s;
+    transition: border-color 0.12s, background 0.12s;
   }
   .provider-card:hover {
-    border-color: var(--border-bright);
-    background: var(--bg-2);
+    border-color: var(--bd-3, #2a2a32);
+    background: var(--bg-inner, #101015);
   }
   .provider-card.selected {
-    border-color: var(--accent);
-    background: var(--accent-dim);
+    border-color: rgba(0, 255, 159, 0.4);
+    background: rgba(0, 255, 159, 0.06);
   }
   .pc-name {
     font-size: 13px;
@@ -635,12 +643,12 @@
   .pc-dot {
     width: 6px;
     height: 6px;
-    background: var(--fg-mute);
-    border-radius: 50%;
+    background: var(--fg-5, #5a5a62);
+    border-radius: 1.5px;
   }
   .provider-card.selected .pc-dot {
-    background: var(--accent);
-    box-shadow: 0 0 5px var(--accent);
+    background: var(--nim-green, #00ff9f);
+    box-shadow: 0 0 5px rgba(0, 255, 159, 0.5);
   }
   .pc-desc {
     font-size: 11px;
