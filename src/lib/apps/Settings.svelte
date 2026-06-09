@@ -33,7 +33,6 @@
       label: 'Sistema',
       items: [
         { id: 'monitor',     label: 'Monitor',              keyHint: 'M' },
-        { id: 'users',       label: 'Usuarios',             keyHint: 'U' },
         { id: 'shares',      label: 'Compartidas',          keyHint: 'C' },
         { id: 'permissions', label: 'Permisos de apps',     keyHint: 'P' },
         { id: 'portal',      label: 'Portal',               keyHint: 'O' },
@@ -179,70 +178,7 @@
   }
 
   // ───── Users ─────
-  let usersList = [];
-  let editingUser = null;
-  let userMsg = '';
-  let userMsgError = false;
-  let savingUser = false;
 
-  async function loadUsers() {
-    try {
-      const r = await fetch('/api/users', { headers: hdrs() });
-      if (r.ok) usersList = await r.json();
-    } catch {}
-  }
-
-  function startNewUser() {
-    editingUser = { username: '', password: '', role: 'user', isNew: true };
-    userMsg = '';
-  }
-
-  function startEditUser(u) {
-    editingUser = { ...u, password: '', isNew: false };
-    userMsg = '';
-  }
-
-  async function saveUser() {
-    if (savingUser) return;
-    savingUser = true;
-    userMsg = '';
-    try {
-      const url = editingUser.isNew
-        ? '/api/users'
-        : '/api/users/' + encodeURIComponent(editingUser.username);
-      const method = editingUser.isNew ? 'POST' : 'PUT';
-      const body = { username: editingUser.username, role: editingUser.role };
-      if (editingUser.password) body.password = editingUser.password;
-      const r = await fetch(url, {
-        method,
-        headers: { ...hdrs(), 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (r.ok) {
-        editingUser = null;
-        await loadUsers();
-      } else {
-        const e = await r.json().catch(() => ({}));
-        userMsg = e.error || 'Error al guardar';
-        userMsgError = true;
-      }
-    } catch {
-      userMsg = 'Error de red';
-      userMsgError = true;
-    }
-    savingUser = false;
-  }
-
-  async function deleteUser(username) {
-    if (!confirm(`¿Eliminar usuario "${username}"?`)) return;
-    try {
-      await fetch('/api/users/' + encodeURIComponent(username), {
-        method: 'DELETE',
-        headers: hdrs(),
-      });
-      await loadUsers();
-    } catch {}
-  }
 
   // ───── Shares ─────
   let shares = [];
@@ -454,7 +390,6 @@
   }
 
   // ───── Lazy loading por sección ─────
-  $: if (activeView === 'users' && usersList.length === 0) loadUsers();
   $: if (activeView === 'shares' && shares.length === 0) loadShares();
   $: if (activeView === 'updates' && !updateData.currentVersion) loadUpdateInfo();
   $: if (activeView === 'portal' && twofa.loading) loadTwoFA();
@@ -510,69 +445,6 @@
     {#if activeView === 'monitor'}
       <div class="section-label">Monitor del sistema</div>
       <div class="coming-soon">Dashboard de métricas — coming soon</div>
-
-    {:else if activeView === 'users'}
-      <div class="section-label">Usuarios del sistema</div>
-
-      {#if editingUser}
-        <div class="form-card">
-          <div class="form-title">{editingUser.isNew ? 'Nuevo usuario' : `Editar ${editingUser.username}`}</div>
-          <div class="form-field">
-            <label>Usuario</label>
-            <input
-              type="text"
-              class="form-input"
-              bind:value={editingUser.username}
-              disabled={!editingUser.isNew}
-            />
-          </div>
-          <div class="form-field">
-            <label>Contraseña {editingUser.isNew ? '' : '(dejar en blanco para no cambiar)'}</label>
-            <input type="password" class="form-input" bind:value={editingUser.password} />
-          </div>
-          <div class="form-field">
-            <label>Rol</label>
-            <div class="setting-options">
-              <button class="opt-btn" class:active={editingUser.role === 'user'} on:click={() => editingUser.role = 'user'}>Usuario</button>
-              <button class="opt-btn" class:active={editingUser.role === 'admin'} on:click={() => editingUser.role = 'admin'}>Admin</button>
-            </div>
-          </div>
-          {#if userMsg}
-            <div class="form-msg" class:error={userMsgError}>{userMsg}</div>
-          {/if}
-          <div class="form-actions">
-            <button class="btn-accent" on:click={saveUser} disabled={savingUser}>
-              {savingUser ? 'Guardando...' : 'Guardar'}
-            </button>
-            <button class="btn-secondary" on:click={() => editingUser = null}>Cancelar</button>
-          </div>
-        </div>
-      {:else}
-        {#if usersList.length === 0}
-          <div class="coming-soon">Cargando usuarios...</div>
-        {:else}
-          <div class="user-list">
-            {#each usersList as u}
-              <div class="user-row">
-                <div class="user-avatar">{(u.username || '?')[0].toUpperCase()}</div>
-                <span class="user-name">{u.username}</span>
-                <div class="user-badge" class:admin={u.role === 'admin'}>{u.role || 'user'}</div>
-                <div class="row-actions">
-                  <button class="action-btn" on:click={() => startEditUser(u)} title="Editar">
-                    <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>
-                  </button>
-                  {#if u.username !== $user?.username}
-                    <button class="action-btn danger" on:click={() => deleteUser(u.username)} title="Eliminar">
-                      <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
-                    </button>
-                  {/if}
-                </div>
-              </div>
-            {/each}
-          </div>
-          <button class="btn-accent" style="margin-top: 16px" on:click={startNewUser}>+ Nuevo usuario</button>
-        {/if}
-      {/if}
 
     {:else if activeView === 'shares'}
       <div class="section-header-row">
@@ -1484,66 +1356,7 @@
   /* ═══════════════════════════════════════════════════════════
      USERS · CRUD list
      ═══════════════════════════════════════════════════════════ */
-  .user-list { display: flex; flex-direction: column; gap: 4px; max-width: 720px; }
-  .user-row {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    padding: 12px 14px;
-    background: var(--canvas-soft);
-    border: 1px solid var(--line);
-  }
-  .user-avatar {
-    width: 32px;
-    height: 32px;
-    background: var(--signal-dim);
-    color: var(--signal);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 700;
-    font-size: 14px;
-    text-shadow: 0 0 4px var(--signal-glow);
-  }
-  .user-name { color: var(--ink); font-weight: 500; font-size: 13px; flex: 1; }
-  .user-badge {
-    padding: 3px 10px;
-    font-family: var(--font-mono);
-    font-size: 9px;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-    font-weight: 700;
-    background: var(--line);
-    color: var(--ink-mute);
-  }
-  .user-badge.admin {
-    background: var(--signal-soft);
-    color: var(--signal);
-  }
-  .row-actions { display: flex; gap: 4px; }
-  .action-btn {
-    width: 28px;
-    height: 28px;
-    background: transparent;
-    border: 1px solid transparent;
-    color: var(--ink-mute);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.12s;
-  }
-  .action-btn:hover {
-    background: var(--line);
-    color: var(--ink);
-    border-color: var(--line-bright);
-  }
-  .action-btn.danger:hover {
-    background: rgba(248,113,113,0.1);
-    color: var(--crit);
-    border-color: rgba(248,113,113,0.3);
-  }
-  .action-btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  /* (migrado a Panel de Control · CPUsers.svelte) */
 
   /* ═══════════════════════════════════════════════════════════
      FORM CARDS · modales/edit inline

@@ -17,6 +17,7 @@
    * placeholder. No mueve lógica todavía; Settings sigue intacto.
    */
   import AppShell from '$lib/components/AppShell.svelte';
+  import CPUsers from './controlpanel/CPUsers.svelte';
 
   let active = 'users';
 
@@ -57,11 +58,15 @@
   </svelte:fragment>
 
   <div class="cp-body">
-    <div class="cp-placeholder">
-      <div class="cp-ph-icon"></div>
-      <div class="cp-ph-title">{meta[active]?.t}</div>
-      <div class="cp-ph-hint">Sección en construcción · se cableará en su fase de migración.</div>
-    </div>
+    {#if active === 'users'}
+      <CPUsers />
+    {:else}
+      <div class="cp-placeholder">
+        <div class="cp-ph-icon"></div>
+        <div class="cp-ph-title">{meta[active]?.t}</div>
+        <div class="cp-ph-hint">Sección en construcción · se cableará en su fase de migración.</div>
+      </div>
+    {/if}
   </div>
 </AppShell>
 
