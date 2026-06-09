@@ -17,6 +17,7 @@
   let twofa = { loading: true, enabled: false };
   let twofaSetup = null;
   let twofaQrSvg = '';
+  let twofaUri = '';
   let twofaCode = '';
   let twofaBackupCodes = null;
   let twofaSaving = false;
@@ -24,6 +25,7 @@
   let twofaMsgError = false;
   let showDisableConfirm = false;
   let twofaDisablePassword = '';
+  let copied = false;
 
   async function loadTwoFA() {
     twofa.loading = true;
@@ -45,9 +47,19 @@
         const d = await r.json();
         twofaSetup = { secret: d.secret };
         twofaQrSvg = d.qr || '';
+        twofaUri = d.uri || '';
       } else { twofaMsg = 'Error al iniciar'; twofaMsgError = true; }
     } catch { twofaMsg = 'Error de red'; twofaMsgError = true; }
     twofaSaving = false;
+  }
+
+  async function copySecret() {
+    if (!twofaSetup?.secret) return;
+    try {
+      await navigator.clipboard.writeText(twofaSetup.secret);
+      copied = true;
+      setTimeout(() => (copied = false), 1800);
+    } catch {}
   }
 
   async function verify() {
@@ -122,13 +134,22 @@
     <!-- Setup · QR + código -->
     <div class="tf-form">
       <div class="tf-form-title">Configurar 2FA</div>
-      <p class="tf-step">1 · Escanea el QR con Google Authenticator, Authy u otra app TOTP</p>
+      <p class="tf-step">1 · Añade la cuenta a Google Authenticator, Authy u otra app TOTP</p>
       {#if twofaQrSvg}
         <div class="tf-qr">{@html twofaQrSvg}</div>
+        <p class="tf-hint">Escanea el QR, o usa la clave manual de abajo.</p>
+      {:else}
+        <div class="tf-noqr">
+          <span class="tf-noqr-tag">QR no disponible</span>
+          Introduce esta clave manualmente en tu app de autenticación.
+        </div>
       {/if}
       <div class="tf-field">
         <span class="tf-label">Clave manual</span>
-        <code class="tf-secret">{twofaSetup.secret}</code>
+        <div class="tf-secret-row">
+          <code class="tf-secret">{twofaSetup.secret}</code>
+          <button class="tf-copy" on:click={copySecret}>{copied ? '✓ copiada' : 'Copiar'}</button>
+        </div>
       </div>
       <p class="tf-step">2 · Introduce el código de 6 dígitos</p>
       <div class="tf-row">
@@ -314,6 +335,46 @@
     font-size: 12px;
     letter-spacing: 1px;
     word-break: break-all;
+    flex: 1;
+  }
+  .tf-secret-row { display: flex; gap: 8px; align-items: stretch; }
+  .tf-copy {
+    flex-shrink: 0;
+    padding: 0 14px;
+    background: var(--bg-inner, #101015);
+    border: 1px solid var(--bd-2, #20202a);
+    border-radius: 6px;
+    color: var(--fg-3, #9c9ca4);
+    font-size: 11px;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .tf-copy:hover { color: var(--nim-green, #00ff9f); border-color: rgba(0, 255, 159, 0.35); }
+  .tf-hint {
+    font-size: 10px;
+    color: var(--fg-5, #5a5a62);
+    font-family: var(--font-mono);
+  }
+  .tf-noqr {
+    background: rgba(255, 200, 87, 0.06);
+    border: 1px solid rgba(255, 200, 87, 0.2);
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-size: 11px;
+    color: var(--fg-3, #9c9ca4);
+    font-family: var(--font-mono);
+    line-height: 1.5;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .tf-noqr-tag {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--st-warn, #ffc857);
+    align-self: flex-start;
   }
   .tf-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   .tf-input {
