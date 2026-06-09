@@ -11,7 +11,7 @@
    *   · certs  — snapshot del observer { reachable, certs:[...] } | null
    *   · config — { base_domain, enabled }
    */
-  import { KPICard } from '$lib/ui';
+  import { StatCard } from '$lib/ui';
 
   export let apps = [];
   export let certs = null;
@@ -32,38 +32,37 @@
 </script>
 
 <div class="nx-kpis">
-  <KPICard
+  <StatCard
     label="Expuestas"
-    value={String(exposedCount)}
-    state={apps.length > exposedCount ? `${apps.length - exposedCount} pausadas` : 'todas activas'}
-    stateVariant={exposedCount > 0 ? 'ok' : 'warn'}
-    valueVariant={exposedCount > 0 ? 'accent' : 'default'}
-    bracketVariant={exposedCount > 0 ? 'accent' : 'warn'}
+    value={exposedCount}
+    variant={exposedCount > 0 ? 'ok' : 'warn'}
+    tag={apps.length > exposedCount ? `${apps.length - exposedCount} pausadas` : 'todas activas'}
+    tagVariant={exposedCount > 0 ? 'ok' : 'warn'}
   />
-  <KPICard
+  <StatCard
     label="Caddy"
     value={caddyReachable === null ? '—' : caddyReachable ? 'OK' : 'OFF'}
-    state={caddyState}
-    stateVariant={caddyVariant}
-    valueVariant={caddyReachable ? 'accent' : caddyReachable === false ? 'crit' : 'default'}
-    bracketVariant={caddyVariant === 'crit' ? 'crit' : 'accent'}
+    variant={caddyReachable ? 'ok' : caddyReachable === false ? 'crit' : 'warn'}
+    tag={caddyState}
+    tagVariant={caddyVariant}
   />
-  <KPICard
+  <StatCard
     label="Certificados"
-    value={String(certCount)}
-    state={certsExpiringSoon > 0 ? `${certsExpiringSoon} por expirar` : certCount > 0 ? 'todos válidos' : '—'}
-    stateVariant={certsExpiringSoon > 0 ? 'warn' : 'ok'}
-    valueVariant="default"
-    bracketVariant={certsExpiringSoon > 0 ? 'warn' : 'accent'}
+    value={certCount}
+    variant={certsExpiringSoon > 0 ? 'warn' : 'ok'}
+    tag={certsExpiringSoon > 0 ? `${certsExpiringSoon} por expirar` : certCount > 0 ? 'todos válidos' : '—'}
+    tagVariant={certsExpiringSoon > 0 ? 'warn' : 'ok'}
   />
-  <KPICard
+  <StatCard
     label="Dominio"
     value={config.base_domain || '—'}
-    state={domainState}
-    stateVariant={domainVariant}
-    valueVariant={config.base_domain ? 'default' : 'default'}
-    bracketVariant={domainVariant === 'warn' ? 'warn' : 'accent'}
-  />
+    variant={domainVariant}
+    tag={domainState}
+    tagVariant={domainVariant}
+    valueColored={false}
+  >
+    <span class="nx-dom-spacer"></span>
+  </StatCard>
 </div>
 
 <style>
@@ -75,4 +74,12 @@
   @media (min-width: 600px) {
     .nx-kpis { grid-template-columns: repeat(4, 1fr); }
   }
+  /* El dominio puede ser largo: reducir y truncar su valor mono. */
+  .nx-kpis :global(.stat-card:last-child .sc-val) {
+    font-size: 14px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .nx-dom-spacer { display: none; }
 </style>
