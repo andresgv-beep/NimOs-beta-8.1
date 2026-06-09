@@ -1,22 +1,21 @@
 <script>
   /**
-   * NimSettings · Panel de Control de NimOS Beta 8.1
+   * NimSettings · Preferencias de NimOS Beta 8.1
    * ──────────────────────────────────────────────────
-   * Portado desde Beta 5/7 con la estética NimOS Beta 8.1:
+   * Personalización del sistema. La administración (usuarios, compartidas,
+   * servicios, permisos, 2FA, actualizaciones) vive en el Panel de Control.
+   *
+   * Estética NimOS Beta 8.1:
    *  · Bisel firma · Cubo 45° · Path nimos:// · LEDs C2
    *  · Theme cards con preview REAL del sistema
    *  · Accent picker con 6 predefinidos + hex custom
    *  · Wallpapers sistema + uploads del user
-   *  · 8 secciones: Monitor / Users / Shares / Permissions /
-   *    Portal (2FA) / Updates / Appearance / About
+   *  · 2 secciones: Appearance / About
    *
-   * Endpoints (mismos que Beta 5):
+   * Endpoints:
    *  GET/PUT /api/user/preferences
-   *  GET     /api/users
-   *  POST    /api/users
-   *  DELETE  /api/users/:username
-   *  GET     /api/shares
-   *  ...etc
+   *  GET     /api/wallpapers · POST /api/wallpapers · DELETE
+   *  GET     /api/system/info
    */
   import { onMount, onDestroy } from 'svelte';
   import { prefs, setPref, ACCENT_COLORS } from '$lib/stores/theme.js';
@@ -29,12 +28,6 @@
 
   // Sidebar sections (agrupadas como espera AppShell)
   const sections = [
-    {
-      label: 'Sistema',
-      items: [
-        { id: 'monitor',     label: 'Monitor' },
-      ],
-    },
     {
       label: 'Preferencias',
       items: [
@@ -240,11 +233,7 @@
 
   <div class="settings-content">
 
-    {#if activeView === 'monitor'}
-      <div class="section-label">Monitor del sistema</div>
-      <div class="coming-soon">Dashboard de métricas — coming soon</div>
-
-    {:else if activeView === 'appearance'}
+    {#if activeView === 'appearance'}
       <!-- Tab nav inline -->
       <div class="tab-nav">
         <button class="tab" class:active={appearanceTab === 'tema'} on:click={() => appearanceTab = 'tema'}>Tema</button>
@@ -469,17 +458,6 @@
     justify-content: space-between;
     margin-bottom: 16px;
   }
-  .coming-soon {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--ink-mute);
-    padding: 16px;
-    border: 1px dashed var(--line-bright);
-    text-align: center;
-    letter-spacing: 1px;
-    max-width: 720px;
-  }
-
   /* ─── Tab nav inline ─── */
   .tab-nav {
     display: flex;
@@ -957,19 +935,7 @@
     margin-bottom: 14px;
     line-height: 1.5;
   }
-  .form-field {
-    margin-bottom: 14px;
-  }
-  .form-field label {
-    display: block;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    color: var(--ink-mute);
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    margin-bottom: 6px;
-    font-weight: 700;
-  }
+  /* form-input: usado por el campo hex del accent picker */
   .form-input {
     width: 100%;
     padding: 8px 12px;
@@ -983,21 +949,6 @@
     outline: none;
     border-color: var(--signal);
     box-shadow: 0 0 0 1px var(--signal);
-  }
-  .form-row {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    flex-wrap: wrap;
-  }
-  .form-row .form-input {
-    flex: 1;
-    min-width: 200px;
-  }
-  .form-actions {
-    display: flex;
-    gap: 10px;
-    margin-top: 16px;
   }
   .form-msg {
     font-family: var(--font-mono);
