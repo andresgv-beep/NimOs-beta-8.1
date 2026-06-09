@@ -15,7 +15,7 @@
    *             y actualiza scrubbing/scrubMsg
    */
   import { createEventDispatcher } from 'svelte';
-  import { SectionHead, BevelButton, EmptyState } from '$lib/ui';
+  import { SectionHead, BevelButton, EmptyState, DataTable } from '$lib/ui';
   import { fmtBytes } from './formatters.js';
   import './views-styles.css';
 
@@ -42,21 +42,14 @@
       Puede tardar horas y el sistema irá más lento mientras corre.
     </div>
 
-    <div class="disk-table cols-5-scrub">
-      <div class="disk-thead">
-        <div>Pool</div>
-        <div>Tipo</div>
-        <div>Tamaño</div>
-        <div>Último scrub</div>
-        <div>Acción</div>
-      </div>
+    <DataTable cols="1fr 80px 100px 140px 160px" headers={['Pool', 'Tipo', 'Tamaño', 'Último scrub', 'Acción']}>
       {#each pools as pool}
-        <div class="disk-row">
-          <div class="disk-cell mono">{pool.name}</div>
-          <div class="disk-cell">BTRFS</div>
-          <div class="disk-cell">{fmtBytes(pool.usage?.total_bytes)}</div>
-          <div class="disk-cell tc-mute">—</div>
-          <div class="disk-cell">
+        <div class="dt-row">
+          <span class="mono">{pool.name}</span>
+          <span>BTRFS</span>
+          <span>{fmtBytes(pool.usage?.total_bytes)}</span>
+          <span class="tc-mute">—</span>
+          <span>
             <BevelButton
               size="sm"
               onClick={() => onScrub(pool.name)}
@@ -64,10 +57,10 @@
             >
               {scrubbing[pool.name] ? '▸ Iniciando...' : '▸ Scrub ahora'}
             </BevelButton>
-          </div>
+          </span>
         </div>
       {/each}
-    </div>
+    </DataTable>
 
     {#if scrubMsg}
       <div class="msg">{scrubMsg}</div>
