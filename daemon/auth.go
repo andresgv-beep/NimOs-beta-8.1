@@ -430,18 +430,18 @@ func ensureUserDataDir(username string) string {
 }
 
 var defaultPreferences = map[string]interface{}{
-	"theme":           "dark",
-	"accentColor":     "orange",
-	"glowIntensity":   float64(50),
-	"taskbarSize":     "medium",
-	"taskbarPosition": "bottom",
-	"autoHideTaskbar": false,
-	"clock24":         true,
+	"theme":            "dark",
+	"accentColor":      "orange",
+	"glowIntensity":    float64(50),
+	"taskbarSize":      "medium",
+	"taskbarPosition":  "bottom",
+	"autoHideTaskbar":  false,
+	"clock24":          true,
 	"showDesktopIcons": true,
-	"textScale":       float64(100),
-	"wallpaper":       "",
-	"showWidgets":     true,
-	"widgetScale":     float64(100),
+	"textScale":        float64(100),
+	"wallpaper":        "",
+	"showWidgets":      true,
+	"widgetScale":      float64(100),
 	"visibleWidgets": map[string]interface{}{
 		"system": true, "network": true, "disk": true, "notifications": true,
 	},
@@ -876,11 +876,17 @@ func auth2faSetup(w http.ResponseWriter, r *http.Request) {
 	})
 
 	uri := getTotpUri(username, secret)
-	jsonOk(w, map[string]interface{}{
+	resp := map[string]interface{}{
 		"ok":     true,
 		"secret": secret,
 		"uri":    uri,
-	})
+	}
+	// Generar QR SVG si el sistema tiene qrencode o python3-qrcode.
+	// Si no está disponible, el frontend lo genera en cliente desde 'uri'.
+	if qr, qerr := generateQrSvg(uri); qerr == nil && qr != "" {
+		resp["qr"] = qr
+	}
+	jsonOk(w, resp)
 }
 
 // POST /api/auth/2fa/verify — verify code and enable 2FA
