@@ -14,7 +14,9 @@
  *   - IconButton       · botón cuadrado icon-only
  *   - TextInput        · input con bevel (search, text, etc.)
  *   - Sparkline        · gráfica inline SVG
- *   - KPICard          · KPI con corner brackets
+ *   - KPICard          · KPI con corner brackets (legacy)
+ *   - StatCard         · tarjeta de estadística v3 (borde de color + valor mono)
+ *   - DataTable        · tabla densa v3 (cabecera mono, filas con separador)
  *   - SectionHead      · título de sección asimétrico
  *   - DenseTable       · tabla densa con columnas configurables
  *   - StripeProgressBar· barra con stripes animadas
@@ -36,6 +38,8 @@ export { default as IconButton }        from './IconButton.svelte';
 export { default as TextInput }         from './TextInput.svelte';
 export { default as Sparkline }         from './Sparkline.svelte';
 export { default as KPICard }           from './KPICard.svelte';
+export { default as StatCard }          from './StatCard.svelte';
+export { default as DataTable }         from './DataTable.svelte';
 export { default as SectionHead }       from './SectionHead.svelte';
 export { default as DenseTable }        from './DenseTable.svelte';
 export { default as StripeProgressBar } from './StripeProgressBar.svelte';
