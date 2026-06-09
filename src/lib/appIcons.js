@@ -23,6 +23,7 @@ const APP_ICONS = {
   filemanager: 'files',
   settings:    'nimsettings',
   nimsettings: 'nimsettings',
+  controlpanel: 'nimsettings', // TODO: icono propio (reusa el de settings de momento)
   nimtorrent:  'nimtorrent',
   nimbackup:   'nimbackup',
   notes:       'notes',

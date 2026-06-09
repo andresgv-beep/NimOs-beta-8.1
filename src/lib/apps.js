@@ -50,6 +50,15 @@ export const APP_META = {
     category: 'system',
   },
 
+  controlpanel: {
+    name:     'Panel de Control',
+    icon:     'controlpanel',
+    fallback: '🛠️',
+    width:    980,
+    height:   640,
+    category: 'system',
+  },
+
   storage: {
     name:     'Storage',
     icon:     'storage',
