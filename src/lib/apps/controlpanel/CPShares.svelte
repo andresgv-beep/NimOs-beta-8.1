@@ -157,7 +157,11 @@
     <div class="cps-list">
       {#each shares as s (s.name)}
         <div class="cps-card">
-          <div class="cps-card-icon"></div>
+          <div class="cps-card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+            </svg>
+          </div>
           <div class="cps-card-ident">
             <div class="cps-card-name">{s.displayName || s.name}</div>
             <div class="cps-card-sub">{s.pool || '—'} · {Object.keys(s.permissions || {}).length} usuarios</div>
@@ -216,7 +220,12 @@
     background: rgba(0, 255, 159, 0.08);
     border: 1px solid rgba(0, 255, 159, 0.2);
     flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--nim-green, #00ff9f);
   }
+  .cps-card-icon svg { width: 16px; height: 16px; }
   .cps-card-ident { flex: 1; min-width: 0; }
   .cps-card-name {
     font-size: 13px;
