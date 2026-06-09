@@ -18,6 +18,7 @@
    */
   import AppShell from '$lib/components/AppShell.svelte';
   import CPUsers from './controlpanel/CPUsers.svelte';
+  import CPShares from './controlpanel/CPShares.svelte';
 
   let active = 'users';
 
@@ -25,12 +26,12 @@
     {
       label: 'Sistema',
       items: [
-        { id: 'users',       label: 'Usuarios',         keyHint: 'U' },
-        { id: 'shares',      label: 'Compartidas',      keyHint: 'C' },
-        { id: 'services',    label: 'Servicios',        keyHint: 'S' },
-        { id: 'permissions', label: 'Permisos de apps', keyHint: 'P' },
-        { id: 'portal',      label: 'Portal · 2FA',     keyHint: 'O' },
-        { id: 'updates',     label: 'Actualizaciones',  keyHint: 'A' },
+        { id: 'users',       label: 'Usuarios' },
+        { id: 'shares',      label: 'Compartidas' },
+        { id: 'services',    label: 'Servicios' },
+        { id: 'permissions', label: 'Permisos de apps' },
+        { id: 'portal',      label: 'Portal · 2FA' },
+        { id: 'updates',     label: 'Actualizaciones' },
       ],
     },
   ];
@@ -60,6 +61,8 @@
   <div class="cp-body">
     {#if active === 'users'}
       <CPUsers />
+    {:else if active === 'shares'}
+      <CPShares />
     {:else}
       <div class="cp-placeholder">
         <div class="cp-ph-icon"></div>

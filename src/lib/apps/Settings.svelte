@@ -32,18 +32,17 @@
     {
       label: 'Sistema',
       items: [
-        { id: 'monitor',     label: 'Monitor',              keyHint: 'M' },
-        { id: 'shares',      label: 'Compartidas',          keyHint: 'C' },
-        { id: 'permissions', label: 'Permisos de apps',     keyHint: 'P' },
-        { id: 'portal',      label: 'Portal',               keyHint: 'O' },
-        { id: 'updates',     label: 'Actualizaciones',      keyHint: 'A' },
+        { id: 'monitor',     label: 'Monitor' },
+        { id: 'permissions', label: 'Permisos de apps' },
+        { id: 'portal',      label: 'Portal' },
+        { id: 'updates',     label: 'Actualizaciones' },
       ],
     },
     {
       label: 'Preferencias',
       items: [
-        { id: 'appearance',  label: 'Apariencia',           keyHint: 'T' },
-        { id: 'about',       label: 'Acerca de',            keyHint: 'I' },
+        { id: 'appearance',  label: 'Apariencia' },
+        { id: 'about',       label: 'Acerca de' },
       ],
     },
   ];
@@ -181,83 +180,6 @@
 
 
   // ───── Shares ─────
-  let shares = [];
-  let pools = [];
-
-  // Modal de nueva carpeta
-  let creatingShare = false;
-  let newShareForm = null; // { name, pool, smb, nfs, ftp, public }
-  let savingShare = false;
-  let shareMsg = '';
-  let shareMsgError = false;
-
-  async function loadShares() {
-    try {
-      const [rs, rp] = await Promise.all([
-        fetch('/api/shares', { headers: hdrs() }),
-        // Beta 8.1 · solo BTRFS · usar V2 stack
-        fetch('/api/storage/v2/pools', { headers: hdrs() }),
-      ]);
-      if (rs.ok) shares = await rs.json();
-      if (rp.ok) {
-        const pd = await rp.json();
-        // V2 stack devuelve { data: [...pools] } envuelto en apiResponse
-        pools = pd.data || pd.pools || (Array.isArray(pd) ? pd : []);
-      }
-    } catch {}
-  }
-
-  function startNewShare() {
-    if (pools.length === 0) {
-      shareMsg = 'Necesitas crear un pool de storage primero';
-      shareMsgError = true;
-      return;
-    }
-    newShareForm = {
-      name: '',
-      pool: pools[0]?.name || '',
-      smb: true,
-      nfs: false,
-      ftp: false,
-      public: false,
-    };
-    creatingShare = true;
-    shareMsg = '';
-  }
-
-  function cancelNewShare() {
-    creatingShare = false;
-    newShareForm = null;
-    shareMsg = '';
-  }
-
-  async function saveNewShare() {
-    if (!newShareForm || !newShareForm.name) return;
-    if (savingShare) return;
-    savingShare = true;
-    shareMsg = '';
-    try {
-      const r = await fetch('/api/shares', {
-        method: 'POST',
-        headers: { ...hdrs(), 'Content-Type': 'application/json' },
-        body: JSON.stringify(newShareForm),
-      });
-      if (r.ok) {
-        creatingShare = false;
-        newShareForm = null;
-        await loadShares();
-      } else {
-        const e = await r.json().catch(() => ({}));
-        shareMsg = e.error || 'Error al crear';
-        shareMsgError = true;
-      }
-    } catch {
-      shareMsg = 'Error de red';
-      shareMsgError = true;
-    }
-    savingShare = false;
-  }
-
   // ───── Updates ─────
   let updateData = {};
   let checking = false;
@@ -390,7 +312,7 @@
   }
 
   // ───── Lazy loading por sección ─────
-  $: if (activeView === 'shares' && shares.length === 0) loadShares();
+
   $: if (activeView === 'updates' && !updateData.currentVersion) loadUpdateInfo();
   $: if (activeView === 'portal' && twofa.loading) loadTwoFA();
   $: if (activeView === 'about' && !sysInfo.kernel) loadSysInfo();
@@ -445,91 +367,6 @@
     {#if activeView === 'monitor'}
       <div class="section-label">Monitor del sistema</div>
       <div class="coming-soon">Dashboard de métricas — coming soon</div>
-
-    {:else if activeView === 'shares'}
-      <div class="section-header-row">
-        <div class="section-label" style="margin-bottom: 0">Carpetas compartidas</div>
-        <button class="btn-secondary" style="padding: 6px 14px" on:click={startNewShare}>+ Nueva carpeta</button>
-      </div>
-
-      {#if shareMsg}
-        <div class="form-msg" class:error={shareMsgError} style="margin-bottom: 14px">{shareMsg}</div>
-      {/if}
-
-      {#if creatingShare && newShareForm}
-        <div class="form-card" style="margin-bottom: 16px">
-          <div class="form-title">Nueva carpeta compartida</div>
-
-          <div class="form-field">
-            <label>Nombre</label>
-            <input type="text" class="form-input" bind:value={newShareForm.name} placeholder="ej: media" />
-          </div>
-
-          <div class="form-field">
-            <label>Pool</label>
-            <select class="form-input" bind:value={newShareForm.pool}>
-              {#each pools as p}
-                <option value={p.name}>{p.name}</option>
-              {/each}
-            </select>
-          </div>
-
-          <div class="form-field">
-            <label>Protocolos</label>
-            <div class="proto-toggles">
-              <label class="proto-toggle">
-                <input type="checkbox" bind:checked={newShareForm.smb} />
-                <span>SMB</span>
-              </label>
-              <label class="proto-toggle">
-                <input type="checkbox" bind:checked={newShareForm.nfs} />
-                <span>NFS</span>
-              </label>
-              <label class="proto-toggle">
-                <input type="checkbox" bind:checked={newShareForm.ftp} />
-                <span>FTP</span>
-              </label>
-            </div>
-          </div>
-
-          <div class="form-field">
-            <label class="proto-toggle">
-              <input type="checkbox" bind:checked={newShareForm.public} />
-              <span>Acceso público (sin autenticación)</span>
-            </label>
-          </div>
-
-          <div class="form-actions">
-            <button class="btn-accent" on:click={saveNewShare} disabled={savingShare || !newShareForm.name}>
-              {savingShare ? 'Creando...' : 'Crear carpeta'}
-            </button>
-            <button class="btn-secondary" on:click={cancelNewShare}>Cancelar</button>
-          </div>
-        </div>
-      {/if}
-
-      {#if shares.length === 0 && !creatingShare}
-        <div class="coming-soon">No hay carpetas compartidas. Crea la primera con el botón "+ Nueva carpeta".</div>
-      {:else if shares.length > 0}
-        <div class="share-list">
-          {#each shares as s}
-            <div class="share-pill">
-              <div class="share-head">
-                <div class="share-icon">📁</div>
-                <div class="share-ident">
-                  <div class="share-name">{s.displayName || s.name}</div>
-                  <div class="share-sub">{s.pool || '—'} · {Object.keys(s.permissions || {}).length} usuarios</div>
-                </div>
-                <div class="share-protocols">
-                  <span class="proto" class:on={s.smb}>SMB</span>
-                  <span class="proto" class:on={s.nfs}>NFS</span>
-                  <span class="proto" class:on={s.ftp}>FTP</span>
-                </div>
-              </div>
-            </div>
-          {/each}
-        </div>
-      {/if}
 
     {:else if activeView === 'permissions'}
       <div class="section-label">Permisos de apps</div>
@@ -1501,68 +1338,8 @@
     display: flex;
     gap: 14px;
   }
-  .proto-toggle {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    cursor: pointer;
-    color: var(--ink-dim);
-    font-size: 13px;
-  }
-  .proto-toggle input[type="checkbox"] {
-    width: 16px;
-    height: 16px;
-    accent-color: var(--signal);
-    cursor: pointer;
-  }
-  .share-list { display: flex; flex-direction: column; gap: 6px; max-width: 760px; }
-  .share-pill {
-    background: var(--canvas-soft);
-    border: 1px solid var(--line);
-    transition: border-color 0.12s;
-  }
-  .share-pill:hover { border-color: var(--line-bright); }
-  .share-head {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    padding: 12px 14px;
-    cursor: pointer;
-  }
-  .share-icon {
-    width: 28px;
-    height: 28px;
-    background: var(--signal-dim);
-    color: var(--signal);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 16px;
-  }
-  .share-ident { flex: 1; min-width: 0; }
-  .share-name { color: var(--ink); font-weight: 500; font-size: 13px; }
-  .share-sub {
-    color: var(--ink-mute);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.5px;
-    margin-top: 2px;
-  }
-  .share-protocols { display: flex; gap: 4px; }
-  .share-protocols .proto {
-    padding: 3px 8px;
-    font-family: var(--font-mono);
-    font-size: 9px;
-    letter-spacing: 1.5px;
-    font-weight: 700;
-    background: var(--line);
-    color: var(--ink-trace);
-  }
-  .share-protocols .proto.on {
-    background: var(--signal-soft);
-    color: var(--signal);
-    text-shadow: 0 0 4px var(--signal-glow);
-  }
+  /* (Compartidas migrado a Panel de Control · CPShares.svelte) */
+
 
   /* ═══════════════════════════════════════════════════════════
      PORTAL · 2FA
