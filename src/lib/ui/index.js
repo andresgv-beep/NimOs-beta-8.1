@@ -40,6 +40,7 @@ export { default as Sparkline }         from './Sparkline.svelte';
 export { default as KPICard }           from './KPICard.svelte';
 export { default as StatCard }          from './StatCard.svelte';
 export { default as DataTable }         from './DataTable.svelte';
+export { default as FilterBar }         from './FilterBar.svelte';
 export { default as SectionHead }       from './SectionHead.svelte';
 export { default as DenseTable }        from './DenseTable.svelte';
 export { default as StripeProgressBar } from './StripeProgressBar.svelte';
