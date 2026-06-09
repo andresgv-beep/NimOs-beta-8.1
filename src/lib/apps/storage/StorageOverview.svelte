@@ -30,7 +30,7 @@
    */
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
   import {
-    SectionHead, Badge, LED, EmptyState, StripeProgressBar,
+    SectionHead, Badge, LED, EmptyState, StripeProgressBar, DataTable,
   } from '$lib/ui';
   import {
     fmtBytes, fmtDate, inferDiskRole,
@@ -268,33 +268,25 @@
                     (temp y horas pendiente backend)
                   </span>
                 </div>
-                <div class="disk-table cols-6-pool">
-                  <div class="disk-thead">
-                    <div></div>
-                    <div>Modelo</div>
-                    <div>Dispositivo</div>
-                    <div>Capacidad</div>
-                    <div>Rol</div>
-                    <div>SMART</div>
-                  </div>
+                <DataTable cols="40px 1fr 110px 80px 80px 140px" headers={['', 'Modelo', 'Dispositivo', 'Capacidad', 'Rol', 'SMART']}>
                   {#each (pool.devices || []) as disk, i}
-                    <div class="disk-row">
-                      <div class="disk-idx">D{i + 1}</div>
-                      <div class="disk-cell mono">{disk.model || '—'}</div>
-                      <div class="disk-cell mono">{disk.current_path || '—'}</div>
-                      <div class="disk-cell">{fmtBytes(disk.size_bytes) || '—'}</div>
-                      <div class="disk-cell">
+                    <div class="dt-row">
+                      <span class="disk-idx">D{i + 1}</span>
+                      <span class="mono dt-trunc">{disk.model || '—'}</span>
+                      <span class="mono dt-trunc">{disk.current_path || '—'}</span>
+                      <span>{fmtBytes(disk.size_bytes) || '—'}</span>
+                      <span>
                         <Badge size="sm" variant={inferDiskRole(pool.devices, i, pool.profile) === 'parity' ? 'warn' : 'default'}>
                           {inferDiskRole(pool.devices, i, pool.profile)}
                         </Badge>
-                      </div>
-                      <div class="disk-cell">
+                      </span>
+                      <span class="dt-flex">
                         <LED size={7} variant={smartVariant(disk.smart_status)} />
                         <span class="tc-dim sm">{disk.smart_status || 'unknown'}</span>
-                      </div>
+                      </span>
                     </div>
                   {/each}
-                </div>
+                </DataTable>
               </div>
 
               <!-- Snapshots resumen (top 5) -->
@@ -926,5 +918,18 @@
   .btn-primary:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+
+  /* Helpers de celda para DataTable v3 */
+  .dt-trunc {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .dt-flex {
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
 </style>

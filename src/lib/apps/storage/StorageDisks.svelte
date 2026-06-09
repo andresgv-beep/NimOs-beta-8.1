@@ -235,7 +235,8 @@
     gap: 8px;
     font-family: var(--font-mono);
   }
-  .pool-group-head + :global(.disk-table) {
+  /* La tabla de discos del grupo (DataTable) pega bajo la cabecera del grupo. */
+  .pool-group-head + :global(.data-table) {
     border-top-left-radius: 0;
     border-top-right-radius: 0;
   }
