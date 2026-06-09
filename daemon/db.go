@@ -921,6 +921,7 @@ func createAppRegistryTable() error {
 			{"network", "Network", "system", 1, 0},
 			{"nimtorrent", "NimTorrent", "app", 0, 0},
 			{"nimshield", "NimShield", "system", 0, 0},
+			{"controlpanel", "Panel de Control", "system", 1, 0},
 			{"appstore", "App Store", "system", 0, 0},
 			{"files", "Files", "app", 0, 1},
 			{"mediaplayer", "Media Player", "app", 0, 1},
@@ -946,7 +947,8 @@ func createAppRegistryTable() error {
 		id, name, category string
 		adminOnly, public  int
 	}{
-		{"nimshield", "NimShield", "system", 0, 0}, // concedible por el admin, no admin-only
+		{"nimshield", "NimShield", "system", 0, 0},           // concedible por el admin, no admin-only
+		{"controlpanel", "Panel de Control", "system", 1, 0}, // admin-only: administración del sistema
 	}
 	for _, a := range laterApps {
 		db.Exec(`INSERT OR IGNORE INTO app_registry (id, name, category, admin_only, public) VALUES (?, ?, ?, ?, ?)`,
