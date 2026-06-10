@@ -207,7 +207,7 @@
   .cps-list { display: flex; flex-direction: column; gap: 8px; }
   .cps-card {
     /* Ranura hundida: tono propio más oscuro que el fondo del panel,
-       independiente de --bg-card (que ahora flota para las stat-cards). */
+       independiente de --bg-card (que flota para las stat-cards). */
     background: #191920;
     border: 1px solid rgba(255, 255, 255, 0.04);
     border-radius: 8px;
