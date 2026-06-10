@@ -159,7 +159,7 @@ html, body {
   --canvas-soft:    #19191f;
   --panel:          #1e1e25;
   --panel-elev:     #24242c;
-  --panel-deep:     #2a2a32;
+  --panel-deep:     #26262e;
 
   /* ── Texto (4 niveles de jerarquía) ──────────────────────── */
   --ink:            #f2f2f5;
@@ -447,7 +447,7 @@ html, body {
   --bg-window:         #1e1e25;
   --bg-main:           #24242c;
   --bg-side:           #19191f;
-  --bg-card:           #2a2a32;
+  --bg-card:           #26262e;
   --bg-inner:          #15151b;
 }
 
