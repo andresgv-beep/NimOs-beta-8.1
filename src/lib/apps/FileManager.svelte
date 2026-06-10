@@ -39,6 +39,11 @@
   import { getToken, jsonHdrs as hdrs } from '$lib/stores/auth.js';
   import { notifySuccess, notifyError, notifyWarning } from '$lib/stores/notifications.js';
   import { addTask } from '$lib/stores/uploadTasks.js';
+  import {
+    fmtSize, fDate, fExt, isZipFile, fIcon,
+  } from './files/filesStore.js';
+  import FilesGridView from './files/FilesGridView.svelte';
+  import FilesListView from './files/FilesListView.svelte';
 
   let shares = [];
   let currentShare = null;
@@ -83,7 +88,7 @@
     loading = false;
   }
 
-  let gridEl;
+
 
   onMount(() => {
     fetchShares();
@@ -332,18 +337,6 @@
     }
   }
 
-  function isZipFile(file) {
-    return !file.isDirectory && file.name.toLowerCase().endsWith('.zip');
-  }
-
-  function fmtSize(b) {
-    if (!b) return '—';
-    if (b >= 1e9) return (b/1e9).toFixed(2) + ' GB';
-    if (b >= 1e6) return (b/1e6).toFixed(2) + ' MB';
-    if (b >= 1e3) return (b/1e3).toFixed(0) + ' KB';
-    return b + ' B';
-  }
-
   $: sorted = [...files].sort((a,b) => (a.isDirectory?-1:1) - (b.isDirectory?-1:1) || a.name.localeCompare(b.name));
   $: shareInfo = shares.find(s => s.name === currentShare);
   $: pathParts = currentPath === '/' ? [] : currentPath.split('/').filter(Boolean);
@@ -355,30 +348,6 @@
 
   $: localShares = shares.filter(s => !s.remote);
   $: remoteShares = shares.filter(s => s.remote);
-
-  const SVG_FOLDER_LOCAL  = `<svg width="36" height="36" viewBox="0 0 24 24" fill="#f59e0b" stroke="#d97706" stroke-width="0.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
-  const SVG_FOLDER_REMOTE = `<svg width="36" height="36" viewBox="0 0 24 24" fill="#3b82f6" stroke="#2563eb" stroke-width="0.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
-  const SVG_FOLDER_SM_LOCAL  = `<svg width="15" height="15" viewBox="0 0 24 24" fill="#f59e0b" stroke="#d97706" stroke-width="0.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
-  const SVG_FOLDER_SM_REMOTE = `<svg width="15" height="15" viewBox="0 0 24 24" fill="#3b82f6" stroke="#2563eb" stroke-width="0.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
-
-  function fIconHtml(file, small = false) {
-    if (file.isDirectory) return small ? SVG_FOLDER_SM_LOCAL : SVG_FOLDER_LOCAL;
-    return fIcon(file);
-  }
-  function fIcon(file) {
-    if (file.isDirectory) return '📁';
-    const e = file.name.split('.').pop().toLowerCase();
-    return {mp4:'🎬',mkv:'🎬',avi:'🎬',mov:'🎬',mp3:'🎵',wav:'🎵',flac:'🎵',jpg:'🖼️',jpeg:'🖼️',png:'🖼️',gif:'🖼️',svg:'🎨',pdf:'📕',doc:'📝',zip:'📦',rar:'📦',js:'💻',py:'💻',go:'💻',txt:'📄',md:'📄',json:'📄',html:'📄',css:'🅰',iso:'💿',sh:'🔧'}[e] || '📄';
-  }
-  function fDate(iso) {
-    if (!iso) return '—';
-    const d = new Date(iso);
-    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
-  }
-  function fExt(name) {
-    const p = name.lastIndexOf('.');
-    return p >= 0 ? name.slice(p+1).toUpperCase() : '—';
-  }
 </script>
 
 <svelte:window on:keydown={(e) => {
@@ -528,74 +497,25 @@
 
   <!-- ═══ CONTENT · grid / list ═══ -->
   {#if viewMode === 'grid'}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="file-grid" bind:this={gridEl}
-      on:contextmenu={(e) => { if (!e.target.closest('.f-item') && clipboard && currentShare) { e.preventDefault(); const p = calcMenuPos(e); ctxMenu = { x: p.x, y: p.y, file: null, idx: -1 }; } }}>
-      {#if !currentShare}
-        {#each localShares as share}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="f-item" on:dblclick={() => navigate(share.name, '/')}>
-            <div class="f-icon">{@html SVG_FOLDER_LOCAL}</div>
-            <div class="f-name">{share.displayName || share.name}</div>
-          </div>
-        {/each}
-        {#each remoteShares as share}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="f-item" on:dblclick={() => navigate(share.name, '/')}>
-            <div class="f-icon">{@html SVG_FOLDER_REMOTE}</div>
-            <div class="f-name">{share.displayName || share.name}</div>
-          </div>
-        {/each}
-      {:else if loading}
-        <div class="f-loading"><div class="spinner"></div></div>
-      {:else}
-        {#each sorted as file, i}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="f-item" class:sel={selected.has(i)} class:cut={clipboard?.op === 'cut' && clipboard?.path === filePath(file)}
-            data-idx={i} on:click={(e) => toggleSelect(i, e)} on:dblclick={() => openItem(file)}
-            on:contextmenu={(e) => onContextMenu(e, file, i)}>
-            <div class="f-icon">{@html fIconHtml(file)}</div>
-            <div class="f-name">{file.name}</div>
-            <div class="f-date">{fDate(file.modified)}</div>
-          </div>
-        {/each}
-        {#if sorted.length === 0}<div class="f-empty">Carpeta vacía</div>{/if}
-      {/if}
-    </div>
+    <FilesGridView
+      {currentShare} {localShares} {remoteShares} {selected} {clipboard} {loading} {filePath}
+      files={sorted}
+      on:navigate={(e) => navigate(e.detail.share, e.detail.path)}
+      on:select={(e) => toggleSelect(e.detail.i, e.detail.e)}
+      on:open={(e) => openItem(e.detail)}
+      on:context={(e) => onContextMenu(e.detail.e, e.detail.file, e.detail.i)}
+      on:bgcontext={(e) => { const p = calcMenuPos(e.detail); ctxMenu = { x: p.x, y: p.y, file: null, idx: -1 }; }}
+    />
   {:else}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="file-list" bind:this={gridEl}
-      on:contextmenu={(e) => { if (!e.target.closest('.fl-row') && clipboard && currentShare) { e.preventDefault(); const p = calcMenuPos(e); ctxMenu = { x: p.x, y: p.y, file: null, idx: -1 }; } }}>
-      {#if !currentShare}
-        {#each [...localShares, ...remoteShares] as share}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="fl-row" on:dblclick={() => navigate(share.name, '/')}>
-            <span class="fl-icon">{@html share.remote ? SVG_FOLDER_SM_REMOTE : SVG_FOLDER_SM_LOCAL}</span>
-            <span class="fl-name">{share.displayName || share.name}</span>
-          </div>
-        {/each}
-      {:else if loading}
-        <div class="f-loading"><div class="spinner"></div></div>
-      {:else}
-        {#each sorted as file, i}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="fl-row" class:sel={selected.has(i)} class:cut={clipboard?.op === 'cut' && clipboard?.path === filePath(file)}
-            data-idx={i} on:click={(e) => toggleSelect(i, e)} on:dblclick={() => openItem(file)}
-            on:contextmenu={(e) => onContextMenu(e, file, i)}>
-            <span class="fl-icon">{@html fIconHtml(file, true)}</span>
-            <span class="fl-name">{file.name}</span>
-            <span class="fl-size">{file.isDirectory ? '—' : fmtSize(file.size)}</span>
-            <span class="fl-date">{fDate(file.modified)}</span>
-          </div>
-        {/each}
-        {#if sorted.length === 0}<div class="f-empty">Carpeta vacía</div>{/if}
-      {/if}
-    </div>
+    <FilesListView
+      {currentShare} {localShares} {remoteShares} {selected} {clipboard} {loading} {filePath}
+      files={sorted}
+      on:navigate={(e) => navigate(e.detail.share, e.detail.path)}
+      on:select={(e) => toggleSelect(e.detail.i, e.detail.e)}
+      on:open={(e) => openItem(e.detail)}
+      on:context={(e) => onContextMenu(e.detail.e, e.detail.file, e.detail.i)}
+      on:bgcontext={(e) => { const p = calcMenuPos(e.detail); ctxMenu = { x: p.x, y: p.y, file: null, idx: -1 }; }}
+    />
   {/if}
 
   <!-- ═══ FOOTER · path mono + selected ═══ -->
@@ -975,152 +895,6 @@
   }
   .btn-import:hover { filter: brightness(1.1); }
 
-  /* ═══════════════════════════════════════════════════════════
-     FILE GRID
-     ═══════════════════════════════════════════════════════════ */
-  .file-grid {
-    width: 100%;
-    height: 100%;
-    overflow-y: auto;
-    padding: 14px 12px;
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
-    gap: 3px;
-    align-content: start;
-  }
-  .f-item {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 6px;
-    padding: 11px 6px 8px;
-    border-radius: 6px;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition: background 0.12s, border-color 0.12s;
-    animation: fadeUp 0.35s ease both;
-  }
-  .f-item:hover {
-    background: rgba(255,255,255,0.04);
-  }
-  .f-item.sel {
-    background: var(--side-active-bg, rgba(122,158,177,0.10));
-    border-color: var(--ui-select-border, rgba(122,158,177,0.35));
-  }
-  .f-item.cut { opacity: 0.45; }
-  @keyframes fadeUp {
-    from { opacity: 0; transform: translateY(7px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-  .f-icon {
-    font-size: 36px;
-    line-height: 1;
-    transition: transform 0.15s;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 36px;
-    height: 36px;
-  }
-  .f-item:hover .f-icon { transform: scale(1.07) translateY(-2px); }
-  .f-name {
-    font-size: 10px;
-    color: var(--ink, #f2f2f5);
-    text-align: center;
-    line-height: 1.3;
-    max-width: 80px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .f-date {
-    font-size: 9px;
-    color: var(--ink-mute, #9a9aa3);
-    font-family: var(--font-mono, monospace);
-  }
-  .f-empty {
-    grid-column: 1 / -1;
-    text-align: center;
-    padding: 40px;
-    color: var(--ink-mute, #9a9aa3);
-    font-size: 12px;
-  }
-  .f-loading {
-    grid-column: 1 / -1;
-    display: flex;
-    justify-content: center;
-    padding: 40px;
-  }
-  .spinner {
-    width: 20px; height: 20px;
-    border-radius: 50%;
-    border: 2px solid rgba(255,255,255,0.08);
-    border-top-color: var(--signal, #00ff9f);
-    animation: spin 0.7s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  /* ═══════════════════════════════════════════════════════════
-     FILE LIST
-     ═══════════════════════════════════════════════════════════ */
-  .file-list {
-    width: 100%;
-    height: 100%;
-    overflow-y: auto;
-    padding: 6px 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-  }
-  .fl-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 5px 8px;
-    border-radius: 5px;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition: background 0.12s, border-color 0.12s;
-    font-size: 12px;
-    color: var(--ink, #f2f2f5);
-  }
-  .fl-row:hover { background: rgba(255,255,255,0.04); }
-  .fl-row.sel {
-    background: var(--side-active-bg, rgba(122,158,177,0.10));
-    border-color: var(--ui-select-border, rgba(122,158,177,0.35));
-  }
-  .fl-row.cut { opacity: 0.45; }
-  .fl-icon {
-    font-size: 15px;
-    flex-shrink: 0;
-    width: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .fl-name {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .fl-size {
-    font-size: 10px;
-    color: var(--ink-mute, #9a9aa3);
-    font-family: var(--font-mono, monospace);
-    width: 60px;
-    text-align: right;
-    flex-shrink: 0;
-  }
-  .fl-date {
-    font-size: 10px;
-    color: var(--ink-mute, #9a9aa3);
-    font-family: var(--font-mono, monospace);
-    width: 110px;
-    text-align: right;
-    flex-shrink: 0;
-  }
 
   /* ═══════════════════════════════════════════════════════════
      FOOTER · path mono + selected count
