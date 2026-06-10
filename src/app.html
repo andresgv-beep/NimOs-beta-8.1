@@ -1,47 +1,56 @@
-<!doctype html>
-<html lang="es">
-	<head>
-		<meta charset="utf-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1" />
-		<script>
-			/* ─── NimOS · Auto-escalado de UI ───────────────────────────
-			 * Aplica zoom CSS al <html> antes del primer paint según el
-			 * viewport efectivo del navegador (que ya incorpora el zoom
-			 * del SO). Sin race, sin flash, sin heurísticas Win/Linux.
-			 *
-			 * Banding por viewport CSS:
-			 *   < 1366  → 0.85  (laptop pequeña)
-			 *   < 1680  → 0.95  (1080p @ 125-150% SO)
-			 *   < 2100  → 1.00  (1080p baseline)
-			 *   < 2600  → 1.15  (1440p)
-			 *   ≥ 2600  → 1.30  (4K)
-			 *
-			 * Re-aplica al redimensionar (mover entre monitores).
-			 * ─────────────────────────────────────────────────────────── */
-			(function () {
-				function computeScale() {
-					var w = window.innerWidth;
-					if (w < 1366) return 0.85;
-					if (w < 1680) return 0.95;
-					if (w < 2100) return 1.00;
-					if (w < 2600) return 1.15;
-					return 1.30;
-				}
-				function apply() {
-					var s = computeScale();
-					document.documentElement.style.zoom = s;
-					/* Variable CSS para compensaciones puntuales (ej.
-					 * ventana maximizada que usa 100vw, que no respeta
-					 * zoom). Ver WindowFrame.svelte .window.maximized. */
-					document.documentElement.style.setProperty('--ui-zoom', s);
-				}
-				apply();
-				window.addEventListener('resize', apply, { passive: true });
-			})();
-		</script>
-		%sveltekit.head%
-	</head>
-	<body data-sveltekit-preload-data="hover">
-		<div style="display: contents">%sveltekit.body%</div>
-	</body>
-</html>
+<script>
+  import { onMount } from 'svelte';
+  import { appState, init } from '$lib/stores/auth.js';
+  import { loadPrefs } from '$lib/stores/theme.js';
+  import Login from '$lib/components/Login.svelte';
+  import SetupWizard from '$lib/components/SetupWizard.svelte';
+  import Desktop from '$lib/components/Desktop.svelte';
+  import Spinner from '$lib/ui/Spinner.svelte';
+
+  let prefsReady = false;
+
+  onMount(async () => {
+    await init();
+    await loadPrefs();
+    prefsReady = true;
+  });
+</script>
+
+{#if $appState === 'loading' || ($appState === 'desktop' && !prefsReady)}
+  <div class="boot">
+    <div class="boot-inner">
+      <Spinner variant="braille" />
+      <span class="boot-text">loading nimos...</span>
+    </div>
+  </div>
+{:else if $appState === 'wizard'}
+  <SetupWizard />
+{:else if $appState === 'login'}
+  <Login />
+{:else if $appState === 'desktop'}
+  <Desktop />
+{/if}
+
+<style>
+  .boot {
+    width: 100%;
+    height: 100vh;
+    background: var(--bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+  }
+  .boot-inner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: var(--fg-dim);
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+  }
+  .boot-text {
+    color: var(--accent);
+  }
+</style>
