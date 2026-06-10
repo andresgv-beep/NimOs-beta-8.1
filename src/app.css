@@ -155,11 +155,11 @@ html, body {
   /* ── Fondos (escalera de elevación) ──
      Valores con tinte azul-violeta sutil (B > R=G) del mockup
      nimos-storage validado. Da identidad NimOS sin ser saturado. */
-  --canvas:         #0a0a0e;
-  --canvas-soft:    #0e0e13;
-  --panel:          #121217;
-  --panel-elev:     #17171d;
-  --panel-deep:     #1d1d24;
+  --canvas:         #15151b;
+  --canvas-soft:    #19191f;
+  --panel:          #1e1e25;
+  --panel-elev:     #24242c;
+  --panel-deep:     #26262e;
 
   /* ── Texto (4 niveles de jerarquía) ──────────────────────── */
   --ink:            #f2f2f5;
@@ -174,25 +174,25 @@ html, body {
   --line-strong:    rgba(255, 255, 255, 0.22);
 
   /* ── Ventanas ─ usando el azulado del mockup ─────────────── */
-  --window-bg:      #121217;
+  --window-bg:      #1e1e25;
   --window-border:  rgba(255, 255, 255, 0.14);
   --window-shadow:
     5px 5px 0 rgba(0, 0, 0, 0.7),
     0 0 60px rgba(255, 250, 240, 0.04);
 
   /* ── Sidebar interno de apps · más oscuro que ventana ────── */
-  --side-bg:        #0e0e13;
+  --side-bg:        #19191f;
   --side-border:    var(--line);
   --side-hover:     rgba(255, 255, 255, 0.04);
   --side-active-bg: rgba(122, 158, 177, 0.10);
   --side-active-fg: #7a9eb1;
 
   /* ── Taskbar · color sólido plano azulado ────────────────── */
-  --taskbar-bg:           #0e0e13;
+  --taskbar-bg:           #19191f;
   --taskbar-border-top:   rgba(255, 255, 255, 0.06);
 
   /* ── Main content área ─ ligeramente más claro que ventana ─ */
-  --main-bg:        #17171d;
+  --main-bg:        #24242c;
   --main-fg:        var(--ink);
   --main-fg-mute:   var(--ink-mute);
   --main-fg-faint:  var(--ink-faint);
@@ -444,11 +444,11 @@ html, body {
   --nim-folder:        #ff9c5a;
 
   /* Fondos del mockup · valores literales */
-  --bg-window:         #121217;
-  --bg-main:           #17171d;
-  --bg-side:           #0e0e13;
-  --bg-card:           #1d1d24;
-  --bg-inner:          #0a0a0e;
+  --bg-window:         #1e1e25;
+  --bg-main:           #24242c;
+  --bg-side:           #19191f;
+  --bg-card:           #26262e;
+  --bg-inner:          #15151b;
 }
 
 [data-theme="cream"] {
