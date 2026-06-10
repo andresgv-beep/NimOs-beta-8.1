@@ -64,10 +64,10 @@
     background: var(--stat-edge, transparent);
     opacity: 0.7;
   }
-  .v-ok   { --stat-edge: var(--st-ok, #00ff9f); }
-  .v-info { --stat-edge: var(--st-info, #4db8ff); }
-  .v-warn { --stat-edge: var(--st-warn, #ffc857); }
-  .v-crit { --stat-edge: var(--st-crit, #ff5a5a); }
+  .v-ok   { --stat-edge: var(--signal); }
+  .v-info { --stat-edge: var(--info); }
+  .v-warn { --stat-edge: var(--warn); }
+  .v-crit { --stat-edge: var(--crit); }
 
   .sc-head {
     display: flex;
@@ -78,14 +78,14 @@
   }
   .sc-lbl {
     font-size: 10px;
-    color: var(--fg-4, #7a7a82);
+    color: var(--ink-faint);
     font-weight: 500;
     letter-spacing: 0.6px;
     text-transform: uppercase;
   }
   .sc-tag {
     font-size: 9px;
-    color: var(--fg-4, #7a7a82);
+    color: var(--ink-faint);
     display: flex;
     align-items: center;
     gap: 4px;
@@ -98,27 +98,27 @@
     border-radius: 1.5px;
     background: currentColor;
   }
-  .t-ok   { color: var(--st-ok, #00ff9f); }
-  .t-info { color: var(--st-info, #4db8ff); }
-  .t-warn { color: var(--st-warn, #ffc857); }
-  .t-crit { color: var(--st-crit, #ff5a5a); }
+  .t-ok   { color: var(--signal); }
+  .t-info { color: var(--info); }
+  .t-warn { color: var(--warn); }
+  .t-crit { color: var(--crit); }
 
   .sc-val {
     font-size: 22px;
     font-weight: 500;
-    color: var(--fg, #f0f0f0);
+    color: var(--ink);
     line-height: 1;
     letter-spacing: -0.4px;
     font-family: var(--font-mono);
   }
   .sc-val .sc-unit {
     font-size: 11px;
-    color: var(--fg-4, #7a7a82);
+    color: var(--ink-faint);
     margin-left: 4px;
     font-weight: 400;
   }
-  .stat-card.v-ok   .sc-val.colored { color: var(--st-ok, #00ff9f); }
-  .stat-card.v-info .sc-val.colored { color: var(--st-info, #4db8ff); }
-  .stat-card.v-warn .sc-val.colored { color: var(--st-warn, #ffc857); }
-  .stat-card.v-crit .sc-val.colored { color: var(--st-crit, #ff5a5a); }
+  .stat-card.v-ok   .sc-val.colored { color: var(--signal); }
+  .stat-card.v-info .sc-val.colored { color: var(--info); }
+  .stat-card.v-warn .sc-val.colored { color: var(--warn); }
+  .stat-card.v-crit .sc-val.colored { color: var(--crit); }
 </style>

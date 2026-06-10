@@ -52,7 +52,7 @@
     gap: 8px;
     border-bottom: 2px solid transparent;
   }
-  .tab:hover { color: var(--fg); background: var(--bg-1); }
+  .tab:hover { color: var(--ink); background: var(--bg-1); }
   .tab.active {
     color: var(--accent);
     background: var(--bg-1);

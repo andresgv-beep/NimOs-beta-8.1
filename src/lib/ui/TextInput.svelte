@@ -79,7 +79,7 @@
     background: transparent;
     border: none;
     outline: none;
-    color: var(--fg);
+    color: var(--ink);
     font-family: var(--font-mono);
     font-size: 11px;
     letter-spacing: 0.5px;

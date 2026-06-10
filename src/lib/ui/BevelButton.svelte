@@ -168,9 +168,9 @@
 
   /* ─── PRIMARY ─── */
   .btn-wrap.primary { background: var(--accent); }
-  .btn-wrap.primary:hover { background: var(--fg); box-shadow: 0 0 14px var(--accent-glow); }
+  .btn-wrap.primary:hover { background: var(--ink); box-shadow: 0 0 14px var(--accent-glow); }
   .btn-wrap.primary .btn { background: var(--accent); color: var(--bg); font-weight: 700; }
-  .btn-wrap.primary:hover .btn { background: var(--fg); color: var(--bg); }
+  .btn-wrap.primary:hover .btn { background: var(--ink); color: var(--bg); }
 
   /* ─── DANGER ─── */
   .btn-wrap.danger { background: var(--crit); }

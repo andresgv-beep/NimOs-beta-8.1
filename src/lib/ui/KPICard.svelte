@@ -158,7 +158,7 @@
 
   .kpi-value {
     font-size: 22px;
-    color: var(--fg);
+    color: var(--ink);
     font-weight: 600;
     letter-spacing: 0.5px;
     font-feature-settings: "tnum";

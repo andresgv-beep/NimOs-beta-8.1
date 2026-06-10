@@ -76,7 +76,7 @@
     font-family: var(--font-mono);
     font-size: 9px;
     font-weight: 700;
-    color: var(--fg);
+    color: var(--ink);
     letter-spacing: 0.5px;
     mix-blend-mode: difference;
     pointer-events: none;

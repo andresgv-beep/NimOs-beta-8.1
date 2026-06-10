@@ -101,7 +101,7 @@
     background: transparent;
     border: 1px solid var(--bd-2, #20202a);
     border-radius: 5px;
-    color: var(--fg-3, #9c9ca4);
+    color: var(--ink-mute);
     font-size: 10px;
     font-family: var(--font-mono);
     text-transform: uppercase;
@@ -113,16 +113,16 @@
     transition: color 0.12s, border-color 0.12s, background 0.12s;
   }
   .fb-tab:hover {
-    color: var(--fg, #f0f0f0);
-    border-color: var(--bd-3, #2a2a32);
+    color: var(--ink);
+    border-color: var(--line-bright);
   }
   .fb-tab.active {
-    color: var(--nim-green, #00ff9f);
+    color: var(--signal);
     border-color: rgba(0, 255, 159, 0.35);
     background: rgba(0, 255, 159, 0.06);
   }
   .fb-tab.active.crit {
-    color: var(--st-crit, #ff5a5a);
+    color: var(--crit);
     border-color: rgba(255, 90, 90, 0.35);
     background: rgba(255, 90, 90, 0.06);
   }
@@ -132,17 +132,17 @@
     padding: 0 5px;
     border-radius: 3px;
     background: rgba(255, 255, 255, 0.06);
-    color: var(--fg-4, #7a7a82);
+    color: var(--ink-faint);
     min-width: 16px;
     text-align: center;
   }
   .fb-tab.active .fb-count {
     background: rgba(0, 255, 159, 0.15);
-    color: var(--nim-green, #00ff9f);
+    color: var(--signal);
   }
   .fb-tab.active.crit .fb-count {
     background: rgba(255, 90, 90, 0.15);
-    color: var(--st-crit, #ff5a5a);
+    color: var(--crit);
   }
 
   .fb-search {
@@ -162,7 +162,7 @@
   .fb-search svg {
     width: 11px;
     height: 11px;
-    color: var(--fg-4, #7a7a82);
+    color: var(--ink-faint);
     flex-shrink: 0;
   }
   .fb-search input {
@@ -170,18 +170,18 @@
     min-width: 0;
     background: transparent;
     border: none;
-    color: var(--fg, #f0f0f0);
+    color: var(--ink);
     outline: none;
     font-family: var(--font-mono);
     font-size: 11px;
   }
   .fb-search input::placeholder {
-    color: var(--fg-5, #5a5a62);
+    color: var(--ink-trace);
   }
   .fb-kb {
     font-size: 9px;
     font-family: var(--font-mono);
-    color: var(--fg-5, #5a5a62);
+    color: var(--ink-trace);
     border: 1px solid var(--bd-2, #20202a);
     border-radius: 3px;
     padding: 1px 5px;

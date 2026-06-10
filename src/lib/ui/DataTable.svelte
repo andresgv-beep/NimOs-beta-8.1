@@ -72,7 +72,7 @@
     border-bottom: 1px solid var(--bd-2, #20202a);
     font-family: var(--font-mono);
     font-size: 9px;
-    color: var(--fg-5, #5a5a62);
+    color: var(--ink-trace);
     letter-spacing: 0.8px;
     text-transform: uppercase;
     font-weight: 600;

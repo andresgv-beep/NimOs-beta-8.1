@@ -103,7 +103,7 @@
     cursor: pointer;
     transition: color 0.1s;
   }
-  .dt-th.sortable:hover { color: var(--fg); }
+  .dt-th.sortable:hover { color: var(--ink); }
   .dt-th.active { color: var(--accent); }
   .sort-ic { font-size: 8px; opacity: 0.7; }
 
@@ -130,11 +130,11 @@
   }
   :global(.dt-body .tr-row:hover) {
     background: var(--bg-1);
-    color: var(--fg);
+    color: var(--ink);
   }
   :global(.dt-body .tr-row.selected) {
     background: var(--accent-dim);
-    color: var(--fg);
+    color: var(--ink);
   }
   :global(.dt-body .tr-row.warn-row)  { background: rgba(255, 184, 0, 0.03); }
   :global(.dt-body .tr-row.crit-row)  { background: rgba(255, 90, 90, 0.05); }
