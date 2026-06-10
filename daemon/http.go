@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
@@ -97,6 +99,13 @@ func authenticate(r *http.Request) *DBSession {
 	hashed := sha256Hex(token)
 	session, err := dbSessionGet(hashed)
 	if err != nil {
+		// Token presentado pero inválido → candidato a token spray.
+		// Alimenta la regla AUTH-003 (acumulación de tokens inválidos).
+		// Antes esto devolvía nil en silencio y la regla era código muerto.
+		ip := clientIP(r)
+		if !shieldIsWhitelisted(ip) {
+			ShieldAuthTokenFail(ip, r.UserAgent(), r.URL.Path)
+		}
 		return nil
 	}
 	return session
@@ -212,8 +221,46 @@ func corsMiddleware(next http.Handler) http.Handler {
 			w.WriteHeader(204)
 			return
 		}
-		next.ServeHTTP(w, r)
+		// Envolvemos el ResponseWriter para capturar el código de estado:
+		// un 404 puede ser escaneo de rutas. Tras servir, si fue 404 (y la
+		// IP no está en whitelist), emitimos un evento scan para que las
+		// reglas SCAN-001 (10+ 404s/min) y SCAN-002 (20+ endpoints/2min)
+		// tengan datos. Antes nadie emitía estos eventos → reglas muertas.
+		rec := &statusRecorder{ResponseWriter: w, status: 200}
+		next.ServeHTTP(rec, r)
+		if shieldEnabled && rec.status == http.StatusNotFound {
+			ip := clientIP(r)
+			if !shieldIsWhitelisted(ip) {
+				Shield404(ip, r.UserAgent(), r.URL.Path)
+			}
+		}
 	})
+}
+
+// statusRecorder envuelve un http.ResponseWriter para capturar el código de
+// estado de la respuesta sin alterarla. Delega Flush y Hijack para no romper
+// streaming (SSE) ni upgrades a WebSocket.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := r.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, fmt.Errorf("statusRecorder: underlying ResponseWriter does not support Hijack")
 }
 
 // isLocalOrigin checks if the origin is localhost, LAN IP, or the NAS's own .local domain

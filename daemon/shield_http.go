@@ -192,7 +192,10 @@ func handleShieldRoutes(w http.ResponseWriter, r *http.Request) {
 	// Control de acceso por APP (no por rol): el admin concede acceso a
 	// NimShield desde la gestión de usuarios; quien lo tenga, entra. Mismo
 	// modelo que el resto de apps (p.ej. nimtorrent). El loopback y la
-	// autenticación los cubre requireAppAccess → requireAuth.
+	// Lectura (status/events/blocks/whitelist GET): requireAppAccess basta.
+	// Mutaciones (unblock/toggle/whitelist POST): exigen rol admin dentro de
+	// cada case — apagar el escudo o whitelistar al atacante no puede estar
+	// al alcance de cualquier usuario con acceso a la app.
 	session := requireAppAccess(w, r, "nimshield")
 	if session == nil {
 		return
@@ -244,6 +247,10 @@ func handleShieldRoutes(w http.ResponseWriter, r *http.Request) {
 
 	// POST /api/shield/unblock — body: {"ip": "1.2.3.4"}
 	case path == "/api/shield/unblock" && method == "POST":
+		if session.Role != "admin" {
+			jsonError(w, 403, "Solo un administrador puede modificar NimShield")
+			return
+		}
 		body, _ := readBody(r)
 		ip := bodyStr(body, "ip")
 		if ip == "" {
@@ -255,6 +262,10 @@ func handleShieldRoutes(w http.ResponseWriter, r *http.Request) {
 
 	// POST /api/shield/toggle — enable/disable
 	case path == "/api/shield/toggle" && method == "POST":
+		if session.Role != "admin" {
+			jsonError(w, 403, "Solo un administrador puede modificar NimShield")
+			return
+		}
 		shieldEnabled = !shieldEnabled
 		logMsg("shield: %s by %s", map[bool]string{true: "enabled", false: "disabled"}[shieldEnabled], session.Username)
 		jsonOk(w, map[string]interface{}{"ok": true, "enabled": shieldEnabled})
@@ -265,6 +276,10 @@ func handleShieldRoutes(w http.ResponseWriter, r *http.Request) {
 
 	// POST /api/shield/whitelist — body: {"ip": "1.2.3.4", "note": "auditoría"}
 	case path == "/api/shield/whitelist" && method == "POST":
+		if session.Role != "admin" {
+			jsonError(w, 403, "Solo un administrador puede modificar NimShield")
+			return
+		}
 		body, _ := readBody(r)
 		ip := bodyStr(body, "ip")
 		note := bodyStr(body, "note")
@@ -287,6 +302,10 @@ func handleShieldRoutes(w http.ResponseWriter, r *http.Request) {
 
 	// POST /api/shield/whitelist/remove — body: {"ip": "1.2.3.4"}
 	case path == "/api/shield/whitelist/remove" && method == "POST":
+		if session.Role != "admin" {
+			jsonError(w, 403, "Solo un administrador puede modificar NimShield")
+			return
+		}
 		body, _ := readBody(r)
 		ip := bodyStr(body, "ip")
 		if ip == "" {
