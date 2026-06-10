@@ -83,7 +83,7 @@ export const APP_META = {
     fallback: '⬇️',
     width:    900,
     height:   580,
-    category: 'system',
+    category: 'app',
   },
 
   appstore: {
@@ -137,7 +137,7 @@ export const APP_META = {
     fallback: '📝',
     width:    900,
     height:   620,
-    category: 'utilities',
+    category: 'app',
   },
 };
 
