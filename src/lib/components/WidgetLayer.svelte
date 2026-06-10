@@ -445,7 +445,10 @@
      ═══════════════════════════════════════════════════════════ */
   .widget {
     position: absolute;
-    background: var(--bg-card);
+    /* Gradiente sutil en vez de negro plano → da volumen sin chillar */
+    background:
+      linear-gradient(155deg, rgba(255, 255, 255, 0.022), transparent 55%),
+      var(--bg-card);
     border: 1px solid var(--line);
     border-radius: 12px;
     overflow: hidden;
@@ -453,15 +456,28 @@
     user-select: none;
     touch-action: none;
     pointer-events: auto;
-    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    /* Profundidad permanente: despega la tarjeta del fondo + luz interior arriba */
+    box-shadow:
+      0 10px 30px rgba(0, 0, 0, 0.40),
+      0 2px 6px rgba(0, 0, 0, 0.25),
+      inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
   }
   .widget:hover {
     border-color: var(--line-bright);
+    box-shadow:
+      0 14px 38px rgba(0, 0, 0, 0.48),
+      0 3px 8px rgba(0, 0, 0, 0.3),
+      inset 0 1px 0 rgba(255, 255, 255, 0.07);
   }
   .widget.dragging {
     cursor: grabbing;
-    border-color: var(--signal);
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+    border-color: var(--line-bright);
+    box-shadow:
+      0 22px 55px rgba(0, 0, 0, 0.55),
+      0 4px 12px rgba(0, 0, 0, 0.35),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    transform: scale(1.015);
     transition: none;
     z-index: 3;
   }
