@@ -349,30 +349,17 @@
     position: fixed;
     left: 0; right: 0; bottom: 0;
     height: var(--taskbar-height, 44px);
-    /* Color sólido plano · sin gradient cromado tipo Lubuntu */
-    background: var(--taskbar-bg, #191718);
-    border-top: 1px solid var(--taskbar-border-top, rgba(255, 255, 255, 0.06));
+    /* Cristal sutil (~85% opaco): la barra es fija → el blur cuesta poco.
+       Más opaca que los widgets para que siempre se lea bien. */
+    background: rgba(14, 14, 19, 0.85);
+    backdrop-filter: blur(20px) saturate(1.2);
+    -webkit-backdrop-filter: blur(20px) saturate(1.2);
+    border-top: 1px solid var(--taskbar-border-top, rgba(255, 255, 255, 0.08));
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.05);
     display: flex;
     align-items: stretch;
     z-index: 9000;
     font-family: var(--font-mono, 'JetBrains Mono', monospace);
-  }
-
-  /* Línea de glow verde sutil en borde superior · firma del boot */
-  .taskbar::before {
-    content: '';
-    position: absolute;
-    top: -1px;
-    left: 15%;
-    right: 15%;
-    height: 1px;
-    background: linear-gradient(90deg,
-      transparent,
-      var(--signal-glow, rgba(0, 255, 159, 0.35)),
-      transparent
-    );
-    opacity: 0.5;
-    pointer-events: none;
   }
 
   .tb-left, .tb-right {

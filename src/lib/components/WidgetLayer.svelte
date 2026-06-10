@@ -445,18 +445,27 @@
      ═══════════════════════════════════════════════════════════ */
   .widget {
     position: absolute;
-    background: var(--bg-card);
-    border: 1px solid var(--line);
+    /* Cristal esmerilado: deja ver el wallpaper difuminado por detrás.
+       OJO rendimiento Pi: backdrop-filter es caro y los widgets son
+       permanentes + se redibujan al arrastrar ventanas encima.
+       Si hay tirones, bajar el blur (16px → 8px) o quitarlo. */
+    background: rgba(20, 20, 26, 0.68);
+    backdrop-filter: blur(16px) saturate(1.3);
+    -webkit-backdrop-filter: blur(16px) saturate(1.3);
+    border: 1px solid rgba(255, 255, 255, 0.10);
     border-radius: 12px;
     overflow: hidden;
     cursor: grab;
     user-select: none;
     touch-action: none;
     pointer-events: auto;
+    box-shadow:
+      0 10px 30px rgba(0, 0, 0, 0.35),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08);
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
   .widget:hover {
-    border-color: var(--line-bright);
+    border-color: rgba(255, 255, 255, 0.16);
   }
   .widget.dragging {
     cursor: grabbing;
