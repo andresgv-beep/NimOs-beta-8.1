@@ -159,7 +159,7 @@ html, body {
   --canvas-soft:    #19191f;
   --panel:          #1e1e25;
   --panel-elev:     #24242c;
-  --panel-deep:     #191920;
+  --panel-deep:     #2c2c35;
 
   /* ── Texto (4 niveles de jerarquía) ──────────────────────── */
   --ink:            #f2f2f5;
@@ -174,25 +174,25 @@ html, body {
   --line-strong:    rgba(255, 255, 255, 0.22);
 
   /* ── Ventanas ─ usando el azulado del mockup ─────────────── */
-  --window-bg:      #1e1e25;
+  --window-bg:      #16161a;
   --window-border:  rgba(255, 255, 255, 0.14);
   --window-shadow:
     5px 5px 0 rgba(0, 0, 0, 0.7),
     0 0 60px rgba(255, 250, 240, 0.04);
 
   /* ── Sidebar interno de apps · más oscuro que ventana ────── */
-  --side-bg:        #19191f;
+  --side-bg:        #131316;
   --side-border:    var(--line);
   --side-hover:     rgba(255, 255, 255, 0.04);
   --side-active-bg: rgba(122, 158, 177, 0.10);
   --side-active-fg: #7a9eb1;
 
   /* ── Taskbar · color sólido plano azulado ────────────────── */
-  --taskbar-bg:           #19191f;
+  --taskbar-bg:           #131316;
   --taskbar-border-top:   rgba(255, 255, 255, 0.06);
 
   /* ── Main content área ─ ligeramente más claro que ventana ─ */
-  --main-bg:        #24242c;
+  --main-bg:        #1a1a1f;
   --main-fg:        var(--ink);
   --main-fg-mute:   var(--ink-mute);
   --main-fg-faint:  var(--ink-faint);
@@ -447,7 +447,7 @@ html, body {
   --bg-window:         #1e1e25;
   --bg-main:           #24242c;
   --bg-side:           #19191f;
-  --bg-card:           #191920;
+  --bg-card:           #2c2c35;
   --bg-inner:          #15151b;
 }
 
