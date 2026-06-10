@@ -85,13 +85,16 @@
     .map(a => ({ ...a, isSystem: true }))
     .filter(a => !a.hidden && canAccess(a.id));
 
-  // Apps del sistema y utilidades en una sola sección "Sistema NimOS"
+  // Apps NimOS de usuario (Notes, NimTorrent…) → van a "Aplicaciones"
+  $: nimUserApps = systemApps.filter(a => a.category === 'app');
+
+  // Sección "Sistema NimOS": solo piezas del sistema y utilidades core
   $: sysApps = systemApps.filter(a =>
     a.category === 'system' || a.category === 'utilities'
   );
 
-  // Apps Docker en otra sección
-  $: dkApps = dockerApps.filter(a => canAccess(a.id));
+  // Sección "Aplicaciones": apps NimOS de usuario + apps Docker
+  $: dkApps = [...nimUserApps, ...dockerApps.filter(a => canAccess(a.id))];
 
   // Sin buscador: se muestran todas directamente
   $: filteredSys = sysApps;
@@ -354,15 +357,11 @@
     flex-shrink: 0;
     overflow: hidden;
   }
-  /* System apps · sobrio */
-  .app-tile-ico.sys {
-    background: rgba(0, 255, 159, 0.08);
-    border: 1px solid rgba(0, 255, 159, 0.15);
-  }
-  /* Docker apps · neutro · respeta el icono real de la app */
+  /* Sin recuadro: el icono respira a sangre, como en móvil/macOS */
+  .app-tile-ico.sys,
   .app-tile-ico.dk {
-    background: var(--bg-card, #1a1a20);
-    border: 1px solid var(--bd-2, #20202a);
+    background: transparent;
+    border: none;
   }
 
   .app-tile-name {
