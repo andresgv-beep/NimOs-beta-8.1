@@ -287,13 +287,13 @@
   .sm-content::-webkit-scrollbar { width: 5px; }
   .sm-content::-webkit-scrollbar-track { background: transparent; }
   .sm-content::-webkit-scrollbar-thumb {
-    background: var(--bd-2, #20202a);
+    background: var(--line);
     border-radius: 3px;
   }
 
   .sm-section-head {
     font-size: 10px;
-    color: var(--fg-4, #7a7a82);
+    color: var(--ink-faint);
     letter-spacing: 1.5px;
     font-weight: 600;
     text-transform: uppercase;
@@ -305,7 +305,7 @@
   .sm-section-head .count {
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 10px;
-    color: var(--fg-5, #5a5a62);
+    color: var(--ink-trace);
     font-weight: 500;
     letter-spacing: 0.3px;
     text-transform: none;
@@ -366,7 +366,7 @@
 
   .app-tile-name {
     font-size: 10.5px;
-    color: var(--fg-2, #d0d0d4);
+    color: var(--ink-dim);
     text-align: center;
     font-weight: 400;
     line-height: 1.2;
@@ -385,15 +385,15 @@
     right: 14px;
     width: 6px;
     height: 6px;
-    background: var(--st-ok, #00ff9f);
+    background: var(--signal);
     border-radius: 50%;
-    box-shadow: 0 0 4px var(--st-ok, #00ff9f);
+    box-shadow: 0 0 4px var(--signal);
   }
 
   /* Divider between sections */
   .sm-divider {
     height: 1px;
-    background: var(--bd, rgba(255, 255, 255, 0.05));
+    background: var(--line));
     margin: 8px 4px;
   }
 
@@ -405,7 +405,7 @@
     justify-content: center;
     padding: 40px 20px;
     gap: 12px;
-    color: var(--fg-4, #7a7a82);
+    color: var(--ink-faint);
   }
   .empty-ic {
     font-size: 32px;
@@ -418,7 +418,7 @@
 
   /* ─── Bottom · User + Power ─── */
   .sm-footer {
-    border-top: 1px solid var(--bd, rgba(255, 255, 255, 0.05));
+    border-top: 1px solid var(--line));
     padding: 10px 14px;
     display: flex;
     align-items: center;
@@ -442,8 +442,8 @@
     width: 28px;
     height: 28px;
     border-radius: 50%;
-    background: var(--nim-green, #00ff9f);
-    color: var(--bg-window, #0c0c0f);
+    background: var(--signal);
+    color: var(--panel);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -458,13 +458,13 @@
   }
   .sm-user-name {
     font-size: 12.5px;
-    color: var(--fg, #f0f0f0);
+    color: var(--ink);
     font-weight: 500;
   }
   .sm-user-status {
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 9px;
-    color: var(--st-ok, #00ff9f);
+    color: var(--signal);
     letter-spacing: 0.3px;
     display: flex;
     align-items: center;
@@ -474,9 +474,9 @@
     content: '';
     width: 4px;
     height: 4px;
-    background: var(--st-ok, #00ff9f);
+    background: var(--signal);
     border-radius: 50%;
-    box-shadow: 0 0 3px var(--st-ok, #00ff9f);
+    box-shadow: 0 0 3px var(--signal);
   }
 
   .sm-power {
@@ -487,14 +487,14 @@
     justify-content: center;
     border-radius: 5px;
     cursor: pointer;
-    color: var(--fg-3, #9c9ca4);
+    color: var(--ink-mute);
     font-size: 14px;
     transition: all 0.12s;
     border: 1px solid transparent;
     background: transparent;
   }
   .sm-power:hover {
-    color: var(--st-crit, #ff5a5a);
+    color: var(--crit);
     background: rgba(255, 90, 90, 0.06);
     border-color: rgba(255, 90, 90, 0.2);
   }
