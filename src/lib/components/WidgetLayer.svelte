@@ -445,10 +445,8 @@
      ═══════════════════════════════════════════════════════════ */
   .widget {
     position: absolute;
-    /* Gradiente sutil en vez de negro plano → da volumen sin chillar */
-    background:
-      linear-gradient(155deg, rgba(255, 255, 255, 0.022), transparent 55%),
-      var(--bg-card);
+    /* Gradiente en el mismo tono (más claro arriba) → volumen real */
+    background: linear-gradient(155deg, #26262f, #202028 58%, #1c1c23);
     border: 1px solid var(--line);
     border-radius: 12px;
     overflow: hidden;
