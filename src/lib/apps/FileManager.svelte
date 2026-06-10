@@ -39,11 +39,10 @@
   import { getToken, jsonHdrs as hdrs } from '$lib/stores/auth.js';
   import { notifySuccess, notifyError, notifyWarning } from '$lib/stores/notifications.js';
   import { addTask } from '$lib/stores/uploadTasks.js';
-  import {
-    fmtSize, fDate, fExt, isZipFile, fIcon,
-  } from './files/filesStore.js';
   import FilesGridView from './files/FilesGridView.svelte';
   import FilesListView from './files/FilesListView.svelte';
+  import FilesContextMenu from './files/FilesContextMenu.svelte';
+  import FilesModals from './files/FilesModals.svelte';
 
   let shares = [];
   let currentShare = null;
@@ -204,6 +203,40 @@
   }
 
   function closeCtx() { ctxMenu = null; ctxTarget = null; }
+
+  // Descarga (antes inline en el menú contextual)
+  async function downloadFile(file) {
+    const fp = filePath(file);
+    try {
+      const res = await fetch('/api/files/download-token', { method: 'POST', headers: hdrs(), body: JSON.stringify({ share: currentShare, path: fp }) });
+      const data = await res.json();
+      if (data.token) {
+        window.open(`/api/files/download?share=${currentShare}&path=${encodeURIComponent(fp)}&dl=${data.token}`, '_blank');
+      } else {
+        window.open(`/api/files/download?share=${currentShare}&path=${encodeURIComponent(fp)}&token=${getToken()}`, '_blank');
+      }
+    } catch {
+      window.open(`/api/files/download?share=${currentShare}&path=${encodeURIComponent(fp)}&token=${getToken()}`, '_blank');
+    }
+    closeCtx();
+  }
+
+  // Despachador de las acciones emitidas por FilesContextMenu
+  function handleCtxAction(e) {
+    const { type, file } = e.detail;
+    switch (type) {
+      case 'open':     openItem(file); break;
+      case 'copy':     copyFile(file); break;
+      case 'cut':      cutFile(file); break;
+      case 'paste':    pasteFile(); break;
+      case 'download': downloadFile(file); break;
+      case 'zip':      zipSelected(); break;
+      case 'unzip':    unzipFile(file); break;
+      case 'rename':   startRename(file); break;
+      case 'info':     showInfo(file); break;
+      case 'delete':   deleteFile(file); break;
+    }
+  }
 
   // ── Acciones ──
   async function deleteFile(file) {
@@ -536,184 +569,19 @@
 </AppShell>
 
 <!-- ════════════════════════════════════════════════════════════
-     CTX MENU · position:fixed, fuera del AppShell
+     CTX MENU · componente (position:fixed, fuera del AppShell)
      ════════════════════════════════════════════════════════════ -->
-{#if ctxMenu}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="ctx-menu" style="left:{ctxMenu.x}px;top:{ctxMenu.y}px"
-    on:contextmenu|preventDefault>
-
-    {#if ctxMenu.file}
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="ctx-item" on:click={() => openItem(ctxMenu.file)}>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-        Abrir
-      </div>
-      <div class="ctx-sep"></div>
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="ctx-item" on:click={() => copyFile(ctxMenu.file)}>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-        Copiar
-      </div>
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="ctx-item" on:click={() => cutFile(ctxMenu.file)}>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="20" r="2"/><circle cx="6" cy="4" r="2"/><line x1="6" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="21" y2="21"/><line x1="6" y1="18" x2="21" y2="3"/></svg>
-        Cortar
-      </div>
-      {#if clipboard}
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="ctx-item" on:click={pasteFile}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg>
-          Pegar
-        </div>
-      {/if}
-      <div class="ctx-sep"></div>
-      {#if !ctxMenu.file.isDirectory}
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="ctx-item" on:click={async () => { const fp = filePath(ctxMenu.file); try { const res = await fetch('/api/files/download-token', { method: 'POST', headers: hdrs(), body: JSON.stringify({ share: currentShare, path: fp }) }); const data = await res.json(); if (data.token) { window.open(`/api/files/download?share=${currentShare}&path=${encodeURIComponent(fp)}&dl=${data.token}`, '_blank'); } else { window.open(`/api/files/download?share=${currentShare}&path=${encodeURIComponent(fp)}&token=${getToken()}`, '_blank'); } } catch { window.open(`/api/files/download?share=${currentShare}&path=${encodeURIComponent(fp)}&token=${getToken()}`, '_blank'); } closeCtx(); }}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          Descargar
-        </div>
-      {/if}
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="ctx-item" on:click={zipSelected}>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10z"/><path d="M9 9h1M12 9h1M9 12h1M12 12h1M9 15h1M12 15h1"/></svg>
-        Comprimir (.zip)
-      </div>
-      {#if isZipFile(ctxMenu.file)}
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="ctx-item" on:click={() => unzipFile(ctxMenu.file)}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10z"/><polyline points="9 11 12 14 15 11"/><line x1="12" y1="7" x2="12" y2="14"/></svg>
-          Descomprimir
-        </div>
-      {/if}
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="ctx-item" on:click={() => startRename(ctxMenu.file)}>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>
-        Renombrar
-      </div>
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="ctx-item" on:click={() => showInfo(ctxMenu.file)}>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-        Información
-      </div>
-      <div class="ctx-sep"></div>
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="ctx-item danger" on:click={() => deleteFile(ctxMenu.file)}>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
-        Eliminar
-      </div>
-    {:else}
-      <!-- Click derecho en fondo vacío: solo pegar -->
-      {#if clipboard}
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="ctx-item" on:click={pasteFile}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg>
-          Pegar "{clipboard.file.name}"
-        </div>
-      {/if}
-    {/if}
-  </div>
-{/if}
+<FilesContextMenu menu={ctxMenu} {clipboard} on:action={handleCtxAction} />
 
 <!-- ════════════════════════════════════════════════════════════
-     MODALES · rename / info / new folder (position:fixed)
+     MODALES · componente (rename / info / new folder)
      ════════════════════════════════════════════════════════════ -->
-{#if renameModal}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="modal-overlay" on:click|self={() => renameModal = null}></div>
-  <div class="modal">
-    <div class="modal-header">
-      <div class="modal-title">Renombrar</div>
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="modal-close" on:click={() => renameModal = null}>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </div>
-    </div>
-    <div class="modal-body">
-      <div class="form-field">
-        <label class="form-label" for="rename-input">Nuevo nombre</label>
-        <input id="rename-input" class="form-input" type="text" bind:value={renameModal.newName} />
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn-secondary" on:click={() => renameModal = null}>Cancelar</button>
-      <button class="btn-accent" on:click={confirmRename}>Renombrar</button>
-    </div>
-  </div>
-{/if}
-
-{#if infoModal}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="modal-overlay" on:click|self={() => infoModal = null}></div>
-  <div class="modal">
-    <div class="modal-header">
-      <div class="modal-title">Información</div>
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="modal-close" on:click={() => infoModal = null}>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </div>
-    </div>
-    <div class="modal-body">
-      <div class="info-icon">{fIcon(infoModal)}</div>
-      <div class="info-rows">
-        <div class="info-row"><span>Nombre</span><span>{infoModal.name}</span></div>
-        <div class="info-row"><span>Tipo</span><span>{infoModal.isDirectory ? 'Carpeta' : fExt(infoModal.name)}</span></div>
-        {#if !infoModal.isDirectory}
-          <div class="info-row"><span>Tamaño</span><span>{fmtSize(infoModal.size)}</span></div>
-        {/if}
-        <div class="info-row"><span>Modificado</span><span>{fDate(infoModal.modified)}</span></div>
-        <div class="info-row"><span>Ruta</span><span>{currentShare}{filePath(infoModal)}</span></div>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn-accent" on:click={() => infoModal = null}>Cerrar</button>
-    </div>
-  </div>
-{/if}
-
-{#if newFolderModal}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="modal-overlay" on:click|self={() => newFolderModal = null}></div>
-  <div class="modal">
-    <div class="modal-header">
-      <div class="modal-title">Nueva carpeta</div>
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="modal-close" on:click={() => newFolderModal = null}>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </div>
-    </div>
-    <div class="modal-body">
-      <div class="form-field">
-        <label class="form-label" for="newfolder-input">Nombre de la carpeta</label>
-        <!-- svelte-ignore a11y_autofocus -->
-        <input id="newfolder-input" class="form-input" type="text" bind:value={newFolderModal.name} autofocus
-          on:keydown={(e) => { if (e.key === 'Enter') createFolder(); if (e.key === 'Escape') newFolderModal = null; }} />
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn-secondary" on:click={() => newFolderModal = null}>Cancelar</button>
-      <button class="btn-accent" on:click={createFolder}>Crear</button>
-    </div>
-  </div>
-{/if}
+<FilesModals
+  bind:renameModal bind:infoModal bind:newFolderModal
+  {currentShare} {filePath}
+  on:rename={confirmRename}
+  on:create={createFolder}
+/>
 
 <style>
   /* ═══════════════════════════════════════════════════════════
@@ -912,212 +780,4 @@
     font-family: var(--font-mono, monospace);
   }
 
-  /* ═══════════════════════════════════════════════════════════
-     CTX MENU · position:absolute relative al .window padre
-     ───────────────────────────────────────────────────────────
-     WindowFrame tiene will-change:transform → es contenedor
-     positional para sus descendants. position:absolute lo
-     coloca dentro del .window correcto cuando hay múltiples
-     ventanas abiertas. Las coords vienen de calcMenuPos() ya
-     ajustadas con getBoundingClientRect del .window.
-     ═══════════════════════════════════════════════════════════ */
-  .ctx-menu {
-    position: absolute;
-    z-index: 500;
-    background: var(--bg-inner, #101015);
-    border: 1px solid var(--line, rgba(255,255,255,0.08));
-    border-radius: 8px;
-    padding: 4px;
-    min-width: 180px;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04);
-    animation: ctxIn 0.12s ease both;
-  }
-  @keyframes ctxIn {
-    from { opacity: 0; transform: scale(0.96) translateY(-4px); }
-    to   { opacity: 1; transform: scale(1) translateY(0); }
-  }
-  .ctx-item {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    padding: 7px 10px;
-    border-radius: 5px;
-    font-size: 12px;
-    color: var(--ink-dim, #c8c8cf);
-    cursor: pointer;
-    transition: background 0.1s, color 0.1s;
-  }
-  .ctx-item svg { width: 13px; height: 13px; flex-shrink: 0; opacity: 0.7; }
-  .ctx-item:hover {
-    background: var(--side-active-bg, rgba(122,158,177,0.10));
-    color: var(--ink, #f2f2f5);
-  }
-  .ctx-item:hover svg { opacity: 1; }
-  .ctx-item.danger { color: var(--crit, #f87171); }
-  .ctx-item.danger svg { color: var(--crit, #f87171); opacity: 0.8; }
-  .ctx-item.danger:hover {
-    background: rgba(248,113,113,0.10);
-    color: var(--crit, #f87171);
-  }
-  .ctx-sep {
-    height: 1px;
-    background: var(--line, rgba(255,255,255,0.08));
-    margin: 3px 4px;
-  }
-
-  /* ═══════════════════════════════════════════════════════════
-     MODALS · rename / info / new folder
-     ═══════════════════════════════════════════════════════════ */
-  .modal-overlay {
-    position: fixed; inset: 0;
-    z-index: 200;
-    background: rgba(0,0,0,0.60);
-    backdrop-filter: blur(3px);
-  }
-  .modal {
-    position: fixed;
-    top: 50%; left: 50%;
-    transform: translate(-50%, -50%);
-    z-index: 201;
-    width: 420px;
-    max-width: 92%;
-    background: var(--bg-inner, #101015);
-    border-radius: 10px;
-    border: 1px solid var(--line, rgba(255,255,255,0.08));
-    box-shadow: 0 24px 60px rgba(0,0,0,0.5);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    animation: modalIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
-    color: var(--ink, #f2f2f5);
-    font-family: var(--font-sans);
-  }
-  @keyframes modalIn {
-    from { opacity: 0; transform: translate(-50%, -48%) scale(0.97); }
-    to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-  }
-  .modal-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 14px 18px;
-    border-bottom: 1px solid var(--line, rgba(255,255,255,0.08));
-    flex-shrink: 0;
-  }
-  .modal-title {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--ink, #f2f2f5);
-  }
-  .modal-close {
-    width: 24px; height: 24px;
-    border-radius: 5px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--ink-mute, #9a9aa3);
-    background: var(--bg-card, #15151a);
-    transition: color 0.12s;
-  }
-  .modal-close svg { width: 12px; height: 12px; }
-  .modal-close:hover { color: var(--ink, #f2f2f5); }
-  .modal-body {
-    padding: 18px 20px;
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-  }
-  .modal-footer {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 8px;
-    padding: 12px 18px;
-    border-top: 1px solid var(--line, rgba(255,255,255,0.08));
-    flex-shrink: 0;
-  }
-
-  .info-icon {
-    font-size: 48px;
-    text-align: center;
-    line-height: 1;
-    margin-bottom: 4px;
-  }
-  .info-rows { display: flex; flex-direction: column; }
-  .info-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 8px 0;
-    border-bottom: 1px solid var(--line, rgba(255,255,255,0.08));
-    font-size: 11px;
-    gap: 12px;
-  }
-  .info-row:last-child { border-bottom: none; }
-  .info-row span:first-child {
-    color: var(--ink-mute, #9a9aa3);
-    flex-shrink: 0;
-  }
-  .info-row span:last-child {
-    color: var(--ink, #f2f2f5);
-    font-family: var(--font-mono, monospace);
-    font-size: 10px;
-    text-align: right;
-    word-break: break-all;
-  }
-
-  .form-field { display: flex; flex-direction: column; gap: 4px; }
-  .form-label {
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--ink-mute, #9a9aa3);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-  }
-  .form-input {
-    padding: 9px 12px;
-    border-radius: 6px;
-    background: rgba(255,255,255,0.04);
-    border: 1px solid var(--line, rgba(255,255,255,0.08));
-    color: var(--ink, #f2f2f5);
-    font-size: 12px;
-    font-family: var(--font-sans);
-    outline: none;
-    transition: border-color 0.2s;
-  }
-  .form-input:focus { border-color: var(--signal, #00ff9f); }
-
-  .btn-accent {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 7px 14px;
-    border-radius: 6px;
-    border: none;
-    background: var(--signal, #00ff9f);
-    color: var(--bg-window, #16161a);
-    font-size: 11px;
-    font-weight: 600;
-    cursor: pointer;
-    font-family: var(--font-sans);
-    transition: filter 0.12s;
-  }
-  .btn-accent:hover { filter: brightness(1.1); }
-  .btn-secondary {
-    padding: 7px 14px;
-    border-radius: 6px;
-    border: 1px solid var(--line, rgba(255,255,255,0.08));
-    background: var(--bg-card, #15151a);
-    color: var(--ink-dim, #c8c8cf);
-    font-size: 11px;
-    font-weight: 500;
-    cursor: pointer;
-    font-family: var(--font-sans);
-    transition: background 0.12s, color 0.12s;
-  }
-  .btn-secondary:hover {
-    color: var(--ink, #f2f2f5);
-    background: rgba(255,255,255,0.04);
-  }
 </style>
