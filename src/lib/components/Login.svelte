@@ -268,17 +268,17 @@
   .brand-title {
     font-size: 20px;
     font-weight: 700;
-    color: var(--fg, #f0f0f0);
+    color: var(--ink);
     letter-spacing: -0.3px;
   }
   .brand-tagline {
     font-size: 11px;
-    color: var(--fg-4, #7a7a82);
+    color: var(--ink-faint);
     letter-spacing: 0.3px;
     margin-top: -8px;
   }
   .brand-tagline .nas {
-    color: var(--nim-green, #00ff9f);
+    color: var(--signal);
     font-weight: 600;
   }
 
@@ -286,7 +286,7 @@
   .section-label {
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 10px;
-    color: var(--fg-5, #5a5a62);
+    color: var(--ink-trace);
     text-transform: uppercase;
     letter-spacing: 1.5px;
     font-weight: 600;
@@ -311,7 +311,7 @@
     justify-content: space-between;
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 10px;
-    color: var(--fg-4, #7a7a82);
+    color: var(--ink-faint);
     text-transform: uppercase;
     letter-spacing: 0.8px;
     margin-bottom: 6px;
@@ -319,7 +319,7 @@
   }
   .field-label .kb {
     font-size: 9px;
-    color: var(--fg-5, #5a5a62);
+    color: var(--ink-trace);
     padding: 1px 5px;
     border: 1px solid var(--bd-2, #20202a);
     border-radius: 3px;
@@ -330,14 +330,14 @@
     border: 1px solid var(--bd-2, #20202a);
     border-radius: 7px;
     padding: 10px 12px;
-    color: var(--fg, #f0f0f0);
+    color: var(--ink);
     font-family: inherit;
     font-size: 13px;
     outline: none;
     transition: border-color 0.12s, background 0.12s;
   }
   .field input::placeholder {
-    color: var(--fg-5, #5a5a62);
+    color: var(--ink-trace);
   }
   .field input:focus {
     border-color: rgba(0, 255, 159, 0.35);
@@ -358,13 +358,13 @@
   }
   .totp-hint {
     font-size: 11px;
-    color: var(--fg-4, #7a7a82);
+    color: var(--ink-faint);
     text-align: center;
     margin-bottom: 16px;
     line-height: 1.5;
   }
   .totp-hint .app {
-    color: var(--fg-2, #d0d0d4);
+    color: var(--ink-dim);
     font-weight: 500;
   }
 
@@ -379,12 +379,12 @@
     border-radius: 6px;
     margin-bottom: 12px;
     font-size: 12px;
-    color: var(--fg-2, #d0d0d4);
+    color: var(--ink-dim);
   }
   .err-tag {
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 9px;
-    color: var(--st-crit, #ff5a5a);
+    color: var(--crit);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.8px;
@@ -398,7 +398,7 @@
   .btn-submit {
     width: 100%;
     padding: 11px 14px;
-    background: var(--nim-green, #00ff9f);
+    background: var(--signal);
     color: var(--bg-window, #16161a);
     border: none;
     border-radius: 8px;
@@ -446,7 +446,7 @@
     background: transparent;
     border: 1px solid var(--bd-2, #20202a);
     border-radius: 7px;
-    color: var(--fg-3, #9c9ca4);
+    color: var(--ink-mute);
     font-family: inherit;
     font-size: 12px;
     cursor: pointer;
@@ -456,8 +456,8 @@
     transition: color 0.12s, border-color 0.12s;
   }
   .btn-back:hover:not(:disabled) {
-    color: var(--fg, #f0f0f0);
-    border-color: var(--bd-3, #2a2a32);
+    color: var(--ink);
+    border-color: var(--line-bright);
   }
   .btn-back:disabled { opacity: 0.5; cursor: not-allowed; }
   .btn-back svg { width: 12px; height: 12px; }
@@ -472,7 +472,7 @@
     border-top: 1px solid var(--bd-2, #20202a);
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 10px;
-    color: var(--fg-5, #5a5a62);
+    color: var(--ink-trace);
     letter-spacing: 0.3px;
   }
   .card-footer .item {
@@ -486,13 +486,13 @@
     font-weight: 600;
   }
   .card-footer .v {
-    color: var(--fg-3, #9c9ca4);
+    color: var(--ink-mute);
   }
   .daemon-led {
     width: 6px;
     height: 6px;
     border-radius: 1.5px;
-    background: var(--st-ok, #00ff9f);
+    background: var(--signal);
     box-shadow: 0 0 4px rgba(0, 255, 159, 0.5);
     animation: pulse 2.5s ease-in-out infinite;
   }

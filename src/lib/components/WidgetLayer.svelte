@@ -445,29 +445,23 @@
      ═══════════════════════════════════════════════════════════ */
   .widget {
     position: absolute;
-    /* Cristal esmerilado (68% opaco): se intuye el wallpaper, contenido legible */
-    background: rgba(20, 20, 26, 0.68);
-    backdrop-filter: blur(16px) saturate(1.3);
-    -webkit-backdrop-filter: blur(16px) saturate(1.3);
-    border: 1px solid rgba(255, 255, 255, 0.10);
+    background: var(--bg-card);
+    border: 1px solid var(--line);
     border-radius: 12px;
     overflow: hidden;
     cursor: grab;
     user-select: none;
     touch-action: none;
     pointer-events: auto;
-    box-shadow:
-      0 10px 30px rgba(0, 0, 0, 0.35),
-      inset 0 1px 0 rgba(255, 255, 255, 0.08);
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
   .widget:hover {
-    border-color: rgba(255, 255, 255, 0.16);
+    border-color: var(--line-bright);
   }
   .widget.dragging {
     cursor: grabbing;
-    border-color: rgba(255, 255, 255, 0.20);
-    box-shadow: 0 16px 42px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    border-color: var(--signal);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
     transition: none;
     z-index: 3;
   }

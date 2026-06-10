@@ -154,7 +154,7 @@
   .title {
     font-size: 16px;
     font-weight: 700;
-    color: var(--fg);
+    color: var(--ink);
     letter-spacing: 1.5px;
   }
   .subtitle {
@@ -194,7 +194,7 @@
     background: var(--bg-1);
     border: 1px solid var(--border);
     padding: 9px 12px;
-    color: var(--fg);
+    color: var(--ink);
     font-family: inherit;
     font-size: 12px;
     letter-spacing: 1px;

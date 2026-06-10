@@ -235,8 +235,8 @@
     overflow: hidden;
     box-shadow:
       0 12px 40px rgba(0, 0, 0, 0.4),
-      0 0 0 1px var(--bd, rgba(255, 255, 255, 0.04));
-    color: var(--fg, #f0f0f0);
+      0 0 0 1px var(--line));
+    color: var(--ink);
     transition: opacity 0.15s ease;
     animation: win-in 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
     will-change: transform;

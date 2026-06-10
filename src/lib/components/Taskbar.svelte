@@ -349,16 +349,30 @@
     position: fixed;
     left: 0; right: 0; bottom: 0;
     height: var(--taskbar-height, 44px);
-    /* Cristal sutil (~84% opaco): mitad de transparencia que los widgets, siempre legible */
-    background: rgba(22, 20, 21, 0.84);
-    backdrop-filter: blur(20px) saturate(1.2);
-    -webkit-backdrop-filter: blur(20px) saturate(1.2);
-    border-top: 1px solid var(--taskbar-border-top, rgba(255, 255, 255, 0.08));
-    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    /* Color sólido plano · sin gradient cromado tipo Lubuntu */
+    background: var(--taskbar-bg, #191718);
+    border-top: 1px solid var(--taskbar-border-top, rgba(255, 255, 255, 0.06));
     display: flex;
     align-items: stretch;
     z-index: 9000;
     font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  }
+
+  /* Línea de glow verde sutil en borde superior · firma del boot */
+  .taskbar::before {
+    content: '';
+    position: absolute;
+    top: -1px;
+    left: 15%;
+    right: 15%;
+    height: 1px;
+    background: linear-gradient(90deg,
+      transparent,
+      var(--signal-glow, rgba(0, 255, 159, 0.35)),
+      transparent
+    );
+    opacity: 0.5;
+    pointer-events: none;
   }
 
   .tb-left, .tb-right {
@@ -478,7 +492,7 @@
     padding: 4px 10px;
     font-family: var(--font-mono, monospace);
     font-size: 9px;
-    color: var(--fg, #e8e8e8);
+    color: var(--ink);
     letter-spacing: 1.5px;
     text-transform: uppercase;
     font-weight: 600;
@@ -509,7 +523,7 @@
   }
   .tb-tray:hover {
     background: rgba(255, 255, 255, 0.05);
-    color: var(--fg, #e8e8e8);
+    color: var(--ink);
   }
   .tb-tray.active {
     background: rgba(0, 255, 159, 0.08);
@@ -639,7 +653,7 @@
   }
   .ctx-item {
     padding: 8px 12px;
-    color: var(--fg, #e8e8e8);
+    color: var(--ink);
     display: flex;
     align-items: center;
     gap: 10px;

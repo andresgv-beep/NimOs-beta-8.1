@@ -311,7 +311,7 @@
      los controles a gris neutro para señalar foco perdido.
      ═══════════════════════════════════════════════════════════ */
   :global(.window.inactive) .wc-ctl {
-    --ctl-color: var(--bd-3, #3a3a42) !important;
+    --ctl-color: var(--line-bright) !important;
     opacity: 0.6;
   }
 

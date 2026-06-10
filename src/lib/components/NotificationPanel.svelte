@@ -211,7 +211,7 @@
     align-items: center;
     gap: 10px;
     font-size: 10px;
-    color: var(--fg);
+    color: var(--ink);
     letter-spacing: 2px;
     text-transform: uppercase;
     font-weight: 600;
@@ -319,7 +319,7 @@
   }
   .notif-title {
     font-size: 10.5px;
-    color: var(--fg);
+    color: var(--ink);
     font-weight: 600;
     letter-spacing: 0.3px;
   }
