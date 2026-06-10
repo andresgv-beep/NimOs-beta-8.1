@@ -445,8 +445,8 @@
      ═══════════════════════════════════════════════════════════ */
   .widget {
     position: absolute;
-    /* Cristal esmerilado: deja ver el wallpaper difuminado por detrás */
-    background: rgba(20, 20, 26, 0.55);
+    /* Cristal esmerilado (68% opaco): se intuye el wallpaper, contenido legible */
+    background: rgba(20, 20, 26, 0.68);
     backdrop-filter: blur(16px) saturate(1.3);
     -webkit-backdrop-filter: blur(16px) saturate(1.3);
     border: 1px solid rgba(255, 255, 255, 0.10);
