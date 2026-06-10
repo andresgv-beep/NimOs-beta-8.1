@@ -20,11 +20,15 @@ TimeoutStartSec=120
 # bound capabilities instead of dropping root entirely, and whitelist the paths
 # it must write. VALIDATE ON HARDWARE: if storage/shares/backup break, the most
 # likely cause is a missing ReadWritePaths entry or a capability removed below.
+# IMPORTANTE: /nimos es la raíz donde se montan los pools (/nimos/pools/...) y
+# todo el árbol de Docker que vive dentro. Sin ella, el daemon ve los pools como
+# read-only desde dentro del sandbox → el health los marca 'critical' aunque el
+# pool esté sano. Si cambias la ruta de montaje de pools, actualízala aquí.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=false
 PrivateTmp=true
-ReadWritePaths=/opt/nimos /var/lib/nimos /var/log/nimos /etc/nimos /etc/exports /etc/samba /mnt /srv /home
+ReadWritePaths=/opt/nimos /var/lib/nimos /var/log/nimos /etc/nimos /etc/exports /etc/samba /mnt /srv /home /nimos
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
