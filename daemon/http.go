@@ -228,7 +228,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		// tengan datos. Antes nadie emitía estos eventos → reglas muertas.
 		rec := &statusRecorder{ResponseWriter: w, status: 200}
 		next.ServeHTTP(rec, r)
-		if shieldEnabled && rec.status == http.StatusNotFound {
+		if shieldEnabled.Load() && rec.status == http.StatusNotFound {
 			ip := clientIP(r)
 			if !shieldIsWhitelisted(ip) {
 				Shield404(ip, r.UserAgent(), r.URL.Path)

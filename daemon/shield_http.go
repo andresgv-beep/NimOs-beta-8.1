@@ -50,9 +50,44 @@ func dbShieldInit() {
 			note TEXT,
 			created_at TEXT DEFAULT (datetime('now'))
 		);
+
+		CREATE TABLE IF NOT EXISTS shield_settings (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		);
 	`)
 	if err != nil {
 		logMsg("shield DB init error: %v", err)
+	}
+}
+
+// ── Enabled-state persistence ────────────────────────────────────────────────
+// NimShield's on/off state survives restarts via the shield_settings table.
+// The hot source of truth is the atomic shieldEnabled (shield.go); the DB backs
+// it up. Default (no row) is "enabled".
+
+func dbShieldSetEnabled(enabled bool) {
+	v := "0"
+	if enabled {
+		v = "1"
+	}
+	if _, err := db.Exec(`INSERT OR REPLACE INTO shield_settings (key, value) VALUES ('enabled', ?)`, v); err != nil {
+		logMsg("shield: failed to persist enabled state: %v", err)
+	}
+}
+
+// loadShieldEnabled reads the persisted on/off state into the atomic flag.
+// If no row exists yet (fresh install), the init() default of true stands.
+func loadShieldEnabled() {
+	var v string
+	err := db.QueryRow(`SELECT value FROM shield_settings WHERE key = 'enabled'`).Scan(&v)
+	if err != nil {
+		// No persisted state — keep the default.
+		return
+	}
+	shieldEnabled.Store(v == "1")
+	if v != "1" {
+		logMsg("shield: persisted state is disabled")
 	}
 }
 
@@ -213,7 +248,7 @@ func handleShieldRoutes(w http.ResponseWriter, r *http.Request) {
 		shieldBlockMu.RUnlock()
 
 		jsonOk(w, map[string]interface{}{
-			"enabled":     shieldEnabled,
+			"enabled":     shieldEnabled.Load(),
 			"blockedIPs":  blockedCount,
 			"honeypots":   len(honeypotPaths),
 			"rules":       22,
@@ -266,9 +301,11 @@ func handleShieldRoutes(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, 403, "Solo un administrador puede modificar NimShield")
 			return
 		}
-		shieldEnabled = !shieldEnabled
-		logMsg("shield: %s by %s", map[bool]string{true: "enabled", false: "disabled"}[shieldEnabled], session.Username)
-		jsonOk(w, map[string]interface{}{"ok": true, "enabled": shieldEnabled})
+		newState := !shieldEnabled.Load()
+		shieldEnabled.Store(newState)
+		dbShieldSetEnabled(newState)
+		logMsg("shield: %s by %s", map[bool]string{true: "enabled", false: "disabled"}[newState], session.Username)
+		jsonOk(w, map[string]interface{}{"ok": true, "enabled": newState})
 
 	// GET /api/shield/whitelist — lista IPs de confianza
 	case path == "/api/shield/whitelist" && method == "GET":

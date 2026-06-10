@@ -65,9 +65,11 @@ func handleFtpRoutes(w http.ResponseWriter, r *http.Request) {
 		jsonOk(w, map[string]interface{}{"installed": installed, "running": running})
 	case r.URL.Path == "/api/ftp/start" && r.Method == "POST":
 		runShellStatic("sudo systemctl enable vsftpd 2>/dev/null; sudo systemctl start vsftpd 2>/dev/null")
+		openServicePorts("ftp")
 		jsonOk(w, map[string]interface{}{"ok": true})
 	case r.URL.Path == "/api/ftp/stop" && r.Method == "POST":
 		runShellStatic("sudo systemctl stop vsftpd 2>/dev/null; sudo systemctl disable vsftpd 2>/dev/null")
+		closeServicePorts("ftp")
 		jsonOk(w, map[string]interface{}{"ok": true})
 	default:
 		jsonError(w, 404, "Not found")
@@ -92,9 +94,11 @@ func handleNfsRoutes(w http.ResponseWriter, r *http.Request) {
 		jsonOk(w, map[string]interface{}{"installed": installed, "running": running, "exports": exports})
 	case r.URL.Path == "/api/nfs/start" && r.Method == "POST":
 		runShellStatic("sudo systemctl enable nfs-server 2>/dev/null; sudo systemctl start nfs-server 2>/dev/null")
+		openServicePorts("nfs")
 		jsonOk(w, map[string]interface{}{"ok": true})
 	case r.URL.Path == "/api/nfs/stop" && r.Method == "POST":
 		runShellStatic("sudo systemctl stop nfs-server 2>/dev/null; sudo systemctl disable nfs-server 2>/dev/null")
+		closeServicePorts("nfs")
 		jsonOk(w, map[string]interface{}{"ok": true})
 	default:
 		jsonError(w, 404, "Not found")
@@ -144,6 +148,7 @@ func handleSmbRoutes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		runShellStatic("sudo systemctl enable smbd nmbd 2>/dev/null; sudo systemctl start smbd nmbd 2>/dev/null")
+		openServicePorts("smb")
 		jsonOk(w, map[string]interface{}{"ok": true})
 		return
 	}
@@ -154,6 +159,7 @@ func handleSmbRoutes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		runShellStatic("sudo systemctl stop smbd nmbd 2>/dev/null; sudo systemctl disable smbd nmbd 2>/dev/null")
+		closeServicePorts("smb")
 		jsonOk(w, map[string]interface{}{"ok": true})
 		return
 	}

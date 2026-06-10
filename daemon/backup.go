@@ -36,6 +36,7 @@ func createBackupTables() error {
 		pair_token_hash TEXT DEFAULT '',
 		pair_token_outbound TEXT DEFAULT '',
 		ssh_host_key TEXT DEFAULT '',
+		allow_ip_auth INTEGER DEFAULT 0,
 		wg_active    INTEGER DEFAULT 0,
 		wg_public_key TEXT DEFAULT '',
 		wg_endpoint  TEXT DEFAULT '',
@@ -99,6 +100,8 @@ func createBackupTables() error {
 	db.Exec(`ALTER TABLE backup_devices ADD COLUMN pair_token_hash TEXT DEFAULT ''`)
 	db.Exec(`ALTER TABLE backup_devices ADD COLUMN pair_token_outbound TEXT DEFAULT ''`)
 	db.Exec(`ALTER TABLE backup_devices ADD COLUMN ssh_host_key TEXT DEFAULT ''`)
+	// A2: per-device opt-in flag for IP-based auth fallback (default off).
+	db.Exec(`ALTER TABLE backup_devices ADD COLUMN allow_ip_auth INTEGER DEFAULT 0`)
 	return nil
 }
 
@@ -148,7 +151,10 @@ func verifyPairedDevice(r *http.Request) map[string]interface{} {
 	if dev := verifyPairToken(r); dev != nil {
 		return dev
 	}
-	// Fallback: IP-based (backward compatible with pre-token devices)
+	// SECURITY (A2): IP-based fallback is opt-in per device. By default a device
+	// authenticates ONLY via its pair token. The fallback (matching the source
+	// IP against a known device addr) is trivially spoofable on a LAN, so it is
+	// applied only to devices that explicitly set allow_ip_auth = 1.
 	remoteIP := r.RemoteAddr
 	if idx := strings.LastIndex(remoteIP, ":"); idx > 0 {
 		remoteIP = remoteIP[:idx]
@@ -156,7 +162,12 @@ func verifyPairedDevice(r *http.Request) map[string]interface{} {
 	remoteIP = strings.Trim(remoteIP, "[]")
 	devices, _ := dbBackupDeviceList()
 	for _, d := range devices {
+		allow, _ := d["allowIpAuth"].(bool)
+		if !allow {
+			continue
+		}
 		if addr, _ := d["addr"].(string); addr == remoteIP {
+			logMsg("backup: device %v authenticated via IP fallback (allow_ip_auth on)", d["id"])
 			return d
 		}
 	}
@@ -253,7 +264,7 @@ func dbBackupDeviceCreate(dev map[string]interface{}) error {
 }
 
 func dbBackupDeviceList() ([]map[string]interface{}, error) {
-	rows, err := db.Query(`SELECT id, name, addr, type, purposes, sync_pairs, pair_token_hash, pair_token_outbound, ssh_host_key, wg_active,
+	rows, err := db.Query(`SELECT id, name, addr, type, purposes, sync_pairs, pair_token_hash, pair_token_outbound, ssh_host_key, allow_ip_auth, wg_active,
 		wg_public_key, wg_endpoint, wg_allowed_ips, wg_local_ip, created_at FROM backup_devices ORDER BY created_at`)
 	if err != nil {
 		return nil, err
@@ -263,11 +274,12 @@ func dbBackupDeviceList() ([]map[string]interface{}, error) {
 	var devices []map[string]interface{}
 	for rows.Next() {
 		var id, name, addr, devType, purposesJSON, syncPairsJSON, pairTokenHash, pairTokenOutbound, sshHostKey string
+		var allowIPAuth int
 		var wgActive int
 		var wgPub, wgEndpoint, wgAllowed, wgLocal, createdAt string
 
 		if err := rows.Scan(&id, &name, &addr, &devType, &purposesJSON, &syncPairsJSON, &pairTokenHash, &pairTokenOutbound, &sshHostKey,
-			&wgActive, &wgPub, &wgEndpoint, &wgAllowed, &wgLocal, &createdAt); err != nil {
+			&allowIPAuth, &wgActive, &wgPub, &wgEndpoint, &wgAllowed, &wgLocal, &createdAt); err != nil {
 			continue
 		}
 
@@ -279,6 +291,7 @@ func dbBackupDeviceList() ([]map[string]interface{}, error) {
 			"pairTokenHash":      pairTokenHash,
 			"pairTokenOutbound":  pairTokenOutbound,
 			"sshHostKey":         sshHostKey,
+			"allowIpAuth":        allowIPAuth == 1,
 			"createdAt":          createdAt,
 		}
 
@@ -828,8 +841,18 @@ func executeBackupJob(job map[string]interface{}) map[string]interface{} {
 	}
 
 	timestamp := time.Now().UTC().Format("20060102-150405")
-	var cmdStr string
 	var snapName string
+	var sendSpec, recvSpec pipeCmdSpec
+
+	// SECURITY (C1): validate user-controlled paths before they reach exec.
+	if err := validateBackupPath("source", source); err != nil {
+		recordBackupFailure(jobID, jobName, deviceID, dest, "invalid source: "+err.Error())
+		return map[string]interface{}{"error": "Invalid source: " + err.Error()}
+	}
+	if err := validateBackupPath("dest", dest); err != nil {
+		recordBackupFailure(jobID, jobName, deviceID, dest, "invalid dest: "+err.Error())
+		return map[string]interface{}{"error": "Invalid dest: " + err.Error()}
+	}
 
 	// LOGIC-021: Use per-device SSH options (host key verification if available)
 	sshOpts := sshOptsForDevice(deviceID)
@@ -848,24 +871,29 @@ func executeBackupJob(job map[string]interface{}) map[string]interface{} {
 			return map[string]interface{}{"error": "Failed to create snapshot: " + errMsg}
 		}
 
-		// 3. Send (incremental if previous snapshot exists)
+		// 3. Send (incremental if previous snapshot exists).
+		// SECURITY (C1): no shell. Two argv-separated commands wired via io.Pipe.
+		// ssh options are tokenized to argv; the remote command is a fixed
+		// "btrfs receive <dest>" with dest already validated above.
 		if lastSnap != "" {
 			lastSnapPath := fmt.Sprintf("%s/.snapshots/%s", source, lastSnap)
-			cmdStr = fmt.Sprintf("btrfs send -p %s %s | ssh %s root@%s 'btrfs receive %s'",
-				lastSnapPath, snapPath, sshOpts, remoteAddr, dest)
+			sendSpec = pipeCmdSpec{name: "btrfs", args: []string{"send", "-p", lastSnapPath, snapPath}}
 		} else {
-			cmdStr = fmt.Sprintf("btrfs send %s | ssh %s root@%s 'btrfs receive %s'",
-				snapPath, sshOpts, remoteAddr, dest)
+			sendSpec = pipeCmdSpec{name: "btrfs", args: []string{"send", snapPath}}
 		}
+
+		sshArgs := splitSSHOpts(sshOpts)
+		sshArgs = append(sshArgs, "root@"+remoteAddr, "btrfs receive "+dest)
+		recvSpec = pipeCmdSpec{name: "ssh", args: sshArgs}
 
 	default:
 		recordBackupFailure(jobID, jobName, deviceID, dest, "unsupported filesystem: "+fsType)
 		return map[string]interface{}{"error": "Unsupported filesystem type: " + fsType}
 	}
 
-	// Execute the send/receive
+	// Execute the send/receive (shell-free pipeline)
 	logMsg("backup: executing job %s → %s", jobName, remoteAddr)
-	out, ok := runShellStatic(cmdStr)
+	out, ok := runPipe(backupPipeTimeout, sendSpec, recvSpec)
 
 	elapsed := int(time.Since(startTime).Seconds())
 
@@ -1756,6 +1784,16 @@ func handleBackupRoutes(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			// SECURITY (C1): reject malicious source/dest at creation time.
+			if err := validateBackupPath("source", source); err != nil {
+				jsonError(w, 400, err.Error())
+				return
+			}
+			if err := validateBackupPath("dest", dest); err != nil {
+				jsonError(w, 400, err.Error())
+				return
+			}
+
 			id := backupID("job")
 			job := map[string]interface{}{
 				"id":        id,
@@ -1777,6 +1815,21 @@ func handleBackupRoutes(w http.ResponseWriter, r *http.Request) {
 		case strings.HasPrefix(urlPath, "/api/backup/jobs/") && method == "PUT":
 			id := strings.TrimPrefix(urlPath, "/api/backup/jobs/")
 			id = strings.TrimSuffix(id, "/")
+
+			// SECURITY (C1): if the edit touches source/dest, re-validate them.
+			if _, ok := body["source"]; ok {
+				if err := validateBackupPath("source", bodyStr(body, "source")); err != nil {
+					jsonError(w, 400, err.Error())
+					return
+				}
+			}
+			if _, ok := body["dest"]; ok {
+				if err := validateBackupPath("dest", bodyStr(body, "dest")); err != nil {
+					jsonError(w, 400, err.Error())
+					return
+				}
+			}
+
 			if err := dbBackupJobUpdate(id, body); err != nil {
 				jsonError(w, 404, err.Error())
 				return
@@ -2668,6 +2721,14 @@ func lookupNimosIDs() (int, int) {
 // addNFSExport adds a path to /etc/exports for a specific client IP.
 // Only adds if not already exported. Runs exportfs -ra to apply.
 func addNFSExport(path, clientIP string) error {
+	// SECURITY (A1): clientIP is written verbatim into /etc/exports. A crafted
+	// value like "* (rw,no_root_squash) #" would rewrite the export options and
+	// defeat the squash. Accept only a bare IP or a CIDR range; reject anything
+	// else before touching the file.
+	if !isValidNFSClient(clientIP) {
+		return fmt.Errorf("invalid client address: %q", clientIP)
+	}
+
 	// Ensure NFS server is installed
 	runShellStatic("which exportfs >/dev/null 2>&1 || apt-get install -y -qq nfs-kernel-server 2>/dev/null")
 

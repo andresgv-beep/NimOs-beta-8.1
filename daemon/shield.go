@@ -1,10 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -55,8 +60,16 @@ type BlockEntry struct {
 var (
 	shieldBlocklist = map[string]*BlockEntry{} // IP → entry
 	shieldBlockMu   sync.RWMutex
-	shieldEnabled   = true
+	// shieldEnabled is read from request goroutines and written from the HTTP
+	// toggle handler. It MUST be atomic to avoid a data race. Persisted in the
+	// shield_settings table; loaded at startup (see loadShieldEnabled).
+	shieldEnabled atomic.Bool
 )
+
+func init() {
+	// Default: shield on. Overridden by persisted state at startup if present.
+	shieldEnabled.Store(true)
+}
 
 func shieldBlockIP(ip string, duration time.Duration, reason, rule string) {
 	shieldBlockMu.Lock()
@@ -154,16 +167,32 @@ var honeypotPaths = map[string]string{
 	"/vendor/phpunit":           "HONEY-020",
 }
 
+// honeypotPrefixes are the ONLY honeypot paths allowed to match by prefix
+// (i.e. "/cgi-bin/anything" triggers). These are third-party software roots
+// that NimOS itself never serves, so a prefix match cannot collide with a
+// legitimate NimOS/AppStore route. Every other honeypot requires an EXACT
+// path match (N4: a broad prefix match was auto-blocking legitimate LAN IPs
+// when an app registered a path under a honeypot prefix).
+var honeypotPrefixes = map[string]string{
+	"/cgi-bin/":    "HONEY-016",
+	"/solr/":       "HONEY-018",
+	"/phpmyadmin/": "HONEY-005",
+	"/wp-admin/":   "HONEY-004",
+}
+
 func checkHoneypot(r *http.Request) bool {
 	path := strings.ToLower(r.URL.Path)
 	rule, isHoneypot := honeypotPaths[path]
 	if !isHoneypot {
-		// Check prefix matches for paths with trailing content
-		for hPath, hRule := range honeypotPaths {
-			if strings.HasSuffix(hPath, "/") && strings.HasPrefix(path, hPath) {
-				rule = hRule
-				isHoneypot = true
-				break
+		// Prefix match ONLY against the curated, attack-only prefixes, and
+		// never against NimOS app routes (which live under /app/).
+		if !strings.HasPrefix(path, "/app/") {
+			for hPath, hRule := range honeypotPrefixes {
+				if strings.HasPrefix(path, hPath) {
+					rule = hRule
+					isHoneypot = true
+					break
+				}
 			}
 		}
 	}
@@ -211,9 +240,12 @@ var cmdPatterns = []string{
 }
 
 func checkRequestPayload(r *http.Request) string {
-	// Check URL query string
-	query := r.URL.RawQuery
-	if query != "" {
+	// Check URL query string. We inspect BOTH the raw query and a
+	// percent-decoded form: an attacker can encode the payload (e.g.
+	// %3Cscript%3E) to slip past a raw-only match. Decoding closes that bypass.
+	rawQuery := r.URL.RawQuery
+	queries := collectQueryForms(rawQuery)
+	for _, query := range queries {
 		if matchesPatterns(query, xssPatterns) {
 			return "CSP-001"
 		}
@@ -225,23 +257,149 @@ func checkRequestPayload(r *http.Request) string {
 		}
 	}
 
-	// Check URL path for traversal/injection
+	// Check URL path for traversal/injection. Decode first so encoded
+	// traversal (%2e%2e) is caught too — both on Path and on the raw,
+	// un-normalized RawPath (N3).
 	path := r.URL.Path
-	if strings.Contains(path, "..") {
+	decodedPath := path
+	if dp, err := url.QueryUnescape(path); err == nil {
+		decodedPath = dp
+	}
+	rawPath := r.URL.RawPath
+	decodedRawPath := rawPath
+	if rawPath != "" {
+		if dp, err := url.QueryUnescape(rawPath); err == nil {
+			decodedRawPath = dp
+		}
+	}
+	if strings.Contains(path, "..") ||
+		strings.Contains(decodedPath, "..") ||
+		strings.Contains(decodedRawPath, "..") {
 		return "TRAV-001"
+	}
+
+	// Check request body (N2). API attacks (SQLi/XSS in JSON fields) travel in
+	// POST/PUT bodies, which the query/path checks never see. We read the body
+	// under a size cap (DoS guard) and RE-INJECT it so downstream handlers can
+	// still read it. Without re-injection every POST handler would see an empty
+	// body. GET/HEAD and bodyless requests skip this entirely.
+	if rule := checkRequestBody(r); rule != "" {
+		return rule
 	}
 
 	return ""
 }
 
+// shieldMaxBodyInspect caps how many bytes of a request body NimShield reads
+// for inspection. Bodies larger than this are NOT inspected (and NOT truncated
+// for the handler — the original stream is preserved). 1 MiB covers any
+// legitimate JSON API payload while bounding memory use per request.
+const shieldMaxBodyInspect = 1 << 20
+
+// checkRequestBody inspects the request body for injection patterns, then
+// restores r.Body so downstream handlers read the same bytes. Returns a rule
+// id on match, "" otherwise. Safe to call on any method/request.
+func checkRequestBody(r *http.Request) string {
+	if r.Body == nil || r.ContentLength <= 0 {
+		return ""
+	}
+	if r.ContentLength >= shieldMaxBodyInspect {
+		// Too large to inspect safely — leave the body untouched for the handler.
+		return ""
+	}
+
+	data, err := io.ReadAll(io.LimitReader(r.Body, shieldMaxBodyInspect))
+	r.Body.Close()
+	// ALWAYS re-inject what we read, even on a read error, so the handler is
+	// never handed a consumed/empty body.
+	r.Body = io.NopCloser(bytes.NewReader(data))
+	if err != nil {
+		return ""
+	}
+
+	body := string(data)
+	// Inspect raw + percent-decoded forms (same rationale as the query string).
+	for _, form := range collectQueryForms(body) {
+		if matchesPatterns(form, xssPatterns) {
+			return "CSP-001"
+		}
+		if matchesPatterns(form, sqliPatterns) {
+			return "INJ-001"
+		}
+		if matchesPatterns(form, cmdPatterns) {
+			return "INJ-002"
+		}
+	}
+	return ""
+}
+
+// collectQueryForms returns the distinct strings to scan for a raw query: the
+// raw form, a once-decoded form, and a twice-decoded form (to catch double
+// encoding like %253C → %3C → <). Empty/duplicate forms are skipped.
+func collectQueryForms(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	forms := []string{raw}
+	seen := map[string]bool{raw: true}
+	cur := raw
+	for i := 0; i < 2; i++ {
+		dec, err := url.QueryUnescape(cur)
+		if err != nil || dec == cur || seen[dec] {
+			break
+		}
+		forms = append(forms, dec)
+		seen[dec] = true
+		cur = dec
+	}
+	return forms
+}
+
 func matchesPatterns(input string, patterns []string) bool {
+	// N5: match against several forms to defeat trivial evasions:
+	//   · raw lowercased
+	//   · inline SQL comments replaced by a SPACE then whitespace collapsed
+	//     (defeats "union/**/select" → "union select")
+	//   · inline SQL comments removed entirely then whitespace collapsed
+	//     (defeats "un/**/ion" → "union")
+	// This is short-term hardening; cumulative scoring is the proper long-term
+	// answer (chasing a perfect pattern list is a losing race).
 	lower := strings.ToLower(input)
+	forms := []string{
+		lower,
+		collapseWS(stripSQLComments(lower, " ")),
+		collapseWS(stripSQLComments(lower, "")),
+	}
 	for _, p := range patterns {
-		if strings.Contains(lower, strings.ToLower(p)) {
-			return true
+		lp := strings.ToLower(p)
+		for _, f := range forms {
+			if strings.Contains(f, lp) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// stripSQLComments replaces inline SQL block comments /* ... */ with repl.
+func stripSQLComments(s, repl string) string {
+	for {
+		start := strings.Index(s, "/*")
+		if start < 0 {
+			break
+		}
+		end := strings.Index(s[start+2:], "*/")
+		if end < 0 {
+			break
+		}
+		s = s[:start] + repl + s[start+2+end+2:]
+	}
+	return s
+}
+
+// collapseWS collapses any run of whitespace to a single space.
+func collapseWS(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // ── Scanner User-Agent Detection ─────────────────────────────────────────────
@@ -267,7 +425,7 @@ func isScannerUA(ua string) bool {
 // Returns true if the request was handled (blocked/honeypot) — caller should stop.
 
 func shieldMiddleware(w http.ResponseWriter, r *http.Request) bool {
-	if !shieldEnabled {
+	if !shieldEnabled.Load() {
 		return false
 	}
 
@@ -278,7 +436,12 @@ func shieldMiddleware(w http.ResponseWriter, r *http.Request) bool {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Retry-After", "3600")
 		w.WriteHeader(403)
-		w.Write([]byte(`{"error":"Blocked by NimShield: ` + reason + `"}`))
+		// N7: build the JSON via Marshal so a reason with quotes/newlines can
+		// never break the response shape.
+		resp, _ := json.Marshal(map[string]string{
+			"error": "Blocked by NimShield: " + reason,
+		})
+		w.Write(resp)
 		return true
 	}
 
@@ -358,13 +521,16 @@ func severityForRule(rule string) string {
 // ── Shield Engine (background goroutine) ─────────────────────────────────────
 
 func startShieldEngine() {
-	if !shieldEnabled {
-		logMsg("shield: disabled")
+	// Init DB tables FIRST so we can read persisted state.
+	dbShieldInit()
+
+	// Load persisted enabled-state (overrides the init() default).
+	loadShieldEnabled()
+
+	if !shieldEnabled.Load() {
+		logMsg("shield: disabled (persisted state)")
 		return
 	}
-
-	// Init DB tables
-	dbShieldInit()
 
 	// Load persisted blocks
 	loadPersistedBlocks()
