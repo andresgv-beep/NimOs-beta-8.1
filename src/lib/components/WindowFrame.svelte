@@ -233,14 +233,16 @@
     background: var(--bg-window, #16161a);
     border-radius: 14px;
     overflow: hidden;
-    /* Ventana profesional: sólida + elevación multicapa + luz superior.
-       Solo sombras (baratas en GPU), sin blur ni transparencia. */
+    /* Ventana profesional: sólida + filo definido + elevación.
+       Solo sombras (coste 0 en GPU). El contorno oscuro (0 0 0 1px negro)
+       le da filo sobre cualquier wallpaper, claro u oscuro. */
     box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.06),
-      0 0 0 1px rgba(255, 255, 255, 0.06),
-      0 2px 6px rgba(0, 0, 0, 0.25),
-      0 8px 20px rgba(0, 0, 0, 0.30),
-      0 24px 60px rgba(0, 0, 0, 0.40);
+      inset 0 1px 0 rgba(255, 255, 255, 0.08),
+      0 0 0 1px rgba(0, 0, 0, 0.45),
+      0 0 0 1.5px rgba(255, 255, 255, 0.07),
+      0 4px 10px rgba(0, 0, 0, 0.35),
+      0 14px 30px rgba(0, 0, 0, 0.45),
+      0 30px 70px rgba(0, 0, 0, 0.55);
     color: var(--ink);
     transition: opacity 0.15s ease;
     animation: win-in 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
