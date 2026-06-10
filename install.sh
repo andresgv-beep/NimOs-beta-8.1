@@ -382,21 +382,18 @@ setup_firewall() {
   ufw default deny incoming 2>/dev/null || true
   ufw default allow outgoing 2>/dev/null || true
 
-  # Essential ports
+  # ── Defaults mínimos (B1) ──
+  # Solo lo imprescindible para administrar NimOS. Los puertos de servicios
+  # (SMB, NFS, FTP, WebDAV, Torrent) NO se abren de fábrica: NimOS los abre
+  # cuando el usuario activa el servicio desde la UI, y los cierra al
+  # desactivarlo. Así la superficie de ataque sigue al uso real.
   ufw allow 22/tcp comment 'SSH' 2>/dev/null || true
   ufw allow "$NIMOS_PORT"/tcp comment 'NimOS Web UI' 2>/dev/null || true
-  ufw allow 445/tcp comment 'Samba (SMB)' 2>/dev/null || true
   ufw allow 5353/udp comment 'Avahi (mDNS)' 2>/dev/null || true
-  ufw allow 21/tcp comment 'FTP' 2>/dev/null || true
-  ufw allow 55000:55999/tcp comment 'FTP Passive' 2>/dev/null || true
-  ufw allow 5005/tcp comment 'WebDAV' 2>/dev/null || true
-  ufw allow 2049/tcp comment 'NFS' 2>/dev/null || true
-  ufw allow 6881:6889/tcp comment 'Torrent' 2>/dev/null || true
-  ufw allow 6881:6889/udp comment 'Torrent DHT' 2>/dev/null || true
 
   echo "y" | ufw enable 2>/dev/null || true
 
-  ok "Firewall configured"
+  ok "Firewall configured (mínimo: SSH + Web UI + mDNS; los servicios abren su puerto al activarse)"
 }
 
 # ── Configure Samba ──
@@ -478,7 +475,7 @@ EOF
   systemctl disable vsftpd 2>/dev/null || true
   systemctl stop vsftpd 2>/dev/null || true
 
-  ok "FTP configured (port 21, passive 55000-55999)"
+  ok "FTP configured but DISABLED (opt-in: actívalo desde la UI; NimOS abrirá el puerto 21 + pasivo 55000-55999 al hacerlo)"
 }
 
 # ── Configure Nginx ──
