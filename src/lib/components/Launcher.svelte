@@ -29,16 +29,12 @@
 
   export let visible = false;
 
-  let searchTerm = '';
   let dockerApps = [];
   let allowedApps = null;
-  let searchEl;
 
   $: if (visible) {
-    searchTerm = '';
     loadDockerApps();
     loadMyApps();
-    setTimeout(() => searchEl?.focus(), 50);
   }
 
   async function loadMyApps() {
@@ -97,18 +93,9 @@
   // Apps Docker en otra sección
   $: dkApps = dockerApps.filter(a => canAccess(a.id));
 
-  // Filtro de búsqueda · aplica a ambas secciones
-  $: filteredSys = filterApps(sysApps, searchTerm);
-  $: filteredDk  = filterApps(dkApps, searchTerm);
-
-  function filterApps(list, q) {
-    if (!q) return list;
-    const term = q.toLowerCase();
-    return list.filter(a =>
-      a.name.toLowerCase().includes(term) ||
-      a.id.toLowerCase().includes(term)
-    );
-  }
+  // Sin buscador: se muestran todas directamente
+  $: filteredSys = sysApps;
+  $: filteredDk  = dkApps;
 
   $: openAppIds = new Set($windowList.map(w => w.appId));
 
@@ -161,21 +148,7 @@
 
   <div class="start-menu" on:click|stopPropagation role="presentation">
 
-    <!-- ─── Top · Search ─── -->
-    <div class="sm-search-wrap">
-      <div class="sm-search">
-        <span class="prompt">$</span>
-        <input
-          bind:this={searchEl}
-          bind:value={searchTerm}
-          placeholder="Buscar app, archivo o comando..."
-          autocomplete="off"
-        />
-        <span class="key">↵</span>
-      </div>
-    </div>
-
-    <!-- ─── Middle · Scrollable content ─── -->
+    <!-- ─── Scrollable content ─── -->
     <div class="sm-content">
 
       {#if filteredSys.length > 0}
@@ -235,11 +208,7 @@
       {#if filteredSys.length === 0 && filteredDk.length === 0}
         <div class="empty">
           <div class="empty-ic">◌</div>
-          <div class="empty-msg">
-            {searchTerm
-              ? `Sin resultados para "${searchTerm}"`
-              : 'Sin apps disponibles'}
-          </div>
+          <div class="empty-msg">Sin apps disponibles</div>
         </div>
       {/if}
 
@@ -282,11 +251,13 @@
     position: fixed;
     bottom: calc(var(--taskbar-height, 44px) + 12px);
     left: 12px;
-    width: 520px;
-    height: 580px;
+    width: 640px;
+    height: 600px;
     max-height: calc(100vh - var(--taskbar-height, 44px) - 24px);
-    background: var(--bg-window, #16161a);
-    border: 1px solid var(--bd, rgba(255, 255, 255, 0.05));
+    background: rgba(20, 20, 26, 0.72);
+    backdrop-filter: blur(22px) saturate(1.3);
+    -webkit-backdrop-filter: blur(22px) saturate(1.3);
+    border: 1px solid rgba(255, 255, 255, 0.10);
     border-radius: 14px;
     z-index: 9200;
     display: flex;
@@ -304,57 +275,11 @@
     to   { opacity: 1; transform: translateY(0); }
   }
 
-  /* ─── Top · Search ─── */
-  .sm-search-wrap {
-    padding: 16px 18px 14px;
-  }
-  .sm-search {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 10px 14px;
-    background: var(--bg-input, #1a1a20);
-    border: 1px solid var(--bd-2, #20202a);
-    border-radius: 7px;
-    transition: border-color 0.15s;
-  }
-  .sm-search:focus-within {
-    border-color: var(--nim-green, #00ff9f);
-    box-shadow: 0 0 0 2px rgba(0, 255, 159, 0.08);
-  }
-  .sm-search .prompt {
-    font-family: var(--font-mono, ui-monospace, monospace);
-    color: var(--nim-green, #00ff9f);
-    font-size: 13px;
-    font-weight: 600;
-  }
-  .sm-search input {
-    flex: 1;
-    background: transparent;
-    border: none;
-    outline: none;
-    color: var(--fg, #f0f0f0);
-    font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
-    font-size: 13px;
-  }
-  .sm-search input::placeholder {
-    color: var(--fg-4, #7a7a82);
-  }
-  .sm-search .key {
-    font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 9px;
-    color: var(--fg-4, #7a7a82);
-    padding: 2px 6px;
-    border: 1px solid var(--bd-3, #2a2a32);
-    border-radius: 3px;
-    letter-spacing: 0.3px;
-  }
-
-  /* ─── Middle · Scrollable content ─── */
+  /* ─── Scrollable content ─── */
   .sm-content {
     flex: 1;
     overflow-y: auto;
-    padding: 0 18px 14px;
+    padding: 18px 22px 18px;
   }
   .sm-content::-webkit-scrollbar { width: 5px; }
   .sm-content::-webkit-scrollbar-track { background: transparent; }
@@ -386,18 +311,18 @@
   /* App grid · 6 columns */
   .sm-grid {
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
-    gap: 4px;
-    margin-bottom: 8px;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 8px;
+    margin-bottom: 10px;
   }
 
   .app-tile {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 7px;
-    padding: 14px 4px 12px;
-    border-radius: 7px;
+    gap: 10px;
+    padding: 18px 6px 14px;
+    border-radius: 10px;
     cursor: pointer;
     transition: all 0.12s;
     position: relative;
@@ -418,9 +343,9 @@
   }
 
   .app-tile-ico {
-    width: 38px;
-    height: 38px;
-    border-radius: 8px;
+    width: 54px;
+    height: 54px;
+    border-radius: 12px;
     display: flex;
     align-items: center;
     justify-content: center;
