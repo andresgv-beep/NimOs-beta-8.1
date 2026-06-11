@@ -155,11 +155,11 @@ html, body {
   /* ── Fondos (escalera de elevación) ──
      Valores con tinte azul-violeta sutil (B > R=G) del mockup
      nimos-storage validado. Da identidad NimOS sin ser saturado. */
-  --canvas:         #101015;
-  --canvas-soft:    #131316;
-  --panel:          #16161a;
-  --panel-elev:     #1a1a1f;
-  --panel-deep:     #15151a;
+  --canvas:         #16161c;
+  --canvas-soft:    #20202a;
+  --panel:          #212128;
+  --panel-elev:     #26262f;
+  --panel-deep:     #222229;
 
   /* ── Texto (4 niveles de jerarquía) ──────────────────────── */
   --ink:            #f2f2f5;
@@ -444,11 +444,11 @@ html, body {
   --nim-folder:        #ff9c5a;
 
   /* Fondos del mockup · valores literales */
-  --bg-window:         #16161a;
-  --bg-main:           #1a1a1f;
-  --bg-side:           #131316;
-  --bg-card:           #15151a;
-  --bg-inner:          #101015;
+  --bg-window:         #212128;
+  --bg-main:           #26262f;
+  --bg-side:           #20202a;
+  --bg-card:           #222229;
+  --bg-inner:          #16161c;
 }
 
 [data-theme="cream"] {
