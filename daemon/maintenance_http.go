@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // taskView es la representación de una tarea para la API (tarea + su config).
@@ -21,6 +22,26 @@ type taskView struct {
 	Name        string     `json:"name"`
 	Description string     `json:"description"`
 	Config      TaskConfig `json:"config"`
+	LastRun     string     `json:"lastRun,omitempty"`
+	NextRun     string     `json:"nextRun,omitempty"`
+}
+
+// buildTaskView arma la vista de una tarea incluyendo última/próxima ejecución.
+func buildTaskView(t MaintenanceTask) taskView {
+	cfg := dbMaintenanceGetConfig(t.ID())
+	last := dbMaintenanceLastRun(t.ID())
+	lastStr := ""
+	if !last.IsZero() {
+		lastStr = last.Local().Format("2006-01-02 15:04")
+	}
+	return taskView{
+		ID:          t.ID(),
+		Name:        t.Name(),
+		Description: t.Description(),
+		Config:      cfg,
+		LastRun:     lastStr,
+		NextRun:     nextRunEstimate(cfg.Schedule, last, cfg.Enabled, time.Now()),
+	}
 }
 
 func handleMaintenanceRoutes(w http.ResponseWriter, r *http.Request) {
@@ -45,12 +66,7 @@ func handleMaintenanceRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 		views := []taskView{}
 		for _, t := range maintenanceManager.List() {
-			views = append(views, taskView{
-				ID:          t.ID(),
-				Name:        t.Name(),
-				Description: t.Description(),
-				Config:      dbMaintenanceGetConfig(t.ID()),
-			})
+			views = append(views, buildTaskView(t))
 		}
 		jsonOk(w, map[string]interface{}{"tasks": views})
 		return
@@ -101,12 +117,7 @@ func handleMaintenanceRoutes(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			jsonOk(w, map[string]interface{}{
-				"task": taskView{
-					ID:          t.ID(),
-					Name:        t.Name(),
-					Description: t.Description(),
-					Config:      dbMaintenanceGetConfig(id),
-				},
+				"task":    buildTaskView(t),
 				"history": dbMaintenanceHistory(id, 20),
 			})
 			return

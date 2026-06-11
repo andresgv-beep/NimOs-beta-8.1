@@ -208,3 +208,28 @@ func deref(p *int) int {
 	}
 	return *p
 }
+
+// dbMaintenanceLastRun devuelve el instante de la última ejecución NO saltada de
+// una tarea (la última vez que realmente hizo trabajo o falló), o el zero time si
+// nunca corrió. Lo usa el scheduler para calcular si toca ejecutar de nuevo.
+//
+// Se cuentan también las ejecuciones con error y las saltadas: si una tarea se
+// saltó (p.ej. no había pool), igualmente "se intentó" en ese momento, y no
+// queremos reintentar en bucle cada minuto. Por eso miramos el último ran_at sin
+// filtrar por skipped.
+func dbMaintenanceLastRun(taskID string) time.Time {
+	var ranAt string
+	err := db.QueryRow(
+		`SELECT ran_at FROM maintenance_history WHERE task_id = ? ORDER BY ran_at DESC, id DESC LIMIT 1`,
+		taskID,
+	).Scan(&ranAt)
+	if err != nil {
+		return time.Time{}
+	}
+	// ran_at se guarda como datetime('now') → UTC "YYYY-MM-DD HH:MM:SS".
+	t, perr := time.Parse("2006-01-02 15:04:05", ranAt)
+	if perr != nil {
+		return time.Time{}
+	}
+	return t.UTC()
+}
