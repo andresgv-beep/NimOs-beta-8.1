@@ -66,16 +66,21 @@ func removeFstabEntry(mountPoint string) {
 		// and possible permission issues).
 		return
 	}
-	// Atomic write: write to tmp, then rename. Avoids partial files if
-	// the daemon dies mid-write.
-	tmpPath := "/etc/fstab.nimos.tmp"
-	if err := os.WriteFile(tmpPath, []byte(strings.Join(kept, "\n")), 0644); err != nil {
-		logMsg("removeFstabEntry: write tmp failed: %v", err)
-		return
+	// In-place write with a backup copy. We deliberately avoid the tmp+rename
+	// pattern here: rename into /etc would require /etc itself to be writable
+	// under systemd ProtectSystem=strict, which we don't grant (only the
+	// /etc/fstab file is in ReadWritePaths). Instead we keep a .bak alongside so
+	// a mid-write crash is recoverable, then truncate-write /etc/fstab directly.
+	newContent := []byte(strings.Join(kept, "\n") + "\n")
+	if orig, rerr := os.ReadFile("/etc/fstab"); rerr == nil {
+		// Best-effort backup; the backup path is the fstab file's own sibling
+		// name, also covered by being the same file target is not — so we write
+		// the backup into a path we ARE allowed to write: /var/lib/nimos.
+		_ = os.WriteFile("/var/lib/nimos/fstab.bak", orig, 0644)
 	}
-	if err := os.Rename(tmpPath, "/etc/fstab"); err != nil {
-		logMsg("removeFstabEntry: rename failed: %v", err)
-		os.Remove(tmpPath)
+	if err := os.WriteFile("/etc/fstab", newContent, 0644); err != nil {
+		logMsg("removeFstabEntry: in-place write failed: %v", err)
+		return
 	}
 }
 

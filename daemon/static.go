@@ -320,9 +320,13 @@ func handleTorrentUploadGo(w http.ResponseWriter, r *http.Request, session *DBSe
 	}
 	defer file.Close()
 
-	// Save to temp
-	tmpDir := "/var/cache/nimos-torrents"
-	os.MkdirAll(tmpDir, 0755)
+	// Save to temp ON THE POOL (not /var — keeps ProtectSystem=strict intact).
+	// El temp y el destino comparten filesystem (mismo pool).
+	tmpDir, err := torrentTmpDir()
+	if err != nil {
+		jsonError(w, 503, "Storage pool not mounted — cannot stage torrent")
+		return
+	}
 	safeName := regexp.MustCompile(`[^a-zA-Z0-9._-]`).ReplaceAllString(header.Filename, "_")
 	tmpPath := filepath.Join(tmpDir, fmt.Sprintf("%d-%s", time.Now().UnixMilli(), safeName))
 
