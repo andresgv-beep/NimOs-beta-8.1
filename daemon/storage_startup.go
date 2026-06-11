@@ -101,6 +101,28 @@ func detectBtrfs() {
 
 // ─── Disk detection ──────────────────────────────────────────────────────────
 
+// normalizeFstype limpia el valor de fstype que viene de lsblk (que puede ser
+// el literal "<nil>" cuando el campo es null en el JSON).
+func normalizeFstype(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "<nil>" || raw == "null" {
+		return ""
+	}
+	return raw
+}
+
+// diskHasExistingData decide si un disco contiene datos preexistentes.
+// SEGURIDAD: true si tiene particiones O un filesystem a disco completo.
+// Un disco con FS whole-disk (como los miembros BTRFS de un pool, o un disco
+// ext4/xfs de otro sistema) NO debe reportarse como vacío: la UI lo marcaría
+// "elegible/sin datos" y sería una invitación al wipe.
+func diskHasExistingData(numPartitions int, diskFstype string) bool {
+	if numPartitions > 0 {
+		return true
+	}
+	return normalizeFstype(diskFstype) != ""
+}
+
 func detectStorageDisksGo() map[string]interface{} {
 	// TODO: rewrite with storage_disks.go from plan v2
 	// For now: minimal implementation that works
@@ -210,7 +232,17 @@ func detectStorageDisksGo() map[string]interface{} {
 			partitions = []interface{}{}
 		}
 		diskInfo["partitions"] = partitions
-		diskInfo["hasExistingData"] = len(partitions) > 0
+
+		// hasExistingData: el disco tiene datos si tiene particiones O si el
+		// DISCO MISMO tiene un filesystem a disco completo (sin tabla de
+		// particiones). Esto último es EXACTAMENTE cómo BTRFS crea los miembros
+		// de pool, y también cómo aparecen discos ext4/xfs/etc. de otros
+		// sistemas. Mirar solo las particiones hacía que un disco con FS a
+		// disco completo se mostrara como "vacío/elegible" → invitación al wipe.
+		// lsblk ya nos da el FSTYPE del disco en la línea de -o (arriba).
+		diskFstype := strings.TrimSpace(fmt.Sprintf("%v", dev["fstype"]))
+		diskInfo["hasExistingData"] = diskHasExistingData(len(partitions), diskFstype)
+		diskInfo["fstype"] = normalizeFstype(diskFstype) // exponer el FS del disco a la UI
 
 		// Classify
 		if devName == rootDisk {
