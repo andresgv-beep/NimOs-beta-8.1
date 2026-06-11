@@ -24,11 +24,16 @@ TimeoutStartSec=120
 # todo el árbol de Docker que vive dentro. Sin ella, el daemon ve los pools como
 # read-only desde dentro del sandbox → el health los marca 'critical' aunque el
 # pool esté sano. Si cambias la ruta de montaje de pools, actualízala aquí.
+# /etc/docker, /etc/containerd: configs de sistema que el daemon gestiona al
+# instalar Docker. /etc/fstab: persistencia de montajes (ver nota sobre escritura
+# in-place en storage_common.go — se escribe sin rename para no requerir /etc
+# entero escribible). Lista cerrada: el daemon NO escribe en ningún otro sitio de
+# /etc. Los DATOS (apps, torrents, VMs) van al POOL, nunca al sistema.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=false
 PrivateTmp=true
-ReadWritePaths=/opt/nimos /var/lib/nimos /var/log/nimos /etc/nimos /etc/exports /etc/samba /mnt /srv /home /nimos
+ReadWritePaths=/opt/nimos /var/lib/nimos /var/log/nimos /etc/nimos /etc/exports /etc/samba /etc/docker /etc/containerd /etc/fstab /mnt /srv /home /nimos
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
