@@ -20,6 +20,7 @@
 
 import Clock from './Clock.svelte';
 import SysMon from './SysMon.svelte';
+import SysPanel from './SysPanel.svelte';
 import Storage from './Storage.svelte';
 import Network from './Network.svelte';
 import RingSolo from './RingSolo.svelte';
@@ -46,6 +47,16 @@ export const WIDGET_CATALOG = [
     component: SysMon,
     defaultOn: true,
     sizes: [[2, 1]],
+  },
+  {
+    id: 'syspanel',
+    name: 'Sistema 2×2',
+    w: 2,
+    h: 2,
+    topic: 'system',      // mismo topic que sysmon · polling compartido
+    component: SysPanel,
+    defaultOn: false,     // existe en catálogo, apagado por defecto
+    sizes: [[2, 2]],      // talla fija · es el rediseño 2×2 (junio 2026)
   },
   {
     id: 'cpu',
