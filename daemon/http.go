@@ -381,6 +381,10 @@ func startHTTPServer() {
 	mux.HandleFunc("/api/shares", handleSharesRoutes)
 	mux.HandleFunc("/api/shares/", handleSharesRoutes)
 
+	mux.HandleFunc("/api/maintenance/tasks", handleMaintenanceRoutes)
+	mux.HandleFunc("/api/maintenance/tasks/", handleMaintenanceRoutes)
+	mux.HandleFunc("/api/maintenance/history", handleMaintenanceRoutes)
+
 	// ── Native Apps routes ──
 	mux.HandleFunc("/api/native-apps", handleNativeAppsRoutes)
 	mux.HandleFunc("/api/native-apps/", handleNativeAppsRoutes)

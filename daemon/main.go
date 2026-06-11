@@ -757,6 +757,10 @@ func main() {
 	startHTTPServer()
 	startRateLimitCleanup()
 
+	// Subsistema de mantenimiento (Fase 1): init tablas + registro de tareas.
+	startMaintenance()
+	maintenanceManager.Register(&torrentTmpSweepTask{})
+
 	// Beta 8: arrancar el reconciler en background.
 	// Desactivable con NIMOS_NO_STORAGE_SCHEDULER=1 para debugging
 	// o despliegues controlados.
