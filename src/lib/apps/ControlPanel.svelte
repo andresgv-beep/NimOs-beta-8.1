@@ -23,6 +23,7 @@
   import CPPermissions from './controlpanel/CPPermissions.svelte';
   import CPPortal from './controlpanel/CPPortal.svelte';
   import CPUpdates from './controlpanel/CPUpdates.svelte';
+  import CPMaintenance from './controlpanel/CPMaintenance.svelte';
 
   let active = 'users';
 
@@ -36,6 +37,7 @@
         { id: 'permissions', label: 'Permisos de apps' },
         { id: 'portal',      label: 'Portal · 2FA' },
         { id: 'updates',     label: 'Actualizaciones' },
+        { id: 'maintenance', label: 'Limpieza y mantenimiento' },
       ],
     },
   ];
@@ -47,6 +49,7 @@
     permissions: { t: 'Permisos de apps', s: '· qué puede usar cada usuario' },
     portal:      { t: 'Portal · 2FA',     s: '· seguridad de acceso' },
     updates:     { t: 'Actualizaciones',  s: '· versión del sistema' },
+    maintenance: { t: 'Limpieza y mantenimiento', s: '· tareas automáticas de higiene' },
   };
 </script>
 
@@ -75,6 +78,8 @@
       <CPPortal />
     {:else if active === 'updates'}
       <CPUpdates />
+    {:else if active === 'maintenance'}
+      <CPMaintenance />
     {:else}
       <div class="cp-placeholder">
         <div class="cp-ph-icon"></div>
