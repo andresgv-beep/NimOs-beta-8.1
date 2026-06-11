@@ -28,6 +28,7 @@
   let events = [];
   let blocks = [];
   let whitelist = [];
+  let reputation = [];
   let adminRequired = false;
   let loading = true;
   let pollInterval = null;
@@ -55,13 +56,14 @@
   }
 
   async function refresh() {
-    const [s, e, b, wl] = await Promise.all([
-      get('status'), get('events?limit=200'), get('blocks'), get('whitelist'),
+    const [s, e, b, wl, rep] = await Promise.all([
+      get('status'), get('events?limit=200'), get('blocks'), get('whitelist'), get('reputation'),
     ]);
     if (s) status = s;
     if (e) events = e.events || [];
     if (b) blocks = (b.blocks || []).sort((x, y) => (x.expiresAt < y.expiresAt ? -1 : 1));
     if (wl) whitelist = wl.whitelist || [];
+    if (rep) reputation = rep.reputation || [];
     loading = false;
   }
 
@@ -78,6 +80,27 @@
   }
 
   // ─── Acciones bloqueos ───
+  async function forgetReputation(ip) {
+    if (!confirm(`¿Olvidar la reputación de ${ip}? Volverá a trato estricto (desconocida).`)) return;
+    busy = new Set(busy).add(ip);
+    try {
+      await post('reputation/forget', { ip });
+      await refresh();
+    } catch (e) {
+      // silencioso: el refresh reflejará el estado real
+    } finally {
+      busy.delete(ip); busy = new Set(busy);
+    }
+  }
+
+  // etiqueta + clase del nivel de reputación
+  const repLevelMeta = {
+    habitual: { label: 'habitual',     cls: 'lvl-trusted' },
+    known:    { label: 'conocida',     cls: 'lvl-known' },
+    unknown:  { label: 'desconocida',  cls: 'lvl-unknown' },
+    distrust: { label: 'desconfianza', cls: 'lvl-distrust' },
+  };
+
   async function unblock(ip) {
     if (busy.has(ip)) return;
     busy = new Set(busy).add(ip);
@@ -152,6 +175,7 @@
         { id: 'events',    label: 'Eventos',   badge: events.length || null },
         { id: 'blocks',    label: 'Bloqueos',  badge: blocks.length || null, badgeVariant: blocks.length ? 'crit' : 'default' },
         { id: 'whitelist', label: 'Whitelist', badge: whitelist.length || null },
+        { id: 'reputation', label: 'Reputación', badge: reputation.length || null },
       ],
     },
   ];
@@ -161,6 +185,7 @@
     events:    { t: 'Eventos',   s: '· stream del motor' },
     blocks:    { t: 'Bloqueos',  s: '· IPs bloqueadas activas' },
     whitelist: { t: 'Whitelist', s: '· IPs en confianza' },
+    reputation: { t: 'Reputación', s: '· IPs conocidas y su nivel' },
   };
 
   // ─── Formateadores ───
@@ -242,6 +267,7 @@
       {#if active === 'events'}· stream del motor · {events.length} últimos
       {:else if active === 'blocks'}· {blocks.length} IPs bloqueadas activas
       {:else if active === 'whitelist'}· {whitelist.length + 1} IPs en confianza
+      {:else if active === 'reputation'}· {reputation.length} IPs conocidas
       {:else}{viewTitles[active]?.s}
       {/if}
     </span>
@@ -478,6 +504,45 @@
             </div>
           </div>
         {/each}
+      </div>
+
+    {:else if active === 'reputation'}
+
+      <!-- ═══════════════ REPUTACIÓN ═══════════════ -->
+      <div class="rep-intro ns-msg">
+        NimShield aprende qué IPs entran con éxito habitualmente y les da más margen ante un despiste.
+        Una IP conocida que falla en ráfaga pierde el margen al instante (desconfianza).
+      </div>
+      <div class="block-table">
+        <div class="block-head rep-head">
+          <span>IP origen</span>
+          <span>Nivel</span>
+          <span>Éxitos</span>
+          <span>Racha</span>
+          <span>Último acceso</span>
+          <span style="text-align:right">Acción</span>
+        </div>
+        {#if reputation.length === 0}
+          <div class="ns-msg">Aún no hay IPs con historial. Entra con éxito y aparecerás aquí.</div>
+        {:else}
+          {#each reputation as rp (rp.ip)}
+            <div class="block-row rep-row">
+              <span class="block-ip">{rp.ip}</span>
+              <span><span class="lvl-pill {repLevelMeta[rp.level]?.cls}">{repLevelMeta[rp.level]?.label || rp.level}</span></span>
+              <span class="rep-num">{rp.successCount}</span>
+              <span class="rep-num" class:rep-streak={rp.failStreak >= 3}>{rp.failStreak}</span>
+              <span class="block-created">{rp.lastSuccess ? fmtAgo(rp.lastSuccess, true) : '—'}</span>
+              <div class="block-actions" style="justify-content:flex-end">
+                <button class="icon-btn" title="Olvidar reputación (vuelve a trato estricto)" disabled={busy.has(rp.ip)} on:click={() => forgetReputation(rp.ip)}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.4 2.6L3 8"/>
+                    <line x1="3" y1="3" x2="3" y2="8"/><line x1="3" y1="8" x2="8" y2="8"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          {/each}
+        {/if}
       </div>
 
     {/if}
@@ -946,6 +1011,25 @@
     font-variant-numeric: tabular-nums;
   }
   .block-actions { display: flex; gap: 4px; }
+
+  /* ── Reputación: misma rejilla que Bloqueos, columnas propias ── */
+  .rep-intro { margin: 0 0 14px; }
+  .rep-head, .rep-row { grid-template-columns: 130px 110px 70px 60px 1fr 70px; }
+  .rep-num {
+    font-family: var(--font-mono); font-size: 12px;
+    color: var(--fg-3, #b0b0b8); font-variant-numeric: tabular-nums;
+  }
+  .rep-streak { color: var(--st-warn, #ffc857); font-weight: 600; }
+  .lvl-pill {
+    display: inline-block; font-family: var(--font-mono); font-size: 10px;
+    padding: 2px 8px; border-radius: 99px; border: 1px solid var(--bd-3, #2a2a32);
+    color: var(--fg-4, #7a7a82); letter-spacing: 0.3px;
+  }
+  .lvl-trusted  { border-color: rgba(0,255,159,0.4);  color: var(--nim-green, #00ff9f); background: rgba(0,255,159,0.06); }
+  .lvl-known    { border-color: rgba(122,158,177,0.5); color: #9bb8c7; background: rgba(122,158,177,0.08); }
+  .lvl-unknown  { /* neutro, hereda */ }
+  .lvl-distrust { border-color: rgba(248,113,113,0.5); color: var(--st-crit, #f87171); background: rgba(248,113,113,0.08); }
+
   .icon-btn {
     width: 26px;
     height: 26px;
