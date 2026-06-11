@@ -90,6 +90,20 @@ func getBearerToken(r *http.Request) string {
 	return ""
 }
 
+// hasValidSession indica si la petición trae una sesión válida, SIN efectos
+// secundarios (no emite eventos). Se usa para no tratar los 404s de un
+// usuario autenticado como escaneo de rutas.
+func hasValidSession(r *http.Request) bool {
+	token := getBearerToken(r)
+	if token == "" {
+		return false
+	}
+	if _, err := dbSessionGet(sha256Hex(token)); err != nil {
+		return false
+	}
+	return true
+}
+
 // Authenticate request — returns session data or nil
 func authenticate(r *http.Request) *DBSession {
 	token := getBearerToken(r)
@@ -230,7 +244,11 @@ func corsMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(rec, r)
 		if shieldEnabled.Load() && rec.status == http.StatusNotFound {
 			ip := clientIP(r)
-			if !shieldIsWhitelisted(ip) {
+			// Un usuario con SESIÓN VÁLIDA no es un escáner: ignoramos sus
+			// 404s (favicon, polling, assets que no existen). Un atacante
+			// que enumera rutas no tiene cookie/token de sesión. Esto evita
+			// que el dueño legítimo se autobloquee (SCAN-001/002).
+			if !shieldIsWhitelisted(ip) && !hasValidSession(r) {
 				Shield404(ip, r.UserAgent(), r.URL.Path)
 			}
 		}
