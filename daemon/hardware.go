@@ -587,6 +587,22 @@ func parseFloat(s string) float64 {
 	return f
 }
 
+// pickMainTemp elige la temperatura "principal" de CPU de forma
+// determinista. Orden por nombre de zona térmica: x86 (pkg/coretemp),
+// Raspberry Pi (cpu-thermal) y genérico (cpu). Fallback: primera
+// entrada del mapa (no determinista, último recurso).
+func pickMainTemp(temps map[string]interface{}) interface{} {
+	for _, key := range []string{"x86_pkg_temp", "cpu-thermal", "cpu", "coretemp"} {
+		if v, ok := temps[key]; ok {
+			return v
+		}
+	}
+	for _, v := range temps {
+		return v
+	}
+	return nil
+}
+
 // ═══════════════════════════════════
 // Network
 // ═══════════════════════════════════
@@ -1008,19 +1024,7 @@ func getSystemSummary() map[string]interface{} {
 	hostname, _ := os.Hostname()
 
 	// Main temp
-	var mainTemp interface{}
-	for _, key := range []string{"x86_pkg_temp", "cpu", "coretemp"} {
-		if v, ok := temps[key]; ok {
-			mainTemp = v
-			break
-		}
-	}
-	if mainTemp == nil {
-		for _, v := range temps {
-			mainTemp = v
-			break
-		}
-	}
+	mainTemp := pickMainTemp(temps)
 
 	// Primary network interface
 	var primaryNet interface{}
@@ -1081,11 +1085,16 @@ func handleHardwareRoutes(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		cpuData["load1"] = parseFloat(loadStr)
+		// temp/uptime para el widget SysPanel 2×2. getTemps con slice
+		// vacío (no nil) salta el lookup de GPU: el panel solo necesita
+		// CPU y esto corre cada 3s.
 		jsonOk(w, map[string]interface{}{
 			"cpu":     cpuData,
 			"memory":  memData,
 			"disk":    diskData,
 			"network": netData,
+			"temp":    pickMainTemp(getTemps([]map[string]interface{}{})),
+			"uptime":  getUptime(),
 		})
 	case "/api/system":
 		jsonOk(w, getSystemSummary())
