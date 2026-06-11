@@ -171,10 +171,25 @@ func processAuthRules(event ShieldEvent) {
 
 	switch detailType {
 	case "login_fail":
-		// AUTH-001: Brute force — 5+ fails / 5min / IP
+		// AUTH-001: Brute force con UMBRAL DINÁMICO por reputación.
+		// Registramos el fallo (racha++) y dejamos que la reputación decida
+		// cuántos fallos toleramos: una IP habitual tiene margen para
+		// despistes; una IP conocida en racha de fallos (dispositivo
+		// robado) pierde el margen al instante (modo desconfianza).
+		failStreak, successCount := shieldRepRecordFail(ip)
+		threshold, distrust := shieldLoginFailThreshold(successCount, failStreak)
+
 		count := authFailWindow.countAndAdd("ip:"+ip, 5*time.Minute)
-		if count >= 5 {
-			shieldBlockIP(ip, 30*time.Minute, "Brute force: 5+ login failures in 5min", "AUTH-001")
+		if count >= threshold {
+			dur := 30 * time.Minute
+			reason := "Brute force: login failures over threshold"
+			if distrust {
+				// Habitual en ráfaga de fallos → cooldown más largo: lo raro
+				// merece más cautela, no menos.
+				dur = 1 * time.Hour
+				reason = "Distrust: known IP failing in burst (possible stolen device)"
+			}
+			shieldBlockIP(ip, dur, reason, "AUTH-001")
 			return
 		}
 

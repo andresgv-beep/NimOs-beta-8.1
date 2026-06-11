@@ -734,6 +734,9 @@ func authLogin(w http.ResponseWriter, r *http.Request) {
 	clearFailedAttempts("ip:" + ip)
 	clearFailedAttempts("user:" + username)
 
+	// Reputación: login exitoso → +1 y borra la racha de fallos de esta IP.
+	ShieldAuthSuccess(ip)
+
 	token, _ := generateToken()
 	hToken := sha256Hex(token)
 	dbSessionCreate(hToken, username, user.Role, ip)
