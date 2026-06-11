@@ -54,10 +54,12 @@ func dbShieldReputationInit() {
 			ip            TEXT PRIMARY KEY,
 			success_count INTEGER NOT NULL DEFAULT 0,
 			fail_streak   INTEGER NOT NULL DEFAULT 0,
+			block_count   INTEGER NOT NULL DEFAULT 0,
 			last_success  TEXT,
 			last_fail     TEXT
 		);
 	`)
+	db.Exec(`ALTER TABLE shield_reputation ADD COLUMN block_count INTEGER NOT NULL DEFAULT 0`)
 }
 
 // ShieldAuthSuccess registra un login EXITOSO: +1 a la cuenta y borra la
@@ -202,4 +204,20 @@ func shieldRepForget(ip string) error {
 	}
 	_, err := db.Exec(`DELETE FROM shield_reputation WHERE ip = ?`, ip)
 	return err
+}
+
+// shieldRepRecordBlock incrementa el contador de bloqueos de una IP y
+// devuelve cuántos bloqueos PREVIOS tenía (0 = primera vez). Alimenta el
+// escalado de duración por reincidencia.
+func shieldRepRecordBlock(ip string) int {
+	if db == nil || ip == "" {
+		return 0
+	}
+	var prev int
+	db.QueryRow(`SELECT block_count FROM shield_reputation WHERE ip = ?`, ip).Scan(&prev)
+	db.Exec(`
+		INSERT INTO shield_reputation (ip, block_count) VALUES (?, 1)
+		ON CONFLICT(ip) DO UPDATE SET block_count = block_count + 1
+	`, ip)
+	return prev
 }

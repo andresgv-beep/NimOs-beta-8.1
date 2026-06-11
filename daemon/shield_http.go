@@ -61,6 +61,7 @@ func dbShieldInit() {
 	}
 
 	dbShieldReputationInit()
+	dbShieldConfigInit()
 }
 
 // ── Enabled-state persistence ────────────────────────────────────────────────
@@ -308,6 +309,28 @@ func handleShieldRoutes(w http.ResponseWriter, r *http.Request) {
 		dbShieldSetEnabled(newState)
 		logMsg("shield: %s by %s", map[bool]string{true: "enabled", false: "disabled"}[newState], session.Username)
 		jsonOk(w, map[string]interface{}{"ok": true, "enabled": newState})
+
+	// GET /api/shield/config — política actual
+	case path == "/api/shield/config" && method == "GET":
+		jsonOk(w, map[string]interface{}{"ok": true, "config": getShieldConfig(), "defaults": defaultShieldConfig()})
+
+	// PUT /api/shield/config — actualizar política (admin)
+	case path == "/api/shield/config" && method == "PUT":
+		if session.Role != "admin" {
+			jsonError(w, 403, "Solo un administrador puede modificar NimShield")
+			return
+		}
+		var newCfg ShieldConfig
+		if err := json.NewDecoder(r.Body).Decode(&newCfg); err != nil {
+			jsonError(w, 400, "JSON inválido")
+			return
+		}
+		if err := setShieldConfig(newCfg); err != nil {
+			jsonError(w, 500, "No se pudo guardar la configuración")
+			return
+		}
+		logMsg("shield: config updated by %s", session.Username)
+		jsonOk(w, map[string]interface{}{"ok": true, "config": getShieldConfig()})
 
 	// GET /api/shield/reputation — IPs conocidas con su nivel
 	case path == "/api/shield/reputation" && method == "GET":

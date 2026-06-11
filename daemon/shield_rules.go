@@ -177,16 +177,16 @@ func processAuthRules(event ShieldEvent) {
 		// despistes; una IP conocida en racha de fallos (dispositivo
 		// robado) pierde el margen al instante (modo desconfianza).
 		failStreak, successCount := shieldRepRecordFail(ip)
-		threshold, distrust := shieldLoginFailThreshold(successCount, failStreak)
-
-		count := authFailWindow.countAndAdd("ip:"+ip, 5*time.Minute)
-		if count >= threshold {
-			dur := 30 * time.Minute
+		cfg := getShieldConfig()
+		windowCount := authFailWindow.countAndAdd("ip:"+ip, 5*time.Minute)
+		block, distrust := shieldAuthDecision(cfg, successCount, failStreak, windowCount)
+		if block {
+			// Escalado por reincidencia: cada bloqueo previo de esta IP sube
+			// el siguiente (5min → 15min → 1h → 24h, configurable).
+			offenses := shieldRepRecordBlock(ip)
+			dur := escalatedBlockDuration(cfg, offenses)
 			reason := "Brute force: login failures over threshold"
 			if distrust {
-				// Habitual en ráfaga de fallos → cooldown más largo: lo raro
-				// merece más cautela, no menos.
-				dur = 1 * time.Hour
 				reason = "Distrust: known IP failing in burst (possible stolen device)"
 			}
 			shieldBlockIP(ip, dur, reason, "AUTH-001")
