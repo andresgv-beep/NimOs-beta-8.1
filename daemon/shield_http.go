@@ -272,6 +272,29 @@ func handleShieldRoutes(w http.ResponseWriter, r *http.Request) {
 		logMsg("shield: %s by %s", map[bool]string{true: "enabled", false: "disabled"}[shieldEnabled], session.Username)
 		jsonOk(w, map[string]interface{}{"ok": true, "enabled": shieldEnabled})
 
+	// GET /api/shield/reputation — IPs conocidas con su nivel
+	case path == "/api/shield/reputation" && method == "GET":
+		jsonOk(w, map[string]interface{}{"ok": true, "reputation": shieldRepList()})
+
+	// POST /api/shield/reputation/forget — degradar IP a desconocida (admin)
+	case path == "/api/shield/reputation/forget" && method == "POST":
+		if session.Role != "admin" {
+			jsonError(w, 403, "Solo un administrador puede modificar NimShield")
+			return
+		}
+		body, _ := readBody(r)
+		ip := bodyStr(body, "ip")
+		if ip == "" {
+			jsonError(w, 400, "IP required")
+			return
+		}
+		if err := shieldRepForget(ip); err != nil {
+			jsonError(w, 500, "No se pudo olvidar la IP")
+			return
+		}
+		logMsg("shield: reputation forgotten for %s by %s", ip, session.Username)
+		jsonOk(w, map[string]interface{}{"ok": true, "ip": ip})
+
 	// GET /api/shield/whitelist — lista IPs de confianza
 	case path == "/api/shield/whitelist" && method == "GET":
 		jsonOk(w, map[string]interface{}{"ok": true, "whitelist": dbShieldWhitelistGetAll()})

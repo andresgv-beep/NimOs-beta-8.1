@@ -142,3 +142,64 @@ func shieldLoginFailThreshold(successCount, failStreak int) (threshold int, dist
 		return repThresholdUnknown, false
 	}
 }
+
+// shieldRepLevel traduce (éxitos, racha) a una etiqueta legible para la UI.
+func shieldRepLevel(successCount, failStreak int) string {
+	if successCount > 0 && failStreak >= repDistrustStreak {
+		return "distrust" // conocida en racha de fallos → desconfianza
+	}
+	switch {
+	case successCount >= repHabitualThreshold:
+		return "habitual"
+	case successCount >= repKnownThreshold:
+		return "known"
+	default:
+		return "unknown"
+	}
+}
+
+// shieldRepList devuelve las IPs con reputación registrada, de más a menos
+// activas, con su nivel ya calculado para que la UI solo renderice.
+func shieldRepList() []map[string]interface{} {
+	out := []map[string]interface{}{}
+	if db == nil {
+		return out
+	}
+	rows, err := db.Query(`
+		SELECT ip, success_count, fail_streak, COALESCE(last_success,''), COALESCE(last_fail,'')
+		FROM shield_reputation
+		ORDER BY success_count DESC, last_success DESC
+		LIMIT 500
+	`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ip, lastSuccess, lastFail string
+		var success, streak int
+		if err := rows.Scan(&ip, &success, &streak, &lastSuccess, &lastFail); err != nil {
+			continue
+		}
+		out = append(out, map[string]interface{}{
+			"ip":           ip,
+			"successCount": success,
+			"failStreak":   streak,
+			"lastSuccess":  lastSuccess,
+			"lastFail":     lastFail,
+			"level":        shieldRepLevel(success, streak),
+		})
+	}
+	return out
+}
+
+// shieldRepForget borra la reputación de una IP (vuelve a "desconocida").
+// Útil si sospechas que una IP de confianza se ha comprometido: la degradas
+// y vuelve al trato estricto.
+func shieldRepForget(ip string) error {
+	if db == nil {
+		return nil
+	}
+	_, err := db.Exec(`DELETE FROM shield_reputation WHERE ip = ?`, ip)
+	return err
+}
