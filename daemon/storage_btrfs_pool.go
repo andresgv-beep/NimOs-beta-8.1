@@ -271,16 +271,44 @@ func countRealSubmounts(findmntOutput, mountPoint string) int {
 // escrituras mientras NimOS cree que ya no existe — el bug fantasma. Si el
 // umount limpio falla, preferimos error claro a inconsistencia silenciosa.
 func unmountStrict(mountPoint string, opts CmdOptions) map[string]interface{} {
-	runCmd("umount", []string{"-f", mountPoint}, opts)
+	umountRes, umountErr := runCmd("umount", []string{"-f", mountPoint}, opts)
 	time.Sleep(1 * time.Second)
 
 	// Verificación post-unmount obligatoria: findmnt debe devolver vacío.
 	verifyRes, _ := runCmd("findmnt", []string{"-n", "-o", "TARGET", mountPoint}, opts)
 	if strings.TrimSpace(verifyRes.Stdout) != "" {
-		logMsg("unmountStrict: %s sigue montado tras umount -f — abortando (sin lazy)", mountPoint)
+		// El stderr del kernel es ORO para diagnosticar — no tirarlo.
+		// (bug 13/06: el umount del daemon fallaba, el manual funcionaba,
+		// y sin el stderr era imposible saber por qué)
+		kernelErr := strings.TrimSpace(umountRes.Stderr)
+		if kernelErr == "" && umountErr != nil {
+			kernelErr = umountErr.Error()
+		}
+		logMsg("unmountStrict: %s sigue montado tras umount -f — abortando (sin lazy). umount stderr: %q", mountPoint, kernelErr)
+
+		// Diagnóstico best-effort: ¿qué procesos lo retienen?
+		// fuser sale por stderr; -m lista PIDs con archivos abiertos en el FS.
+		holders := ""
+		if fuserRes, ferr := runCmd("fuser", []string{"-vm", mountPoint}, CmdOptions{Timeout: 5 * time.Second}); ferr == nil || fuserRes.Stderr != "" {
+			holders = strings.TrimSpace(fuserRes.Stderr)
+			if holders != "" {
+				logMsg("unmountStrict: procesos reteniendo %s:\n%s", mountPoint, holders)
+			}
+		}
+
+		msg := "El pool sigue montado tras intentar desmontarlo."
+		if kernelErr != "" {
+			msg += " Error del sistema: " + kernelErr + "."
+		}
+		if holders != "" {
+			msg += " Procesos con archivos abiertos: ver log del daemon."
+		}
+		msg += " Detén los servicios que usan este pool e inténtalo de nuevo."
+
 		return map[string]interface{}{
 			"error":   "unmount_failed",
-			"message": "El pool sigue montado tras intentar desmontarlo. Hay procesos con archivos abiertos. Detén los servicios que usan este pool e inténtalo de nuevo.",
+			"message": msg,
+			"detail":  kernelErr,
 		}
 	}
 	return nil
