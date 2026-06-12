@@ -480,6 +480,19 @@ func ComputePoolHealth(
 			reasonMessage = fmt.Sprintf("Disco único ausente — datos inaccesibles")
 		}
 
+	// SMART crítico en un disco miembro, CON redundancia aún intacta (no missing).
+	// Los datos están protegidos —por eso no es 'critical'— pero el disco se está
+	// degradando y el usuario DEBE actuar (reemplazarlo) antes de perder margen.
+	// Sin esta rama, un pool con un disco muriéndose se mostraba 'healthy / sin
+	// incidencias', ocultando el riesgo. (bug de propagación de estado)
+	//
+	// smart_warning NO se maneja aquí: ya tiene su rama 'at_risk' más abajo, un
+	// estado más suave apropiado para desgaste incipiente.
+	case hasCodes["smart_critical"]:
+		status = "degraded"
+		reasonCode = "disk_smart_critical"
+		reasonMessage = fmt.Sprintf("Un disco presenta estado SMART crítico (%d disco(s) afectado(s)). Los datos siguen protegidos por la redundancia, pero reemplaza el disco cuanto antes.", disksWithSmartIssues)
+
 	// Mirror/RAID configured but not enough disks to provide redundancy
 	// (e.g., mirror with 1 disk after detach — disk was removed from config)
 	case canLose > 0 && totalDisks <= canLose:
