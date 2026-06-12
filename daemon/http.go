@@ -520,9 +520,21 @@ func startHTTPServer() {
 	// verificada en producción. El socket Unix sigue para admin local, y un
 	// túnel SSH (ssh -L 5000:127.0.0.1:5000) es la puerta de rescate.
 	// NIMOS_HTTP_BIND permite override para topologías con Caddy externo.
+	// ── Bind del daemon: LAN por defecto ──
+	// Un NAS DEBE ser accesible en su propia red local — es la base de todo,
+	// incluso para poder configurar la exposición externa. Por eso el default
+	// es 0.0.0.0 (escucha en la LAN), como cualquier NAS (Synology, QNAP,
+	// TrueNAS). La IP local es privada (RFC1918) y NO es alcanzable desde
+	// internet por diseño de la red: el aislamiento del exterior lo dan el
+	// router (sin port-forward del :5000) y el firewall, NO cegar el bind.
+	//
+	// Para exponer a internet de forma segura está Caddy + NimShield (única
+	// puerta, TLS). NIMOS_HTTP_BIND=127.0.0.1 queda como OPCIÓN para quien
+	// quiera forzar que solo Caddy (loopback) hable con el daemon — pero
+	// nunca como default, porque rompería el acceso local del propio NAS.
 	bindAddr := os.Getenv("NIMOS_HTTP_BIND")
 	if bindAddr == "" {
-		bindAddr = "127.0.0.1"
+		bindAddr = "0.0.0.0"
 	}
 	server := &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", bindAddr, httpPort),
