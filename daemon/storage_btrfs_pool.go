@@ -222,21 +222,42 @@ func exportPoolBtrfs(poolName string) map[string]interface{} {
 // el umount fallaría y dejaría un pool fantasma; mejor abortar antes.
 //
 // findmnt -R lista el mountpoint y todos sus submounts recursivamente.
-// Si devuelve más de 1 línea, hay submounts → el pool está en uso.
+// Un submount REAL tiene un target que cuelga del pool: empieza por
+// "<mountPoint>/". El propio pool es exactamente "<mountPoint>" (sin nada
+// detrás). Contamos solo los hijos reales — NO líneas crudas.
+//
+// Por qué no contar líneas: findmnt puede partir una sola entrada en varias
+// líneas de salida (opciones largas, formato del terminal), produciendo un
+// falso positivo que bloqueaba el desmontaje de un pool sin submounts reales.
+// (bug encontrado en hardware: pool de 1 solo mount marcado como busy)
 func poolHasSubmounts(mountPoint string, opts CmdOptions) bool {
 	res, err := runCmd("findmnt", []string{"-R", "-n", "-o", "TARGET", mountPoint}, opts)
 	if err != nil {
 		// findmnt falla si el mountpoint no está montado → sin submounts.
 		return false
 	}
-	lines := 0
-	for _, l := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
-		if strings.TrimSpace(l) != "" {
-			lines++
+	return countRealSubmounts(res.Stdout, mountPoint) > 0
+}
+
+// countRealSubmounts cuenta cuántos targets del output de findmnt son hijos
+// reales de mountPoint (empiezan por "mountPoint/"). El propio pool y cualquier
+// línea de continuación/ruido no cuentan. Función pura para test.
+func countRealSubmounts(findmntOutput, mountPoint string) int {
+	prefix := strings.TrimRight(mountPoint, "/") + "/"
+	n := 0
+	for _, l := range strings.Split(findmntOutput, "\n") {
+		target := strings.TrimSpace(l)
+		if target == "" {
+			continue
+		}
+		// Solo cuenta si el target cuelga DEL pool (es un submount real).
+		// Excluye el propio pool (target == mountPoint) y cualquier línea
+		// que no sea una ruta absoluta hija.
+		if strings.HasPrefix(target, prefix) {
+			n++
 		}
 	}
-	// 0 = no montado · 1 = solo el pool · >1 = hay submounts encima
-	return lines > 1
+	return n
 }
 
 // unmountStrict desmonta el pool SIN lazy unmount y verifica el resultado.
