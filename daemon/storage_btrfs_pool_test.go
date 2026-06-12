@@ -292,3 +292,82 @@ func TestRemovePoolFromDB_PoolNotFoundRollback(t *testing.T) {
 // de removePoolFromDB, que es donde vive el fix de CRIT-2 — la parte crítica
 // del comportamiento correcto frente a fallos parciales de DB.
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// countRealSubmounts — fix del falso pool_busy_submounts (13/06/2026)
+//
+// Bug original: poolHasSubmounts contaba líneas crudas del output de findmnt.
+// findmnt puede partir una entrada en varias líneas (opciones largas, formato),
+// con lo que un pool SIN submounts contaba 2 líneas → falso busy → bloqueaba
+// el desmontaje. Encontrado en hardware real (pool data2, disco degradado).
+//
+// Fix: contar solo targets que cuelgan del pool ("<mountPoint>/...").
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestCountRealSubmounts(t *testing.T) {
+	const mp = "/nimos/pools/data2"
+
+	cases := []struct {
+		name   string
+		output string
+		want   int
+	}{
+		{
+			name:   "solo el pool, una línea limpia",
+			output: "/nimos/pools/data2\n",
+			want:   0,
+		},
+		{
+			// El caso REAL del bug: findmnt parte la entrada en 2 líneas
+			// por opciones largas. El código viejo contaba 2 → falso busy.
+			name:   "una entrada partida en dos líneas (caso real del bug)",
+			output: "/nimos/pools/data2\n                 rw,noatime,compress=zstd:3,space_cache=v2,subvolid=5\n",
+			want:   0,
+		},
+		{
+			name:   "línea en blanco final extra",
+			output: "/nimos/pools/data2\n\n\n",
+			want:   0,
+		},
+		{
+			name:   "un submount real (bind de Docker)",
+			output: "/nimos/pools/data2\n/nimos/pools/data2/apps/jellyfin/config\n",
+			want:   1,
+		},
+		{
+			name:   "varios submounts reales",
+			output: "/nimos/pools/data2\n/nimos/pools/data2/apps/jellyfin\n/nimos/pools/data2/torrent/downloads\n",
+			want:   2,
+		},
+		{
+			// Pool hermano con prefijo de nombre similar: data2backup NO es
+			// hijo de data2. El código viejo ni contemplaba este caso.
+			name:   "nombre similar no es hijo (data2backup)",
+			output: "/nimos/pools/data2\n/nimos/pools/data2backup\n",
+			want:   0,
+		},
+		{
+			name:   "mountPoint con barra final se normaliza",
+			output: "/nimos/pools/data2\n/nimos/pools/data2/x\n",
+			want:   1,
+		},
+		{
+			name:   "output vacío (no montado)",
+			output: "",
+			want:   0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mount := mp
+			if tc.name == "mountPoint con barra final se normaliza" {
+				mount = mp + "/"
+			}
+			got := countRealSubmounts(tc.output, mount)
+			if got != tc.want {
+				t.Errorf("countRealSubmounts(%q) = %d, want %d", tc.output, got, tc.want)
+			}
+		})
+	}
+}

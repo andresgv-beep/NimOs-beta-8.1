@@ -71,6 +71,7 @@ func destroyPoolBtrfs(poolName string) map[string]interface{} {
 	// módulos. Si hay submounts (overlays Docker, binds...) abortamos antes
 	// de wipear nada — destruir con submounts vivos corrompe y deja fantasma.
 	if mountPoint != "" && poolHasSubmounts(mountPoint, opts) {
+		logMsg("Destroy pool '%s' ABORTED: submounts activos encima de %s", poolName, mountPoint)
 		return map[string]interface{}{
 			"error":   "pool_busy_submounts",
 			"message": "El pool tiene filesystems montados encima (servicios activos usándolo). Deténlos antes de destruir.",
@@ -171,6 +172,7 @@ func exportPoolBtrfs(poolName string) map[string]interface{} {
 	// submounts (overlays Docker, binds, etc.) el umount fallaría y dejaría
 	// un pool fantasma. Abortamos limpio antes de tocar nada.
 	if mountPoint != "" && poolHasSubmounts(mountPoint, opts) {
+		logMsg("Export pool '%s' ABORTED: submounts activos encima de %s", poolName, mountPoint)
 		return map[string]interface{}{
 			"error":   "pool_busy_submounts",
 			"message": "El pool tiene filesystems montados encima (servicios activos usándolo). Deténlos antes de desmontar.",

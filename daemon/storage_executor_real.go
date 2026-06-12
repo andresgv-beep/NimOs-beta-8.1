@@ -216,14 +216,11 @@ func (e *RealBtrfsExecutor) DestroyFilesystem(ctx context.Context, req DestroyFi
 	//    Solo miramos filesystem (findmnt -R), no consultamos otros módulos.
 	if req.MountPoint != "" {
 		out, _ := e.runCommand(ctx, "findmnt", "-R", "-n", "-o", "TARGET", req.MountPoint)
-		layers := 0
-		for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
-			if strings.TrimSpace(l) != "" {
-				layers++
-			}
-		}
-		if layers > 1 {
-			return fmt.Errorf("DestroyFilesystem: pool tiene %d filesystems montados encima (servicios activos); deténlos antes de destruir", layers-1)
+		// countRealSubmounts: cuenta solo targets hijos reales ("<mp>/..."),
+		// NO líneas crudas — findmnt puede partir una entrada en varias líneas
+		// y producir un falso positivo (mismo bug que poolHasSubmounts, 13/06).
+		if n := countRealSubmounts(out, req.MountPoint); n > 0 {
+			return fmt.Errorf("DestroyFilesystem: pool tiene %d filesystems montados encima (servicios activos); deténlos antes de destruir", n)
 		}
 	}
 
