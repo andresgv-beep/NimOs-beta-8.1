@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -185,6 +186,18 @@ func dockerInstall(w http.ResponseWriter, r *http.Request) {
 	jsonOk(w, result)
 }
 
+// dockerInstallMu protege contra instalaciones de Docker concurrentes.
+//
+// BUG FIX (12/06/2026): la UI puede lanzar varias peticiones de instalación
+// seguidas (reintentos del frontend, doble click, polling agresivo). Sin este
+// guard, cada petición lanzaba el script de Docker en paralelo · dos `apt-get`
+// a la vez → lock de dpkg → exit 100 → instalación a medias (estado iU) →
+// fallo. Visto en producción: 5 intentos en ~17s pisándose mutuamente.
+//
+// Con este mutex (try-lock), solo UNA instalación corre a la vez. Las demás
+// peticiones reciben un error claro "ya en progreso" en vez de pisar el apt.
+var dockerInstallMu sync.Mutex
+
 // runDockerInstallWork · trabajo real de instalación de Docker engine en el pool.
 //
 // Función pura sin acceso a HTTP. Reusada por el wrapper sync y por el
@@ -207,6 +220,13 @@ func dockerInstall(w http.ResponseWriter, r *http.Request) {
 //
 // El caller ya verificó admin · este worker no re-autoriza.
 func runDockerInstallWork(ctx context.Context, body map[string]interface{}, opID string) (map[string]interface{}, error) {
+	// Guard contra instalaciones concurrentes · si otra ya está corriendo,
+	// no lanzamos un segundo apt-get (evita el lock de dpkg → exit 100).
+	if !dockerInstallMu.TryLock() {
+		return nil, asHTTPError(409, "Docker installation already in progress. Please wait.")
+	}
+	defer dockerInstallMu.Unlock()
+
 	updateOpProgressSafe(ctx, opID, 0, "Checking environment")
 
 	// ── 0. APP-063 · proteger data Docker pre-existente ──
@@ -338,6 +358,15 @@ func runDockerInstallWork(ctx context.Context, body map[string]interface{}, opID
 			return nil, asHTTPError(500, "Docker install script is invalid or empty")
 		}
 		defer os.Remove(scriptPath)
+
+		// Esperar a que apt/dpkg estén libres antes de instalar. Ubuntu lanza
+		// actualizaciones automáticas (unattended-upgrades) que toman el lock
+		// de dpkg al arrancar el sistema · si el script de Docker corre a la
+		// vez, falla con "Could not get lock" (exit 100). Esperamos hasta 120s.
+		if !waitForAptLock(installCtx, 120*time.Second) {
+			return nil, asHTTPError(500, "apt/dpkg is busy (another package operation is running). Please wait and retry.")
+		}
+
 		cmd := exec.CommandContext(installCtx, "bash", scriptPath)
 		cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
 		installOut, err := cmd.CombinedOutput()
@@ -515,4 +544,57 @@ func dockerUninstallConfig(w http.ResponseWriter, r *http.Request) {
 	conf["installedAt"] = nil
 	saveDockerConfigGo(conf)
 	jsonOk(w, map[string]interface{}{"ok": true})
+}
+
+// waitForAptLock espera hasta que el lock de dpkg/apt esté libre, o hasta que
+// se agote el timeout. Devuelve true si el lock quedó libre, false si expiró.
+//
+// BUG FIX (12/06/2026): en una instalación NimOS desde cero, Ubuntu suele estar
+// corriendo unattended-upgrades (actualizaciones automáticas) que toman el lock
+// de dpkg. Si el script de Docker corre a la vez, apt falla con "Could not get
+// lock /var/lib/dpkg/lock-frontend" (exit 100). Esperar a que se libere evita
+// ese fallo · el caso típico es que las actualizaciones de arranque terminen
+// en segundos o pocos minutos.
+//
+// Comprueba el lock con `fuser` sobre los archivos de lock de dpkg/apt. Si
+// fuser no está disponible, asume libre (no bloquea la instalación).
+func waitForAptLock(ctx context.Context, timeout time.Duration) bool {
+	lockFiles := []string{
+		"/var/lib/dpkg/lock-frontend",
+		"/var/lib/dpkg/lock",
+		"/var/lib/apt/lists/lock",
+	}
+
+	deadline := time.Now().Add(timeout)
+	for {
+		if aptLockFree(lockFiles) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			log.Println("waitForAptLock: timeout esperando el lock de apt/dpkg")
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(3 * time.Second):
+			log.Println("waitForAptLock: apt/dpkg ocupado, esperando...")
+		}
+	}
+}
+
+// aptLockFree indica si NINGÚN proceso tiene abiertos los archivos de lock.
+// Usa `fuser <file>` · exit 0 significa que algún proceso lo tiene (ocupado),
+// exit !=0 significa libre. Si fuser no existe, asume libre.
+func aptLockFree(lockFiles []string) bool {
+	for _, lf := range lockFiles {
+		if _, err := os.Stat(lf); err != nil {
+			continue // el lock file no existe · nada que comprobar
+		}
+		// fuser devuelve 0 si hay procesos usando el archivo
+		if _, busy := runSafe("fuser", lf); busy {
+			return false // algún proceso tiene el lock
+		}
+	}
+	return true
 }
