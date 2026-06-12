@@ -1425,6 +1425,58 @@ func handleSystemInfo(w http.ResponseWriter) {
 // GET /api/disks/smart?disk=sda
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// readSmartWithFallback intenta leer SMART probando device-types en orden:
+// primero el default (auto-detección de smartctl), luego "-d sat" (capa SAT,
+// el caso de muchas controladoras USB/SATA), luego "-d ata". Devuelve el primer
+// output que contenga una tabla SMART real, el device-type que funcionó (""
+// para el default), y ok=false si ninguno sirvió.
+//
+// El orden importa: el default cubre la mayoría de discos directos; sat cubre
+// los que están detrás de traducción SCSI-ATA; ata es el último recurso para
+// discos PATA/legacy.
+func readSmartWithFallback(safe string) (out string, usedDevType string, ok bool) {
+	dev := "/dev/" + safe
+
+	attempts := []struct {
+		devType string
+		args    []string
+	}{
+		{"", []string{"-i", "-A", "-H", dev}},
+		{"sat", []string{"-d", "sat", "-i", "-A", "-H", dev}},
+		{"ata", []string{"-d", "ata", "-i", "-A", "-H", dev}},
+	}
+
+	for _, a := range attempts {
+		o, runOk := runSafe("smartctl", a.args...)
+		if runOk && smartOutputIsUsable(o) {
+			return o, a.devType, true
+		}
+	}
+	return "", "", false
+}
+
+// smartOutputIsUsable indica si la salida de smartctl contiene datos SMART
+// reales (la tabla de atributos o el veredicto de salud), y NO solo el aviso de
+// "prueba con -d sat". Función pura para test.
+func smartOutputIsUsable(out string) bool {
+	if out == "" {
+		return false
+	}
+	// La pista de SAT no es una lectura útil: hay que seguir probando.
+	if strings.Contains(out, "behind a SAT layer") ||
+		strings.Contains(out, "Try an additional") {
+		// Solo descartamos si ADEMÁS no hay tabla real (a veces el aviso sale
+		// junto a datos parciales; exigimos señal positiva abajo).
+		if !strings.Contains(out, "ATTRIBUTE_NAME") &&
+			!strings.Contains(out, "self-assessment test result") {
+			return false
+		}
+	}
+	// Señal positiva: o la tabla de atributos, o el veredicto de salud.
+	return strings.Contains(out, "ATTRIBUTE_NAME") ||
+		strings.Contains(out, "self-assessment test result")
+}
+
 func getDiskSmart(diskName string) map[string]interface{} {
 	// Sanitize — only allow alphanumeric
 	safe := regexp.MustCompile(`[^a-zA-Z0-9]`).ReplaceAllString(diskName, "")
@@ -1454,11 +1506,22 @@ func getDiskSmart(diskName string) map[string]interface{} {
 		return result
 	}
 
-	// Get SMART info
-	out, ok := runSafe("smartctl", "-i", "-A", "-H", "/dev/"+safe)
+	// Get SMART info. Algunos discos cuelgan de una capa SAT (SCSI-ATA
+	// Translation): controladoras USB/SATA que no exponen el dispositivo ATA
+	// directamente. smartctl interactivo auto-detecta y reintenta solo, pero
+	// bajo systemd (sin TTY, entorno restringido) esa auto-detección falla y
+	// devuelve "Probable ATA device behind a SAT layer / Try -d sat". El
+	// resultado era que el monitor no podía leer NINGÚN dato y el disco se
+	// marcaba sano por defecto. Probamos device-types en orden hasta que uno
+	// devuelva una tabla SMART real.
+	out, usedDevType, ok := readSmartWithFallback(safe)
 	if !ok || out == "" {
 		result["error"] = "Could not read SMART data"
+		logMsg("SMART: no se pudo leer /dev/%s con ningún device-type (auto/sat/ata)", safe)
 		return result
+	}
+	if usedDevType != "" {
+		result["devType"] = usedDevType
 	}
 
 	result["smartSupported"] = true
@@ -1703,6 +1766,15 @@ func checkAllDisksSmart() {
 		smartResult := getDiskSmart(diskName)
 		currentStatus, _ := smartResult["status"].(string)
 		if currentStatus == "" {
+			// El disco no devolvió un status legible. ANTES esto se tragaba en
+			// silencio y la cache quedaba vacía → el disco se mostraba sano por
+			// defecto. Ahora lo logueamos: un disco que no se puede leer es
+			// información, no un no-evento.
+			reason, _ := smartResult["error"].(string)
+			if reason == "" {
+				reason = "status vacío"
+			}
+			logMsg("SMART: /dev/%s sin lectura utilizable (%s) — no se actualiza su estado", diskName, reason)
 			continue
 		}
 

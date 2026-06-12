@@ -216,6 +216,22 @@ func parseDetectedDisks(lsblkRaw, rootDisk string, poolDisks map[string]bool) Di
 		disk.HasExistingData = diskHasExistingData(len(partitions), diskFstype)
 		disk.Fstype = normalizeFstype(diskFstype)
 
+		// SMART desde cache (lightweight — sin llamada a smartctl). Se lee para
+		// TODOS los discos, no solo los eligible: un disco PROVISIONED (en un
+		// pool) es justamente el que más importa monitorizar. Antes esto vivía
+		// tras los `continue` de clasificación, así que provisioned/usb/nvme
+		// salían SIN estado SMART y se mostraban sanos por defecto — el disco
+		// dañado dentro de un pool era invisible. (bug de la auditoría)
+		smartStatus, smartDetails := getSmartDetailsForDisk(devName)
+		disk.SmartStatus = smartStatus
+		disk.Smart = map[string]interface{}{
+			"temperature":        smartDetails.Temperature,
+			"powerOnHours":       smartDetails.PowerOnHours,
+			"pendingSectors":     smartDetails.PendingSectors,
+			"uncorrectable":      smartDetails.Uncorrectable,
+			"reallocatedSectors": smartDetails.ReallocatedSectors,
+		}
+
 		// Classify (orden EXACTO del original)
 		if devName == rootDisk {
 			continue // boot disk — never show
@@ -243,18 +259,6 @@ func parseDetectedDisks(lsblkRaw, rootDisk string, poolDisks map[string]bool) Di
 
 		// Everything else is eligible
 		disk.Classification = DiskClassEligible
-
-		// SMART desde cache (lightweight — sin llamada a smartctl)
-		smartStatus, smartDetails := getSmartDetailsForDisk(devName)
-		disk.SmartStatus = smartStatus
-		disk.Smart = map[string]interface{}{
-			"temperature":        smartDetails.Temperature,
-			"powerOnHours":       smartDetails.PowerOnHours,
-			"pendingSectors":     smartDetails.PendingSectors,
-			"uncorrectable":      smartDetails.Uncorrectable,
-			"reallocatedSectors": smartDetails.ReallocatedSectors,
-		}
-
 		result.Eligible = append(result.Eligible, disk)
 	}
 
