@@ -89,9 +89,24 @@
 
   // ─── Derived ───
   $: diskCount = selectedDisks.size;
-  $: layout = computeLayout(fsType, diskCount);
+  $: layoutOptions = computeLayoutOptions(fsType, diskCount);
+  // layout = la opción elegida. Si solo hay una, es esa; si hay varias (3
+  // discos: raid1 vs raid1c3), la que el usuario seleccionó (chosenLayoutId).
+  $: layout = pickLayout(layoutOptions, chosenLayoutId);
   $: selectedDisksArr = eligibleDisks.filter(d => selectedDisks.has(d.path || `/dev/${d.name}`));
   $: usableCapacity = computeUsableCapacity(fsType, layout, selectedDisksArr);
+
+  // Cuando cambia el número de discos, resetear la elección al default de ese
+  // conjunto de opciones (el primero marcado como recommended), para no
+  // arrastrar una elección que ya no aplica.
+  let chosenLayoutId = '';
+  $: resetChosenOnDiskChange(layoutOptions);
+  function resetChosenOnDiskChange(opts) {
+    if (!opts.some(o => o.id === chosenLayoutId)) {
+      const rec = opts.find(o => o.recommended) || opts[0];
+      chosenLayoutId = rec ? rec.id : '';
+    }
+  }
 
   $: {
     nameError = '';
@@ -117,12 +132,39 @@
   $: nextLabel = step === 4 ? (processing ? 'Creando...' : 'Crear pool') : 'Continuar →';
   $: nextVariant = step === 4 ? 'primary' : 'primary';
 
-  function computeLayout(fs, n) {
-    if (n < 1) return { id: '', label: '—', redundancy: 'none', desc: '' };
-    if (n === 1) return { id: 'single', label: 'Single',       redundancy: 'none', desc: 'Sin redundancia · toda la capacidad disponible' };
-    if (n === 2) return { id: 'raid1',  label: 'RAID1',        redundancy: 'n-1',  desc: 'Duplica cada bloque · capacidad = total / 2' };
-    if (n === 3) return { id: 'raid1',  label: 'RAID1',        redundancy: 'n-1',  desc: 'BTRFS distribuye copias entre discos · capacidad ~ total / 2' };
-    return                { id: 'raid10', label: 'RAID10',       redundancy: 'n-1',  desc: 'Stripe + mirror · capacidad = total / 2 · mejor rendimiento' };
+  // computeLayoutOptions devuelve la lista de layouts ofrecidos para N discos.
+  // En la mayoría de casos hay una sola opción sensata. Con 3 discos hay una
+  // decisión real de redundancia (raid1 = más capacidad / 1 fallo, raid1c3 =
+  // más seguridad / 2 fallos) y se ofrecen ambas para que el usuario elija.
+  function computeLayoutOptions(fs, n) {
+    if (n < 1) return [];
+    if (n === 1) return [
+      { id: 'single', label: 'Single', tolerates: 0, recommended: true,
+        desc: 'Sin redundancia · toda la capacidad disponible' },
+    ];
+    if (n === 2) return [
+      { id: 'raid1', label: 'RAID1', tolerates: 1, recommended: true,
+        desc: 'Cada bloque se guarda en 2 discos · si falla 1, no pierdes datos · capacidad = total / 2' },
+    ];
+    if (n === 3) return [
+      { id: 'raid1', label: 'RAID1', tolerates: 1, recommended: true,
+        desc: 'Cada bloque en 2 copias repartidas entre los 3 discos · tolera el fallo de 1 disco · más capacidad (≈ total / 2)' },
+      { id: 'raid1c3', label: 'RAID1C3', tolerates: 2, recommended: false,
+        desc: 'Cada bloque en 3 copias, una por disco · tolera el fallo de 2 discos · más seguridad (capacidad = total / 3)' },
+    ];
+    return [
+      { id: 'raid10', label: 'RAID10', tolerates: 1, recommended: true,
+        desc: 'Stripe + mirror · tolera el fallo de 1 disco · mejor rendimiento · capacidad = total / 2' },
+    ];
+  }
+
+  // pickLayout resuelve el layout efectivo: la opción elegida por id, o la
+  // recomendada/primera como fallback seguro.
+  function pickLayout(opts, chosenId) {
+    if (!opts || opts.length === 0) return { id: '', label: '—', tolerates: 0, desc: '' };
+    return opts.find(o => o.id === chosenId)
+        || opts.find(o => o.recommended)
+        || opts[0];
   }
 
   function computeUsableCapacity(fs, lay, disks) {
@@ -130,9 +172,10 @@
     const sizes = disks.map(d => d.size || 0).filter(s => s > 0);
     if (sizes.length === 0) return 0;
     const total = sizes.reduce((a, b) => a + b, 0);
-    if (lay.id === 'single') return total;
-    if (lay.id === 'raid1')  return Math.floor(total / 2);
-    if (lay.id === 'raid10') return Math.floor(total / 2);
+    if (lay.id === 'single')  return total;
+    if (lay.id === 'raid1')   return Math.floor(total / 2);
+    if (lay.id === 'raid1c3') return Math.floor(total / 3); // 3 copias
+    if (lay.id === 'raid10')  return Math.floor(total / 2);
     return total;
   }
 
@@ -377,17 +420,46 @@
     {/if}
 
     {#if diskCount > 0}
-      <div class="layout-preview">
-        <div class="lp-head">
-          <span class="lp-label">Layout recomendado</span>
-          <span class="lp-name">{layout.label}</span>
+      {#if layoutOptions.length > 1}
+        <!-- Varias opciones (3 discos): el usuario elige redundancia vs capacidad -->
+        <div class="layout-choices">
+          <span class="lc-title">Elige el nivel de protección</span>
+          {#each layoutOptions as opt}
+            <button
+              type="button"
+              class="lc-option"
+              class:selected={layout.id === opt.id}
+              on:click={() => chosenLayoutId = opt.id}
+            >
+              <div class="lc-radio" class:on={layout.id === opt.id}></div>
+              <div class="lc-body">
+                <div class="lc-head">
+                  <span class="lc-name">{opt.label}</span>
+                  <span class="lc-tol">tolera {opt.tolerates} {opt.tolerates === 1 ? 'fallo' : 'fallos'}</span>
+                  {#if opt.recommended}<span class="lc-rec">recomendado</span>{/if}
+                </div>
+                <div class="lc-desc">{opt.desc}</div>
+                <div class="lc-cap">
+                  Capacidad útil ≈ <b>{fmtBytes(computeUsableCapacity(fsType, opt, selectedDisksArr))}</b>
+                </div>
+              </div>
+            </button>
+          {/each}
         </div>
-        <div class="lp-desc">{layout.desc}</div>
-        <div class="lp-cap">
-          <span class="lp-cap-label">Capacidad útil estimada</span>
-          <span class="lp-cap-val">{fmtBytes(usableCapacity)}</span>
+      {:else}
+        <!-- Una sola opción sensata: preview informativo de siempre -->
+        <div class="layout-preview">
+          <div class="lp-head">
+            <span class="lp-label">Layout recomendado</span>
+            <span class="lp-name">{layout.label}</span>
+          </div>
+          <div class="lp-desc">{layout.desc}</div>
+          <div class="lp-cap">
+            <span class="lp-cap-label">Capacidad útil estimada</span>
+            <span class="lp-cap-val">{fmtBytes(usableCapacity)}</span>
+          </div>
         </div>
-      </div>
+      {/if}
     {/if}
   {/if}
 
@@ -934,6 +1006,108 @@
     font-weight: 700;
     font-family: var(--font-mono);
     margin-left: auto;
+  }
+
+  /* ─── Elección de layout (3 discos: raid1 vs raid1c3) ─── */
+  .layout-choices {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .lc-title {
+    font-size: 9px;
+    color: var(--ink-trace);
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    font-family: var(--font-mono);
+    font-weight: 600;
+    margin-bottom: 2px;
+  }
+  .lc-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    width: 100%;
+    text-align: left;
+    padding: 12px 14px;
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: border-color 0.12s ease, background 0.12s ease;
+  }
+  .lc-option:hover {
+    border-color: var(--ink-mute);
+  }
+  .lc-option.selected {
+    border-color: var(--signal);
+    border-left: 3px solid var(--signal);
+    background: var(--bg-card-hl, var(--bg-card));
+  }
+  .lc-radio {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 2px solid var(--ink-mute);
+    flex-shrink: 0;
+    margin-top: 2px;
+    transition: border-color 0.12s ease;
+  }
+  .lc-radio.on {
+    border-color: var(--signal);
+    background:
+      radial-gradient(circle at center, var(--signal) 0 4px, transparent 5px);
+  }
+  .lc-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+  }
+  .lc-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .lc-name {
+    font-size: 14px;
+    color: var(--signal);
+    font-weight: 600;
+    font-family: var(--font-mono);
+    letter-spacing: 0.5px;
+  }
+  .lc-tol {
+    font-size: 10px;
+    color: var(--ink-dim);
+    font-family: var(--font-mono);
+    letter-spacing: 0.3px;
+  }
+  .lc-rec {
+    font-size: 8px;
+    color: var(--signal);
+    border: 1px solid var(--signal);
+    border-radius: 3px;
+    padding: 1px 5px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    font-family: var(--font-mono);
+  }
+  .lc-desc {
+    font-size: 11px;
+    color: var(--ink-dim);
+    line-height: 1.5;
+    font-family: var(--font-sans);
+  }
+  .lc-cap {
+    font-size: 11px;
+    color: var(--ink-mute);
+    font-family: var(--font-mono);
+    margin-top: 2px;
+  }
+  .lc-cap b {
+    color: var(--ink);
+    font-weight: 700;
   }
 
   /* ─── Paso 3 · Input nombre ─── */
