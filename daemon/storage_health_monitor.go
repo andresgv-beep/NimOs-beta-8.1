@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -162,15 +163,23 @@ func notifyPoolHealth(p *Pool, prev, current string, health PoolHealth) {
 }
 
 // checkPoolUnallocated lee el espacio sin asignar por device y alerta cuando
-// cae por debajo del umbral crítico — precursor del ENOSPC de metadata. (P1)
+// el unallocated EFECTIVO (según el perfil del pool) cae por debajo del umbral
+// crítico — precursor del ENOSPC de metadata. (P1)
+//
+// El unallocated efectivo NO es el mínimo por device: un chunk nuevo de metadata
+// en RAID1/RAID1C3/RAID10 necesita espacio en N devices SIMULTÁNEAMENTE, así que
+// la métrica correcta depende del perfil (ver effectiveUnallocated). Usar el
+// mínimo daba falsos positivos en arrays asimétricos (p. ej. RAID1 de 8TB+1TB:
+// el device pequeño marca el mínimo pero aún hay margen real para metadata).
 func checkPoolUnallocated(p *Pool) {
-	minUnalloc, ok := readMinUnallocated(p.MountPoint)
+	byDev, ok := readUnallocatedByDevice(p.MountPoint)
 	if !ok {
 		return // no se pudo leer; no inventamos estado
 	}
+	effective := effectiveUnallocated(p.Profile, byDev)
 
 	state := "ok"
-	if minUnalloc < unallocatedCriticalBytes {
+	if effective < unallocatedCriticalBytes {
 		state = "critical"
 	}
 
@@ -184,60 +193,112 @@ func checkPoolUnallocated(p *Pool) {
 	if state == "critical" && (!existed || prev != "critical") {
 		addNotification("error", "system",
 			fmt.Sprintf("Pool %s: espacio sin asignar crítico", p.Name),
-			fmt.Sprintf("%s: solo quedan %s sin asignar. Riesgo de bloqueo en solo-lectura (ENOSPC de metadata). Ejecuta un balance (btrfs balance -dusage=N) para recuperar chunks.",
-				p.Name, humanBytes(minUnalloc)))
-		logMsg("HEALTH ENOSPC: pool %s unallocated crítico (%d bytes)", p.Name, minUnalloc)
+			fmt.Sprintf("%s: solo quedan %s de margen efectivo (perfil %s). Riesgo de bloqueo en solo-lectura (ENOSPC de metadata). Ejecuta un balance (btrfs balance -dusage=N) para recuperar chunks.",
+				p.Name, humanBytes(effective), p.Profile))
+		logMsg("HEALTH ENOSPC: pool %s unallocated efectivo crítico (%d bytes, perfil %s)", p.Name, effective, p.Profile)
 	} else if state == "ok" && existed && prev == "critical" {
 		addNotification("success", "system",
 			fmt.Sprintf("Pool %s: espacio sin asignar recuperado", p.Name),
-			fmt.Sprintf("%s vuelve a tener margen de espacio sin asignar (%s).", p.Name, humanBytes(minUnalloc)))
-		logMsg("HEALTH ENOSPC OK: pool %s unallocated recuperado (%d bytes)", p.Name, minUnalloc)
+			fmt.Sprintf("%s vuelve a tener margen de espacio sin asignar (%s efectivo).", p.Name, humanBytes(effective)))
+		logMsg("HEALTH ENOSPC OK: pool %s unallocated efectivo recuperado (%d bytes)", p.Name, effective)
 	}
 }
 
-// readMinUnallocated devuelve el MENOR "Unallocated" entre los devices del pool,
-// parseando `btrfs filesystem usage -b <mp>`. El menor es el que primero
-// provocará ENOSPC de metadata. Devuelve (bytes, true) si pudo leer al menos un
-// device; (0, false) si el comando falló o no había líneas Unallocated.
-func readMinUnallocated(mountPoint string) (int64, bool) {
+// effectiveUnallocated calcula el espacio sin asignar realmente disponible para
+// un chunk NUEVO de metadata, según el perfil del pool. Un chunk de metadata con
+// N copias necesita unallocated en N devices a la vez, así que el margen real es
+// el N-ésimo mayor unallocated (no el total ni el mínimo).
+//
+//	single  → min (conservador: garantiza el peor caso, evita falsos negativos)
+//	raid1   → 2º mayor   (2 copias)
+//	raid1c3 → 3er mayor  (3 copias)
+//	raid10  → menor de los 4 mayores (stripe sobre mirrors, mínimo 4 devices)
+//
+// Si hay menos devices de los que el perfil exige (estado degradado), devuelve
+// 0: no se puede asignar un chunk redundante nuevo, que es la verdad.
+func effectiveUnallocated(profile Profile, byDev map[string]int64) int64 {
+	vals := make([]int64, 0, len(byDev))
+	for _, v := range byDev {
+		vals = append(vals, v)
+	}
+	if len(vals) == 0 {
+		return 0
+	}
+	// Orden descendente: vals[0] es el mayor unallocated.
+	sort.Slice(vals, func(i, j int) bool { return vals[i] > vals[j] })
+
+	// nth devuelve el k-ésimo mayor (1-indexed), o 0 si no hay tantos devices.
+	nth := func(k int) int64 {
+		if len(vals) < k {
+			return 0
+		}
+		return vals[k-1]
+	}
+
+	switch profile {
+	case ProfileRaid1:
+		return nth(2)
+	case ProfileRaid1c3:
+		return nth(3)
+	case ProfileRaid10:
+		// raid10 necesita ≥4 devices; el limitante es el menor de los 4 mayores.
+		return nth(4)
+	case ProfileSingle:
+		fallthrough
+	default:
+		// single (y fallback seguro): el mínimo entre devices.
+		min := vals[0]
+		for _, v := range vals {
+			if v < min {
+				min = v
+			}
+		}
+		return min
+	}
+}
+
+// readUnallocatedByDevice ejecuta `btrfs filesystem usage -b <mp>` y devuelve el
+// unallocated por device. Devuelve (map, true) si pudo leer al menos un device;
+// (nil, false) si el comando falló o no había líneas Unallocated.
+func readUnallocatedByDevice(mountPoint string) (map[string]int64, bool) {
 	out, ok := runSafe("btrfs", "filesystem", "usage", "-b", mountPoint)
 	if !ok {
-		return 0, false
+		return nil, false
 	}
-	return parseMinUnallocated(out)
+	return parseUnallocatedByDevice(out)
 }
 
-// parseMinUnallocated extrae el menor valor de las líneas "Unallocated:" del
-// output de `btrfs filesystem usage -b`. Separado para poder testearlo sin
-// ejecutar btrfs.
-//
-// En ese output, la sección final lista por device:
+// parseUnallocatedByDevice extrae el unallocated por device del output de
+// `btrfs filesystem usage -b`. La sección final lista, por device, una cabecera
+// "/dev/sdX, ID: N" seguida de líneas indentadas, entre ellas "Unallocated:".
+// Separado para testearlo sin ejecutar btrfs.
 //
 //	/dev/sda, ID: 1
 //	   Device size:            120034123776
-//	   Device slack:                      0
-//	   Data,single:              5368709120
-//	   Metadata,single:          1073741824
-//	   System,single:              33554432
 //	   Unallocated:            113558118400
-//
-// Hay una línea "Unallocated:" por device. Tomamos el mínimo.
-func parseMinUnallocated(usageOutput string) (int64, bool) {
-	var min int64 = -1
+//	/dev/sdb, ID: 2
+//	   Device size:            120034123776
+//	   Unallocated:               536870912
+func parseUnallocatedByDevice(usageOutput string) (map[string]int64, bool) {
+	byDev := map[string]int64{}
+	currentDev := ""
 	for _, line := range strings.Split(usageOutput, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "Unallocated:") {
+		trimmed := strings.TrimSpace(line)
+		// Cabecera de device: empieza por "/dev/" y contiene ", ID:".
+		if strings.HasPrefix(trimmed, "/dev/") && strings.Contains(trimmed, "ID:") {
+			// "/dev/sda, ID: 1" → "/dev/sda"
+			currentDev = strings.TrimSpace(strings.SplitN(trimmed, ",", 2)[0])
 			continue
 		}
-		v := parseTrailingInt(line)
-		if min < 0 || v < min {
-			min = v
+		if strings.HasPrefix(trimmed, "Unallocated:") && currentDev != "" {
+			byDev[currentDev] = parseTrailingInt(trimmed)
+			currentDev = ""
 		}
 	}
-	if min < 0 {
-		return 0, false
+	if len(byDev) == 0 {
+		return nil, false
 	}
-	return min, true
+	return byDev, true
 }
 
 // humanBytes formatea bytes de forma legible para los mensajes de notificación.

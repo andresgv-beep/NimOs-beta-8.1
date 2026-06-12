@@ -2,12 +2,12 @@ package main
 
 import "testing"
 
-// ─── parseMinUnallocated — P1: detección de ENOSPC de metadata ────────────────
+// ─── parseUnallocatedByDevice — P1: lectura por device ────────────────────────
 //
-// El output de `btrfs filesystem usage -b` lista "Unallocated:" una vez por
-// device. Tomamos el MENOR, que es el que primero provoca read-only.
+// El output de `btrfs filesystem usage -b` lista, por device, una cabecera
+// "/dev/sdX, ID: N" seguida de líneas indentadas incluyendo "Unallocated:".
 
-func TestParseMinUnallocated_SingleDevice(t *testing.T) {
+func TestParseUnallocatedByDevice_SingleDevice(t *testing.T) {
 	out := `Overall:
     Device size:                  120034123776
     Device allocated:               6475739136
@@ -21,17 +21,16 @@ func TestParseMinUnallocated_SingleDevice(t *testing.T) {
    System,single:              33554432
    Unallocated:            113558118400
 `
-	got, ok := parseMinUnallocated(out)
+	byDev, ok := parseUnallocatedByDevice(out)
 	if !ok {
 		t.Fatal("debería haber parseado al menos un device")
 	}
-	if got != 113558118400 {
-		t.Errorf("unallocated: got %d, want 113558118400", got)
+	if byDev["/dev/sda"] != 113558118400 {
+		t.Errorf("sda: got %d, want 113558118400", byDev["/dev/sda"])
 	}
 }
 
-func TestParseMinUnallocated_TakesMinimumAcrossDevices(t *testing.T) {
-	// raid1: dos devices con unallocated distinto. El mínimo es el que importa.
+func TestParseUnallocatedByDevice_TwoDevices(t *testing.T) {
 	out := `/dev/sda, ID: 1
    Device size:            1000204886016
    Unallocated:               2147483648
@@ -40,37 +39,120 @@ func TestParseMinUnallocated_TakesMinimumAcrossDevices(t *testing.T) {
    Device size:            1000204886016
    Unallocated:                536870912
 `
-	got, ok := parseMinUnallocated(out)
+	byDev, ok := parseUnallocatedByDevice(out)
 	if !ok {
 		t.Fatal("debería haber parseado")
 	}
-	if got != 536870912 {
-		t.Errorf("debe tomar el mínimo entre devices: got %d, want 536870912", got)
+	if byDev["/dev/sda"] != 2147483648 {
+		t.Errorf("sda: got %d, want 2147483648", byDev["/dev/sda"])
+	}
+	if byDev["/dev/sdb"] != 536870912 {
+		t.Errorf("sdb: got %d, want 536870912", byDev["/dev/sdb"])
 	}
 }
 
-func TestParseMinUnallocated_NoUnallocatedLines(t *testing.T) {
+func TestParseUnallocatedByDevice_NoLines(t *testing.T) {
 	out := "Overall:\n    Device size: 120034123776\n    Used: 5368709120\n"
-	_, ok := parseMinUnallocated(out)
-	if ok {
-		t.Error("sin líneas Unallocated debe devolver ok=false (no inventar estado)")
+	if _, ok := parseUnallocatedByDevice(out); ok {
+		t.Error("sin líneas Unallocated debe devolver ok=false")
 	}
 }
 
-func TestParseMinUnallocated_Empty(t *testing.T) {
-	if _, ok := parseMinUnallocated(""); ok {
+func TestParseUnallocatedByDevice_Empty(t *testing.T) {
+	if _, ok := parseUnallocatedByDevice(""); ok {
 		t.Error("output vacío debe devolver ok=false")
 	}
 }
 
-// Verifica el umbral: un device justo por debajo de 1 GiB es crítico.
-func TestUnallocatedThreshold(t *testing.T) {
-	below := unallocatedCriticalBytes - 1
-	if below >= unallocatedCriticalBytes {
-		t.Fatal("setup inválido")
+// ─── effectiveUnallocated — el fix por perfil (corrige falsos positivos) ──────
+//
+// Un chunk de metadata con N copias necesita unallocated en N devices a la vez.
+// El margen real es el N-ésimo mayor, NO el mínimo.
+
+func TestEffectiveUnallocated_Single(t *testing.T) {
+	// single → mínimo (conservador).
+	byDev := map[string]int64{"/dev/sda": 100, "/dev/sdb": 30, "/dev/sdc": 70}
+	if got := effectiveUnallocated(ProfileSingle, byDev); got != 30 {
+		t.Errorf("single: got %d, want 30 (min)", got)
 	}
-	// below es crítico; un valor >= umbral no lo es.
-	if !(below < unallocatedCriticalBytes) {
+}
+
+// EL CASO QUE MOTIVA EL FIX: RAID1 asimétrico 8TB+1TB. El mínimo (device de 1TB
+// casi lleno) daría falso positivo; el efectivo (2º mayor) ve el margen real.
+func TestEffectiveUnallocated_Raid1Asymmetric(t *testing.T) {
+	// sda (8TB) con 4 GiB libres, sdb (1TB) con 256 MiB libres.
+	byDev := map[string]int64{
+		"/dev/sda": 4 << 30,   // 4 GiB
+		"/dev/sdb": 256 << 20, // 256 MiB
+	}
+	// raid1 necesita 2 devices → 2º mayor = 256 MiB. Aquí el efectivo SÍ es
+	// bajo porque con solo 2 devices el pequeño limita de verdad (un chunk
+	// raid1 necesita ambos). El min y el 2º mayor coinciden con 2 devices.
+	if got := effectiveUnallocated(ProfileRaid1, byDev); got != 256<<20 {
+		t.Errorf("raid1 2 devices: got %d, want %d", got, 256<<20)
+	}
+}
+
+// RAID1 con 3 devices asimétricos: aquí el fix se nota. El mínimo daría el
+// device pequeño, pero raid1 (2 copias) puede colocar el chunk en los DOS
+// grandes, así que el margen real es el 2º mayor, no el mínimo.
+func TestEffectiveUnallocated_Raid1ThreeDevices(t *testing.T) {
+	byDev := map[string]int64{
+		"/dev/sda": 8 << 30,   // 8 GiB
+		"/dev/sdb": 6 << 30,   // 6 GiB
+		"/dev/sdc": 128 << 20, // 128 MiB (casi lleno)
+	}
+	// min = 128 MiB → falso positivo crítico.
+	// efectivo raid1 = 2º mayor = 6 GiB → correcto, hay margen de sobra.
+	if got := effectiveUnallocated(ProfileRaid1, byDev); got != 6<<30 {
+		t.Errorf("raid1 3 devices: got %d, want %d (2º mayor, no el min)", got, 6<<30)
+	}
+}
+
+func TestEffectiveUnallocated_Raid1c3(t *testing.T) {
+	// raid1c3 (3 copias) → 3er mayor.
+	byDev := map[string]int64{
+		"/dev/sda": 8 << 30,
+		"/dev/sdb": 6 << 30,
+		"/dev/sdc": 4 << 30,
+		"/dev/sdd": 1 << 30,
+	}
+	if got := effectiveUnallocated(ProfileRaid1c3, byDev); got != 4<<30 {
+		t.Errorf("raid1c3: got %d, want %d (3er mayor)", got, 4<<30)
+	}
+}
+
+func TestEffectiveUnallocated_Raid10(t *testing.T) {
+	// raid10 → menor de los 4 mayores (4º mayor).
+	byDev := map[string]int64{
+		"/dev/sda": 8 << 30,
+		"/dev/sdb": 6 << 30,
+		"/dev/sdc": 4 << 30,
+		"/dev/sdd": 2 << 30,
+	}
+	if got := effectiveUnallocated(ProfileRaid10, byDev); got != 2<<30 {
+		t.Errorf("raid10: got %d, want %d (4º mayor)", got, 2<<30)
+	}
+}
+
+func TestEffectiveUnallocated_DegradedNotEnoughDevices(t *testing.T) {
+	// raid1 con un solo device disponible (estado degradado): no se puede
+	// asignar un chunk redundante → 0.
+	byDev := map[string]int64{"/dev/sda": 8 << 30}
+	if got := effectiveUnallocated(ProfileRaid1, byDev); got != 0 {
+		t.Errorf("raid1 con 1 device: got %d, want 0 (no cabe chunk redundante)", got)
+	}
+}
+
+func TestEffectiveUnallocated_Empty(t *testing.T) {
+	if got := effectiveUnallocated(ProfileRaid1, map[string]int64{}); got != 0 {
+		t.Errorf("sin devices: got %d, want 0", got)
+	}
+}
+
+// Verifica el umbral crítico.
+func TestUnallocatedThreshold(t *testing.T) {
+	if !((unallocatedCriticalBytes - 1) < unallocatedCriticalBytes) {
 		t.Error("device por debajo del umbral debe considerarse crítico")
 	}
 	if (unallocatedCriticalBytes + 1) < unallocatedCriticalBytes {
