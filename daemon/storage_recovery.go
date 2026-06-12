@@ -29,6 +29,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -41,6 +42,7 @@ type RecoveryResult struct {
 	Completed    int // marcadas como completed (evidencia clara)
 	RolledBack   int // marcadas como failed con code rolled_back
 	Inconclusive int // marcadas como failed con code inconclusive
+	Readopted    int // P3: re-adoptadas (balance vivo), siguen in_progress con watcher
 }
 
 // RecoverPendingOperations examina operations huérfanas (in_progress o
@@ -82,6 +84,19 @@ func (s *StorageService) RecoverPendingOperations(ctx context.Context) (*Recover
 		logMsg("Recovery: op %s (%s) → %s (%s)",
 			op.ID, op.Type, outcome.NewStatus, stringOrEmpty(outcome.ErrorCode))
 
+		// P3: op re-adoptada (balance vivo). Se mantiene in_progress (el lock
+		// se conserva); lanzamos el watcher que la cerrará al terminar el
+		// balance. El UpdateOperationStatus de arriba ya la dejó in_progress.
+		if outcome.Readopted {
+			result.Readopted++
+			if op.PoolID != nil {
+				if pool, gErr := s.repo.GetPool(ctx, *op.PoolID); gErr == nil && pool != nil {
+					go s.watchReadoptedBalance(op.ID, pool.ID, pool.MountPoint)
+				}
+			}
+			continue
+		}
+
 		switch outcome.NewStatus {
 		case OpStatusCompleted:
 			result.Completed++
@@ -94,8 +109,8 @@ func (s *StorageService) RecoverPendingOperations(ctx context.Context) (*Recover
 		}
 	}
 
-	logMsg("Recovery complete: inspected=%d completed=%d rolled_back=%d inconclusive=%d",
-		result.Inspected, result.Completed, result.RolledBack, result.Inconclusive)
+	logMsg("Recovery complete: inspected=%d completed=%d rolled_back=%d inconclusive=%d readopted=%d",
+		result.Inspected, result.Completed, result.RolledBack, result.Inconclusive, result.Readopted)
 	return result, nil
 }
 
@@ -109,6 +124,11 @@ type recoveryOutcome struct {
 	NewStatus OperationStatus
 	ErrorMsg  *string
 	ErrorCode *string
+	// Readopted (P3): la op se re-adopta porque su balance BTRFS sigue VIVO en
+	// el kernel tras el restart del daemon. La op se mantiene in_progress (el
+	// lock se conserva) y el caller lanza un watcher que la cierra cuando el
+	// balance termine. NewStatus en este caso es OpStatusInProgress.
+	Readopted bool
 }
 
 // resolveOrphanOperation decide el desenlace de una operation huérfana
@@ -126,11 +146,17 @@ func (s *StorageService) resolveOrphanOperation(ctx context.Context, op *Operati
 	case OpTypeImportPool:
 		return s.resolveOrphanImportPool(ctx, op)
 	case OpTypeAddDevice, OpTypeRemoveDevice, OpTypeReplaceDevice, OpTypeConvertProfile:
-		// Estas ops mutan un pool existente. Sin un mecanismo más fino
-		// (que es Beta 9), no podemos saber si terminó o no. Inconclusive.
-		return inconclusiveOutcome(fmt.Sprintf(
-			"operation %s on pool %v interrupted by daemon restart",
-			op.Type, derefStr(op.PoolID)))
+		// Estas ops mutan un pool existente vía un balance BTRFS que corre
+		// en el kernel. Un balance SOBREVIVE al restart del daemon (la
+		// goroutine de NimOS muere, pero el kernel sigue balanceando).
+		//
+		// P3: antes de matar la op (inconclusive→failed, que liberaría el
+		// lock y permitiría otra op de layout sobre un pool aún balanceando),
+		// consultamos si el balance sigue VIVO. Si lo está, re-adoptamos la
+		// op (se mantiene in_progress, el lock se conserva) y el caller lanza
+		// un watcher que la cierra al terminar el balance. Si NO hay balance
+		// activo, el camino actual (inconclusive) es correcto.
+		return s.resolveOrphanLayoutOp(ctx, op)
 	default:
 		// Ops que pillamos por accidente (rename, set_compression, etc).
 		// Son síncronas y nunca deberían quedar huérfanas en realidad,
@@ -276,6 +302,100 @@ func (s *StorageService) resolveOrphanImportPool(ctx context.Context, op *Operat
 		"import_pool '%s' (uuid %s) rolled back: no quedó registrado en la BD. "+
 			"El filesystem sigue intacto en disco; reaparecerá como observado para reimportar.",
 		data.Name, uuid))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P3 · Recovery de ops de layout con balance vivo
+// ─────────────────────────────────────────────────────────────────────────────
+
+// readBalanceStatusFn es inyectable para tests (sin btrfs real). En producción
+// apunta a readBalanceStatus.
+var readBalanceStatusFn = readBalanceStatus
+
+// resolveOrphanLayoutOp decide el desenlace de una op de layout (add/remove/
+// replace device, convert profile) interrumpida por un restart del daemon.
+//
+// El balance BTRFS que ejecuta estas ops vive en el KERNEL, no en el daemon, así
+// que sobrevive al restart. Si sigue activo, re-adoptamos la op (in_progress, el
+// lock se mantiene) y lanzamos un watcher que la cierra al terminar. Si no hay
+// balance activo, no podemos saber si terminó limpio → inconclusive (camino
+// actual, seguro).
+func (s *StorageService) resolveOrphanLayoutOp(ctx context.Context, op *Operation) recoveryOutcome {
+	if op.PoolID == nil {
+		return inconclusiveOutcome(fmt.Sprintf(
+			"layout op %s sin pool_id, no se puede consultar balance", op.Type))
+	}
+
+	pool, err := s.repo.GetPool(ctx, *op.PoolID)
+	if err != nil || pool == nil || pool.MountPoint == "" {
+		// Sin pool/mountpoint no podemos consultar el balance → inconclusive.
+		return inconclusiveOutcome(fmt.Sprintf(
+			"layout op %s on pool %v interrupted by daemon restart (pool no resoluble)",
+			op.Type, derefStr(op.PoolID)))
+	}
+
+	st := readBalanceStatusFn(pool.MountPoint)
+	if !st.Active {
+		// No hay balance vivo. O terminó (y no lo cerramos), o nunca arrancó.
+		// No podemos distinguir con certeza → inconclusive (seguro). El
+		// self-heal del profile (Regla 16) corrige el estado en BD aparte.
+		return inconclusiveOutcome(fmt.Sprintf(
+			"layout op %s on pool %s interrupted by daemon restart (sin balance activo)",
+			op.Type, pool.Name))
+	}
+
+	// Balance VIVO: re-adoptar. Mantener in_progress conserva el lock (índice
+	// único parcial) y bloquea otra op de layout sobre este pool hasta que el
+	// balance termine y el watcher cierre esta op.
+	logMsg("Recovery: op %s (%s) en pool %s tiene balance ACTIVO (%.0f%%) → re-adoptando",
+		op.ID, op.Type, pool.Name, st.PercentDone)
+	return recoveryOutcome{NewStatus: OpStatusInProgress, Readopted: true}
+}
+
+// watchReadoptedBalance espera a que el balance BTRFS de un pool re-adoptado
+// termine y entonces cierra la op (completed) y reconcilia el profile real.
+// Corre en su propia goroutine con context.Background() (vive lo que viva el
+// daemon), replicando el patrón del convert_profile async.
+func (s *StorageService) watchReadoptedBalance(opID, poolID, mountPoint string) {
+	bgCtx := context.Background()
+	const pollInterval = 10 * time.Second
+	const maxWait = 24 * time.Hour // tope defensivo: un balance no dura días
+
+	deadline := time.Now().Add(maxWait)
+	for {
+		st := readBalanceStatusFn(mountPoint)
+		if !st.Active {
+			// Balance terminado. Cerrar la op y reconciliar el profile real.
+			// Reusa el self-heal de Regla 16: leer el profile real de BTRFS y
+			// persistirlo, luego marcar la op completed.
+			if pool, err := s.repo.GetPool(bgCtx, poolID); err == nil && pool != nil {
+				reconcilePoolProfileWithReality(pool)
+			}
+			err := s.runInTx(bgCtx, func(tx *sql.Tx) error {
+				return s.repo.UpdateOperationStatus(bgCtx, tx, opID, OpStatusCompleted, nil, nil)
+			})
+			if err != nil {
+				s.markOperationFailed(bgCtx, opID,
+					fmt.Sprintf("watcher no pudo cerrar op re-adoptada: %v", err),
+					ErrCodeInternal)
+				return
+			}
+			logMsg("Recovery: balance re-adoptado del pool %s terminó → op %s completed", poolID, opID)
+			return
+		}
+
+		if time.Now().After(deadline) {
+			// El balance lleva demasiado: algo va mal. Marcar failed para
+			// liberar el lock; el siguiente boot/reconcile lo reevaluará.
+			s.markOperationFailed(bgCtx, opID,
+				"balance re-adoptado excedió el tiempo máximo de espera (24h)",
+				ErrCodeRecoveryInconclusive)
+			logMsg("Recovery: watcher de balance del pool %s excedió 24h → op %s failed", poolID, opID)
+			return
+		}
+
+		time.Sleep(pollInterval)
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

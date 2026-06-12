@@ -19,8 +19,8 @@ const nimosPoolsDir = "/nimos/pools"
 
 // storageConfigFile · ruta del JSON storage.json de Beta 7.
 //
-// Usada solo por el migrador one-shot al boot (storage_migrate_json.go).
-// Tras el primer arranque, el path está renombrado a
+// Usada solo por el migrador one-shot al boot (migrateFromJSON en db.go,
+// invocado desde boot.go). Tras el primer arranque, el path está renombrado a
 // storage.json.migrated-<timestamp> y deja de existir como fuente de verdad.
 //
 // Variable (no const) para que los tests puedan apuntarla a un tempdir.

@@ -75,13 +75,18 @@ func runStorageStartupTasks(ctx context.Context) {
 		return
 	}
 
+	// 0. P5 — restaurar /etc/fstab si quedó corrupto tras un crash a media
+	//    escritura. Va PRIMERO: el remontaje de pools (reconcileMountState,
+	//    que corre poco después) depende de un fstab sano.
+	restoreFstabIfCorrupt()
+
 	// 1. Recovery de operations huérfanas
 	rec, err := storageService.RecoverPendingOperations(ctx)
 	if err != nil {
 		logMsg("Storage recovery: ERROR (continuing anyway): %v", err)
 	} else if rec.Inspected > 0 {
-		logMsg("Storage recovery: %d operations inspected (%d completed, %d rolled_back, %d inconclusive)",
-			rec.Inspected, rec.Completed, rec.RolledBack, rec.Inconclusive)
+		logMsg("Storage recovery: %d operations inspected (%d completed, %d rolled_back, %d inconclusive, %d readopted)",
+			rec.Inspected, rec.Completed, rec.RolledBack, rec.Inconclusive, rec.Readopted)
 	}
 
 	// 2. Boot reconciliation

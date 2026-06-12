@@ -70,6 +70,16 @@ type DeviceReconciler struct {
 	// para tests, permite al test esperar a que un ciclo termine sin
 	// time.Sleep.
 	onCycleComplete func()
+
+	// P2 — detección de reaparición de devices (missing→present).
+	// prevMissing guarda los serials que estaban missing al final del ciclo
+	// anterior. Cuando un serial sale de ese set (reaparece tras spin-up USB),
+	// se dispara onDeviceReappear para remontar el pool. nil hasta el primer
+	// ciclo (no disparamos en el arranque en frío).
+	prevMissing map[string]bool
+	// onDeviceReappear (si != nil) se llama cuando ≥1 device pasa de
+	// missing→present. Inyectable para tests; en producción remonta pools.
+	onDeviceReappear func(ctx context.Context, reappeared []*Device)
 }
 
 // NewDeviceReconciler crea el reconciler con sus dependencias.
@@ -171,11 +181,70 @@ func (r *DeviceReconciler) runCycle(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("scan: %w", err)
 	}
-	// Beta 8: la marca "missing" es proyectada (calculada al leer, no
-	// almacenada). MissingDevices() la calcula on the fly.
-	// Si en el futuro queremos eventos al cruzar el threshold, lo
-	// haríamos aquí comparando estado previo vs nuevo.
+
+	// P2 — detectar devices que pasan de missing→present (reaparición).
+	// El escenario real: corte de luz → la Pi bootea antes de que el HDD USB
+	// termine su spin-up → el mount inicial falla → el disco aparece 40s
+	// después. Aquí lo vemos reaparecer y remontamos el pool, en vez de
+	// dejarlo desmontado para siempre.
+	missing, mErr := r.MissingDevices(ctx)
+	if mErr != nil {
+		// No es fatal para el ciclo; el scan ya actualizó last_seen_at.
+		logMsg("DeviceReconciler: MissingDevices error: %v", mErr)
+		return nil
+	}
+
+	currMissing := make(map[string]bool, len(missing))
+	for _, d := range missing {
+		if d.Serial != "" {
+			currMissing[d.Serial] = true
+		}
+	}
+
+	// Reaparecidos = estaban en prevMissing y ya no están en currMissing.
+	// prevMissing nil = primer ciclo: solo registramos la base, sin disparar.
+	if r.prevMissing != nil {
+		reappearedSerials := diffReappeared(r.prevMissing, currMissing)
+		if len(reappearedSerials) > 0 && r.onDeviceReappear != nil {
+			reappeared := r.devicesBySerial(ctx, reappearedSerials)
+			logMsg("DeviceReconciler: %d device(s) reaparecidos tras estar missing → remontando", len(reappeared))
+			r.onDeviceReappear(ctx, reappeared)
+		}
+	}
+	r.prevMissing = currMissing
+
 	return nil
+}
+
+// diffReappeared devuelve los serials que estaban en prev (missing) y ya no
+// están en curr (vuelven a estar presentes). Función pura para test.
+func diffReappeared(prev, curr map[string]bool) []string {
+	var out []string
+	for serial := range prev {
+		if !curr[serial] {
+			out = append(out, serial)
+		}
+	}
+	return out
+}
+
+// devicesBySerial resuelve serials a *Device leyendo la lista actual.
+func (r *DeviceReconciler) devicesBySerial(ctx context.Context, serials []string) []*Device {
+	want := make(map[string]bool, len(serials))
+	for _, s := range serials {
+		want[s] = true
+	}
+	all, err := r.service.ListDevices(ctx)
+	if err != nil {
+		return nil
+	}
+	var out []*Device
+	for _, d := range all {
+		if want[d.Serial] {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -398,11 +398,26 @@ func checkAndRunScheduledScrubs() {
 		}
 		if shouldRunNow(freq, h, m, dow, dom, lastRunStr, now) {
 			logMsg("Scrub scheduler: starting scheduled scrub on %s", poolName)
-			startScrub(map[string]interface{}{"pool": poolName})
-			_, _ = db.Exec(`UPDATE scrub_schedule SET last_run = ?, next_run = ? WHERE pool_name = ?`,
-				now.Format(time.RFC3339),
-				calculateNextRun(freq, h, m, dow, dom),
-				poolName)
+			res := startScrub(map[string]interface{}{"pool": poolName})
+
+			// FIX2: solo marcar como ejecutado si el scrub REALMENTE arrancó.
+			// Si falló (pool degradado, otro scrub en curso, error), NO tocar
+			// last_run → el scheduler reintenta en el próximo tick, y se avisa.
+			if ok, _ := res["ok"].(bool); ok {
+				_, _ = db.Exec(`UPDATE scrub_schedule SET last_run = ?, next_run = ? WHERE pool_name = ?`,
+					now.Format(time.RFC3339),
+					calculateNextRun(freq, h, m, dow, dom),
+					poolName)
+			} else {
+				reason, _ := res["error"].(string)
+				if reason == "" {
+					reason = "motivo desconocido"
+				}
+				logMsg("Scrub scheduler: scrub on %s NO arrancó (%s) — se reintentará", poolName, reason)
+				addNotification("warning", "system",
+					fmt.Sprintf("Scrub programado no pudo arrancar en %s", poolName),
+					fmt.Sprintf("La verificación de integridad programada de %s no pudo iniciarse: %s. Se reintentará automáticamente.", poolName, reason))
+			}
 		}
 	}
 }

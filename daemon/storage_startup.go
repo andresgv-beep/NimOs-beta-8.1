@@ -79,7 +79,7 @@ func startStorageMonitoring() {
 	go func() {
 		for {
 			time.Sleep(5 * time.Minute)
-			checkStorageHealthGo()
+			runStorageHealthCheck()
 		}
 	}()
 }
@@ -124,29 +124,17 @@ func diskHasExistingData(numPartitions int, diskFstype string) bool {
 }
 
 func detectStorageDisksGo() map[string]interface{} {
-	// TODO: rewrite with storage_disks.go from plan v2
-	// For now: minimal implementation that works
-	result := map[string]interface{}{
-		"eligible":    []interface{}{},
-		"nvme":        []interface{}{},
-		"usb":         []interface{}{},
-		"provisioned": []interface{}{},
-	}
-
 	lsblkRaw, ok := runSafe("lsblk", "-J", "-b", "-o", "NAME,SIZE,TYPE,ROTA,MOUNTPOINT,MODEL,SERIAL,TRAN,RM,FSTYPE,LABEL,PKNAME")
 	if !ok || lsblkRaw == "" {
-		return result
-	}
-
-	var data struct {
-		BlockDevices []json.RawMessage `json:"blockdevices"`
-	}
-	if json.Unmarshal([]byte(lsblkRaw), &data) != nil {
-		return result
+		return map[string]interface{}{
+			"eligible":    []interface{}{},
+			"nvme":        []interface{}{},
+			"usb":         []interface{}{},
+			"provisioned": []interface{}{},
+		}
 	}
 
 	rootDisk := findRootDiskGo(lsblkRaw)
-	// Beta 8.1: leer discos asignados a pools vía service v2
 	poolDisks := map[string]bool{}
 	if storageService != nil {
 		if pools, err := storageService.ListPools(context.Background()); err == nil {
@@ -158,6 +146,30 @@ func detectStorageDisksGo() map[string]interface{} {
 				}
 			}
 		}
+	}
+	return parseDetectedDisksLegacy(lsblkRaw, rootDisk, poolDisks)
+}
+
+// parseDetectedDisksLegacy es el core map[string]interface{} original, extraído
+// para poder compararlo contra parseDetectedDisks (tipado) en un test de
+// equivalencia con el MISMO input. Es la red de seguridad del refactor: si
+// ambos producen JSON idéntico, la migración no cambió el contrato.
+//
+// Se ELIMINARÁ cuando el test de equivalencia se considere estable y el endpoint
+// lleve tiempo sirviendo la versión tipada sin incidencias.
+func parseDetectedDisksLegacy(lsblkRaw, rootDisk string, poolDisks map[string]bool) map[string]interface{} {
+	result := map[string]interface{}{
+		"eligible":    []interface{}{},
+		"nvme":        []interface{}{},
+		"usb":         []interface{}{},
+		"provisioned": []interface{}{},
+	}
+
+	var data struct {
+		BlockDevices []json.RawMessage `json:"blockdevices"`
+	}
+	if json.Unmarshal([]byte(lsblkRaw), &data) != nil {
+		return result
 	}
 
 	var eligible, nvme, usb, provisioned []interface{}
@@ -233,16 +245,9 @@ func detectStorageDisksGo() map[string]interface{} {
 		}
 		diskInfo["partitions"] = partitions
 
-		// hasExistingData: el disco tiene datos si tiene particiones O si el
-		// DISCO MISMO tiene un filesystem a disco completo (sin tabla de
-		// particiones). Esto último es EXACTAMENTE cómo BTRFS crea los miembros
-		// de pool, y también cómo aparecen discos ext4/xfs/etc. de otros
-		// sistemas. Mirar solo las particiones hacía que un disco con FS a
-		// disco completo se mostrara como "vacío/elegible" → invitación al wipe.
-		// lsblk ya nos da el FSTYPE del disco en la línea de -o (arriba).
 		diskFstype := strings.TrimSpace(fmt.Sprintf("%v", dev["fstype"]))
 		diskInfo["hasExistingData"] = diskHasExistingData(len(partitions), diskFstype)
-		diskInfo["fstype"] = normalizeFstype(diskFstype) // exponer el FS del disco a la UI
+		diskInfo["fstype"] = normalizeFstype(diskFstype)
 
 		// Classify
 		if devName == rootDisk {
@@ -276,10 +281,10 @@ func detectStorageDisksGo() map[string]interface{} {
 		smartStatus, smartDetails := getSmartDetailsForDisk(devName)
 		diskInfo["smartStatus"] = smartStatus
 		smart := map[string]interface{}{
-			"temperature":  smartDetails.Temperature,
-			"powerOnHours": smartDetails.PowerOnHours,
-			"pendingSectors": smartDetails.PendingSectors,
-			"uncorrectable": smartDetails.Uncorrectable,
+			"temperature":        smartDetails.Temperature,
+			"powerOnHours":       smartDetails.PowerOnHours,
+			"pendingSectors":     smartDetails.PendingSectors,
+			"uncorrectable":      smartDetails.Uncorrectable,
 			"reallocatedSectors": smartDetails.ReallocatedSectors,
 		}
 		diskInfo["smart"] = smart
@@ -287,10 +292,18 @@ func detectStorageDisksGo() map[string]interface{} {
 		eligible = append(eligible, diskInfo)
 	}
 
-	if eligible == nil { eligible = []interface{}{} }
-	if nvme == nil { nvme = []interface{}{} }
-	if usb == nil { usb = []interface{}{} }
-	if provisioned == nil { provisioned = []interface{}{} }
+	if eligible == nil {
+		eligible = []interface{}{}
+	}
+	if nvme == nil {
+		nvme = []interface{}{}
+	}
+	if usb == nil {
+		usb = []interface{}{}
+	}
+	if provisioned == nil {
+		provisioned = []interface{}{}
+	}
 
 	result["eligible"] = eligible
 	result["nvme"] = nvme

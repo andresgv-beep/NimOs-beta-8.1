@@ -280,25 +280,25 @@ func TestStorageRecoveryDestroyPoolInconclusive(t *testing.T) {
 // add_device, remove_device, replace_device, convert_profile → inconclusive
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestStorageRecoveryLayoutOpsAlwaysInconclusive(t *testing.T) {
+// Sin balance activo, las layout ops huérfanas son inconclusive (no podemos
+// saber si terminaron). Con balance activo se re-adoptan (ver test siguiente).
+func TestStorageRecoveryLayoutOpsInconclusiveWhenNoBalance(t *testing.T) {
 	cases := []OperationType{
 		OpTypeAddDevice,
 		OpTypeRemoveDevice,
 		OpTypeReplaceDevice,
 		OpTypeConvertProfile,
 	}
+	// Inyectar: no hay balance activo en ningún pool.
+	prev := readBalanceStatusFn
+	readBalanceStatusFn = func(mp string) BalanceStatus { return BalanceStatus{Active: false} }
+	defer func() { readBalanceStatusFn = prev }()
+
 	for _, opType := range cases {
 		t.Run(string(opType), func(t *testing.T) {
-			service, mock, cleanup := setupTestService(t)
+			service, _, cleanup := setupTestService(t)
 			defer cleanup()
 			ctx := context.Background()
-
-			// Aunque el mock diga que el FS existe, estas ops siempre
-			// son inconclusive (no podemos saber si terminaron sin un
-			// mecanismo más fino - eso es Beta 9)
-			mock.FilesystemExistsByUUIDFn = func(ctx context.Context, uuid string) (bool, error) {
-				return true, nil
-			}
 
 			// La op requiere pool existente por FK
 			tx, _ := service.db.BeginTx(ctx, nil)
@@ -324,13 +324,60 @@ func TestStorageRecoveryLayoutOpsAlwaysInconclusive(t *testing.T) {
 			if result.Inconclusive != 1 {
 				t.Errorf("%s: Inconclusive got %d, want 1", opType, result.Inconclusive)
 			}
-
-			// Y NO debe haber llamado a BTRFS (no merece la pena para layout ops)
-			if len(mock.FilesystemExistsByUUIDCalls) != 0 {
-				t.Errorf("%s: should not query BTRFS (got %d calls)",
-					opType, len(mock.FilesystemExistsByUUIDCalls))
+			if result.Readopted != 0 {
+				t.Errorf("%s: Readopted got %d, want 0 (sin balance activo)", opType, result.Readopted)
 			}
 		})
+	}
+}
+
+// P3: con balance BTRFS vivo, la op de layout huérfana se RE-ADOPTA (se mantiene
+// in_progress, el lock se conserva) en vez de marcarse failed.
+func TestStorageRecoveryLayoutOpReadoptedWhenBalanceActive(t *testing.T) {
+	prev := readBalanceStatusFn
+	readBalanceStatusFn = func(mp string) BalanceStatus {
+		return BalanceStatus{Active: true, PercentDone: 42}
+	}
+	defer func() { readBalanceStatusFn = prev }()
+
+	service, _, cleanup := setupTestService(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	tx, _ := service.db.BeginTx(ctx, nil)
+	poolID := newUUID()
+	service.repo.CreatePool(ctx, tx, &Pool{
+		ID:         poolID,
+		Name:       "readopt-pool",
+		BtrfsUUID:  "uuid-readopt",
+		Profile:    ProfileRaid1,
+		MountPoint: "/nimos/pools/readopt",
+	})
+	tx.Commit()
+
+	op := &Operation{
+		Type:   OpTypeConvertProfile,
+		PoolID: &poolID,
+		Status: OpStatusInProgress,
+		Data:   rawJSON(map[string]interface{}{}),
+	}
+	injectOrphanOp(t, service, op)
+
+	result, _ := service.RecoverPendingOperations(ctx)
+	if result.Readopted != 1 {
+		t.Errorf("Readopted got %d, want 1 (balance activo)", result.Readopted)
+	}
+	if result.Inconclusive != 0 {
+		t.Errorf("Inconclusive got %d, want 0", result.Inconclusive)
+	}
+
+	// La op debe seguir in_progress (lock conservado), no failed.
+	got, err := service.repo.GetOperation(ctx, op.ID)
+	if err != nil {
+		t.Fatalf("GetOperation: %v", err)
+	}
+	if got.Status != OpStatusInProgress {
+		t.Errorf("op re-adoptada: status got %s, want in_progress", got.Status)
 	}
 }
 

@@ -41,6 +41,21 @@ func StartStorageScheduler(ctx context.Context) {
 
 	globalReconciler = NewDeviceReconciler(storageService, NewRealClock(),
 		DefaultReconcilerConfig())
+
+	// P2 — al reaparecer un device tras estar missing (spin-up USB lento tras
+	// corte de luz), remontar los pools. reconcileMountState es idempotente:
+	// los pools ya montados quedan AlreadyOK, solo monta los que faltan.
+	globalReconciler.onDeviceReappear = func(ctx context.Context, reappeared []*Device) {
+		names := make([]string, 0, len(reappeared))
+		for _, d := range reappeared {
+			names = append(names, d.Serial)
+		}
+		logMsg("Storage: device(s) reaparecidos %v → reconciliando montajes", names)
+		if _, err := reconcileMountState(ctx); err != nil {
+			logMsg("Storage: reconcileMountState tras reaparición falló: %v", err)
+		}
+	}
+
 	globalReconciler.Start(ctx)
 	logMsg("Storage scheduler started (interval=%v, missing_threshold=%v)",
 		DefaultReconcilerConfig().Interval,

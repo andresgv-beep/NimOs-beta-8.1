@@ -84,7 +84,82 @@ func removeFstabEntry(mountPoint string) {
 	}
 }
 
-// ─── Orphan Cleanup ──────────────────────────────────────────────────────────
+// ─── P5 · Auto-restore de /etc/fstab corrupto al boot ────────────────────────
+//
+// removeFstabEntry hace truncate-write directo sobre /etc/fstab (no puede usar
+// tmp+rename bajo systemd ProtectSystem=strict). Un crash a media escritura deja
+// un fstab corrupto. nofail evita que bloquee el boot, pero el pool no monta y
+// requeriría restauración manual desde el .bak.
+//
+// restoreFstabIfCorrupt corre al arranque: si /etc/fstab está corrupto (alguna
+// línea no-comentario malformada) y existe un .bak válido, lo restaura. Elimina
+// el "requiere intervención manual" del modo de fallo.
+
+const fstabBackupPath = "/var/lib/nimos/fstab.bak"
+
+// restoreFstabIfCorrupt comprueba /etc/fstab y, si está corrupto, lo restaura
+// desde el backup (si el backup es válido). Best-effort: cualquier error se
+// loggea y se continúa (nunca aborta el boot).
+func restoreFstabIfCorrupt() {
+	data, err := os.ReadFile("/etc/fstab")
+	if err != nil {
+		logMsg("restoreFstabIfCorrupt: no se pudo leer /etc/fstab: %v", err)
+		return
+	}
+	if fstabContentIsValid(string(data)) {
+		return // fstab sano, nada que hacer
+	}
+
+	logMsg("restoreFstabIfCorrupt: /etc/fstab parece CORRUPTO")
+	bak, berr := os.ReadFile(fstabBackupPath)
+	if berr != nil {
+		logMsg("restoreFstabIfCorrupt: no hay backup utilizable en %s: %v (intervención manual)",
+			fstabBackupPath, berr)
+		return
+	}
+	if !fstabContentIsValid(string(bak)) {
+		logMsg("restoreFstabIfCorrupt: el backup %s TAMBIÉN está corrupto; no se restaura", fstabBackupPath)
+		return
+	}
+
+	if werr := os.WriteFile("/etc/fstab", bak, 0644); werr != nil {
+		logMsg("restoreFstabIfCorrupt: fallo al restaurar /etc/fstab desde backup: %v", werr)
+		return
+	}
+	logMsg("restoreFstabIfCorrupt: /etc/fstab RESTAURADO desde %s", fstabBackupPath)
+	addNotification("warning", "system",
+		"fstab restaurado automáticamente",
+		"Se detectó un /etc/fstab corrupto (posible crash a media escritura) y se restauró desde la copia de seguridad. Revisa que tus montajes sean correctos.")
+}
+
+// fstabContentIsValid hace una validación estructural de un contenido de fstab.
+// Devuelve false si alguna línea no-vacía y no-comentario está malformada (un
+// fstab válido necesita al menos device, mountpoint, fstype, opts = 4 campos).
+// Función pura para test.
+func fstabContentIsValid(content string) bool {
+	if strings.TrimSpace(content) == "" {
+		// Un fstab vacío no es "corrupto" per se, pero tampoco hay nada que
+		// validar. Lo tratamos como válido para no restaurar sin causa.
+		return true
+	}
+	sawEntry := false
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) < 4 {
+			// Línea de montaje malformada → corrupto.
+			return false
+		}
+		sawEntry = true
+	}
+	// Si no había NINGUNA entrada real (solo comentarios/blancos) lo damos por
+	// válido — no es trabajo de esta función decidir que faltan montajes.
+	_ = sawEntry
+	return true
+}
 
 // cleanOrphanPoolDirs removes directories in /nimos/pools/ that are not
 // associated with any configured pool and have nothing mounted on them.

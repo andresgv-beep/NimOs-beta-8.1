@@ -2344,10 +2344,70 @@ func createBackupSnapshot(source, fsType string) map[string]interface{} {
 		if errMsg, err := btrfsSnapshotCreate(source, snapPath); err != nil {
 			return map[string]interface{}{"error": "Failed: " + errMsg}
 		}
+		// P4 — retention: tras crear, podar los snapshots más viejos por
+		// encima del máximo. En BTRFS el espacio retenido por snapshots viejos
+		// es invisible al % de uso normal y acelera el ENOSPC (ver P1), así
+		// que limitar su número es robustez, no cosmética.
+		pruneSnapshotsByRetention(source, "btrfs")
 		return map[string]interface{}{"ok": true, "name": snapName, "path": snapPath, "type": "btrfs"}
 	}
 
 	return map[string]interface{}{"error": "Unsupported fsType: " + fsType}
+}
+
+// snapshotRetentionMax es el número máximo de snapshots nimbackup-* que se
+// conservan por pool. Al crear uno nuevo, los que excedan este número (los más
+// viejos) se borran. Acotado a propósito (P4): retention básica, no un
+// scheduler de políticas completo (eso sería su propio frente).
+const snapshotRetentionMax = 10
+
+// pruneSnapshotsByRetention borra los snapshots más viejos de un pool que
+// excedan snapshotRetentionMax. Best-effort: los errores de borrado se loggean
+// pero no abortan (el snapshot recién creado ya es válido).
+func pruneSnapshotsByRetention(source, fsType string) {
+	// El nombre del pool es el último segmento de /nimos/pools/<name>.
+	pool := source
+	if idx := strings.LastIndex(strings.TrimRight(source, "/"), "/"); idx >= 0 {
+		pool = source[idx+1:]
+	}
+
+	res := listBackupSnapshots(pool)
+	snaps, _ := res["snapshots"].([]map[string]interface{})
+	names := make([]string, 0, len(snaps))
+	for _, s := range snaps {
+		if n, ok := s["name"].(string); ok && n != "" {
+			names = append(names, n)
+		}
+	}
+
+	toPrune := snapshotsToPrune(names, snapshotRetentionMax)
+	for _, name := range toPrune {
+		r := deleteBackupSnapshot(name, fsType, source)
+		if _, ok := r["ok"]; ok {
+			logMsg("Snapshot retention: borrado snapshot viejo %s (máx %d)", name, snapshotRetentionMax)
+		} else {
+			logMsg("Snapshot retention: no se pudo borrar %s: %v", name, r["error"])
+		}
+	}
+}
+
+// snapshotsToPrune decide qué snapshots borrar para respetar el máximo. Ordena
+// por timestamp (extraído del nombre nimbackup-YYYYMMDD-HHMMSS) y devuelve los
+// MÁS VIEJOS que exceden maxKeep. Función pura para test.
+func snapshotsToPrune(names []string, maxKeep int) []string {
+	if maxKeep <= 0 || len(names) <= maxKeep {
+		return nil
+	}
+	// Ordenar por timestamp ascendente (más viejo primero). El formato del
+	// timestamp es lexicográficamente ordenable, pero usamos extractTimestamp
+	// para robustez ante nombres inesperados.
+	sorted := make([]string, len(names))
+	copy(sorted, names)
+	sort.Slice(sorted, func(i, j int) bool {
+		return extractTimestamp(sorted[i]).Before(extractTimestamp(sorted[j]))
+	})
+	// Los primeros (len - maxKeep) son los más viejos a borrar.
+	return sorted[:len(sorted)-maxKeep]
 }
 
 func deleteBackupSnapshot(name, fsType, source string) map[string]interface{} {

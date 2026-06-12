@@ -875,7 +875,7 @@ func (h *StorageHTTPHandler) handleAlerts(w http.ResponseWriter, r *http.Request
 //   · /v2/devices  → array plano de Device structs (canónico, interno)
 //   · /v2/disks    → categorización por estado/tecnología para UI humana
 //
-// Delega en detectStorageDisksGo() (storage_startup.go). La función
+// Delega en detectStorageDisks() (storage_disks.go, tipado). La función
 // tiene la lógica de categorización: filtrar root disk, marcar los
 // que están en pool, separar USB/NVMe, detectar orphan filesystems.
 func (h *StorageHTTPHandler) handleDisksCategorized(w http.ResponseWriter, r *http.Request) {
@@ -883,8 +883,8 @@ func (h *StorageHTTPHandler) handleDisksCategorized(w http.ResponseWriter, r *ht
 		methodNotAllowed(w, "GET")
 		return
 	}
-	// detectStorageDisksGo devuelve {eligible, nvme, usb, provisioned}
-	writeData(w, http.StatusOK, detectStorageDisksGo())
+	// detectStorageDisks devuelve {eligible, nvme, usb, provisioned}
+	writeData(w, http.StatusOK, detectStorageDisks())
 }
 
 // ─── POST /v2/wipe ────────────────────────────────────────────────────────

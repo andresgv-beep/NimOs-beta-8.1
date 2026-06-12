@@ -1647,6 +1647,18 @@ var smartHistory = map[string]string{} // disk name -> last known status ("ok"/"
 var smartDetailsCache = map[string]SmartDetails{} // disk name -> cached SMART detail metrics
 var smartMu sync.Mutex
 
+// FIX3 — debounce de temperatura. tempHistory guarda el último estado de temp
+// notificado por disco ("normal"/"high"), para notificar SOLO en transiciones y
+// no en cada ciclo SMART. Histéresis: se entra en "high" al cruzar tempHighC
+// hacia arriba y solo se vuelve a "normal" al bajar de tempRecoverC, evitando
+// parpadeo si la temperatura oscila alrededor del umbral.
+var tempHistory = map[string]string{} // disk name -> "normal" | "high"
+
+const (
+	tempHighC    = 55 // umbral de alerta (°C)
+	tempRecoverC = 50 // histéresis: recuperación solo por debajo de esto
+)
+
 func startSmartMonitor() {
 	// Wait for system to be ready
 	time.Sleep(30 * time.Second)
@@ -1760,15 +1772,49 @@ func checkAllDisksSmart() {
 			}
 		}
 
-		// Temperature alert — check for high temp
+		// Temperature alert — FIX3: debounce con histéresis.
+		// Notifica solo en la transición normal→high, y la recuperación
+		// (high→normal) solo cuando baja de tempRecoverC. No re-notifica
+		// cada ciclo mientras se mantiene caliente.
 		if temp, ok := smartResult["temperature"].(int); ok {
-			if temp >= 55 {
+			smartMu.Lock()
+			prevTemp := tempHistory[diskName] // "" en primera observación
+			newTemp := nextTempState(prevTemp, temp)
+			tempHistory[diskName] = newTemp
+			smartMu.Unlock()
+
+			if newTemp == "high" && prevTemp != "high" {
 				addNotification("warning", "system",
 					fmt.Sprintf("Temperatura alta en disco %s", diskName),
 					fmt.Sprintf("El disco %s está a %d°C. Verifica la ventilación.", diskName, temp))
 				logMsg("SMART TEMP WARNING: disk %s at %d°C", diskName, temp)
+			} else if newTemp == "normal" && prevTemp == "high" {
+				addNotification("success", "system",
+					fmt.Sprintf("Temperatura normalizada en disco %s", diskName),
+					fmt.Sprintf("El disco %s ha bajado a %d°C.", diskName, temp))
+				logMsg("SMART TEMP OK: disk %s recovered to %d°C", diskName, temp)
 			}
 		}
+	}
+}
+
+// nextTempState aplica la histéresis de temperatura. Dado el estado previo
+// ("normal"/"high"/"") y la temperatura actual, devuelve el nuevo estado:
+//   - sube a "high" al alcanzar tempHighC
+//   - baja a "normal" solo por debajo de tempRecoverC
+//   - en la banda intermedia (tempRecoverC..tempHighC) mantiene el estado previo
+//   - primera observación (prev==""): "high" si ya está caliente, si no "normal"
+func nextTempState(prev string, temp int) string {
+	switch {
+	case temp >= tempHighC:
+		return "high"
+	case temp < tempRecoverC:
+		return "normal"
+	default:
+		if prev == "" {
+			return "normal"
+		}
+		return prev
 	}
 }
 
