@@ -100,12 +100,14 @@ func getSharePath(shareName string) (string, error) {
 type Request struct {
 	Op         string      `json:"op"`
 	ShareName  string      `json:"shareName,omitempty"`
+	RelPath    string      `json:"relPath,omitempty"`
 	PoolPath   string      `json:"poolPath,omitempty"`
 	Username   string      `json:"username,omitempty"`
 	Password   string      `json:"password,omitempty"`
 	AppId      string      `json:"appId,omitempty"`
 	Uid        interface{} `json:"uid,omitempty"`
 	Permission string      `json:"permission,omitempty"`
+	QuotaBytes int64       `json:"quotaBytes,omitempty"`
 }
 
 type Response struct {
@@ -225,6 +227,166 @@ func handleOp(req Request) Response {
 		runSafe("setfacl", "-x", "u:"+req.Username, sharePath)
 		runSafe("setfacl", "-d", "-x", "u:"+req.Username, sharePath)
 		logMsg("share.remove_user: %s ✕ %s", req.Username, req.ShareName)
+		return Response{Ok: true}
+
+	// ─── Managed Folder operations (Fase 3) ───
+	// Carpeta gestionada = subvolumen BTRFS (quota dura) + ACL POSIX puras por
+	// usuario (permisos que SMB/NFS/WebDAV respetan). NO usa grupos Linux.
+
+	case "folder.create":
+		if err := checkShareName(req.ShareName); err != nil {
+			return Response{Error: err.Error()}
+		}
+		if err := checkFolderRelPath(req.RelPath); err != nil {
+			return Response{Error: err.Error()}
+		}
+		sharePath, err := getSharePath(req.ShareName)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		// Cinturón: garantizar quota habilitada en el pool antes de crear el
+		// subvol (idempotente). Blinda el caso de un pool recién montado que
+		// aún no pasó por el barrido de arranque.
+		poolMount := poolMountFromSharePath(sharePath)
+		if poolMount != "" {
+			if qerr := ensureBtrfsQuotaEnabled(poolMount); qerr != nil {
+				logMsg("folder.create: WARNING no se pudo habilitar quota en %s: %v", poolMount, qerr)
+			}
+		}
+		folderPath := filepath.Join(sharePath, req.RelPath)
+		if _, statErr := os.Stat(folderPath); statErr == nil {
+			return Response{Error: "folder already exists"}
+		}
+		// Crear como SUBVOLUMEN (no mkdir) para que pueda llevar qgroup.
+		if out, ok := runSafe("btrfs", "subvolume", "create", folderPath); !ok {
+			return Response{Error: fmt.Sprintf("btrfs subvolume create failed: %s", out)}
+		}
+		runSafe("chmod", "0770", folderPath)
+		// Quota dura si se especificó.
+		if req.QuotaBytes > 0 {
+			if out, ok := runSafe("btrfs", "qgroup", "limit", fmt.Sprintf("%d", req.QuotaBytes), folderPath); !ok {
+				logMsg("folder.create: WARNING qgroup limit falló en %s: %s", folderPath, out)
+			}
+		}
+		logMsg("folder.create: %s en share %s (quota=%d)", req.RelPath, req.ShareName, req.QuotaBytes)
+		return Response{Ok: true, Path: folderPath}
+
+	case "folder.set_quota":
+		if err := checkShareName(req.ShareName); err != nil {
+			return Response{Error: err.Error()}
+		}
+		if err := checkFolderRelPath(req.RelPath); err != nil {
+			return Response{Error: err.Error()}
+		}
+		sharePath, err := getSharePath(req.ShareName)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		folderPath := filepath.Join(sharePath, req.RelPath)
+		if _, statErr := os.Stat(folderPath); statErr != nil {
+			return Response{Error: "folder not found"}
+		}
+		var out string
+		var ok bool
+		if req.QuotaBytes > 0 {
+			out, ok = runSafe("btrfs", "qgroup", "limit", fmt.Sprintf("%d", req.QuotaBytes), folderPath)
+		} else {
+			out, ok = runSafe("btrfs", "qgroup", "limit", "none", folderPath)
+		}
+		if !ok {
+			return Response{Error: fmt.Sprintf("qgroup limit failed: %s", out)}
+		}
+		logMsg("folder.set_quota: %s en %s → %d", req.RelPath, req.ShareName, req.QuotaBytes)
+		return Response{Ok: true}
+
+	case "folder.set_perm_rw":
+		if err := checkShareName(req.ShareName); err != nil {
+			return Response{Error: err.Error()}
+		}
+		if err := checkFolderRelPath(req.RelPath); err != nil {
+			return Response{Error: err.Error()}
+		}
+		if err := checkUsername(req.Username); err != nil {
+			return Response{Error: err.Error()}
+		}
+		sharePath, err := getSharePath(req.ShareName)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		folderPath := filepath.Join(sharePath, req.RelPath)
+		// ACL POSIX pura por usuario: acceso + default (hereda en lo nuevo).
+		runSafe("setfacl", "-m", "u:"+req.Username+":rwx", folderPath)
+		runSafe("setfacl", "-d", "-m", "u:"+req.Username+":rwx", folderPath)
+		logMsg("folder.set_perm_rw: %s → %s/%s", req.Username, req.ShareName, req.RelPath)
+		return Response{Ok: true}
+
+	case "folder.set_perm_ro":
+		if err := checkShareName(req.ShareName); err != nil {
+			return Response{Error: err.Error()}
+		}
+		if err := checkFolderRelPath(req.RelPath); err != nil {
+			return Response{Error: err.Error()}
+		}
+		if err := checkUsername(req.Username); err != nil {
+			return Response{Error: err.Error()}
+		}
+		sharePath, err := getSharePath(req.ShareName)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		folderPath := filepath.Join(sharePath, req.RelPath)
+		runSafe("setfacl", "-m", "u:"+req.Username+":r-x", folderPath)
+		runSafe("setfacl", "-d", "-m", "u:"+req.Username+":r-x", folderPath)
+		logMsg("folder.set_perm_ro: %s → %s/%s", req.Username, req.ShareName, req.RelPath)
+		return Response{Ok: true}
+
+	case "folder.remove_perm":
+		if err := checkShareName(req.ShareName); err != nil {
+			return Response{Error: err.Error()}
+		}
+		if err := checkFolderRelPath(req.RelPath); err != nil {
+			return Response{Error: err.Error()}
+		}
+		if err := checkUsername(req.Username); err != nil {
+			return Response{Error: err.Error()}
+		}
+		sharePath, err := getSharePath(req.ShareName)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		folderPath := filepath.Join(sharePath, req.RelPath)
+		runSafe("setfacl", "-x", "u:"+req.Username, folderPath)
+		runSafe("setfacl", "-d", "-x", "u:"+req.Username, folderPath)
+		logMsg("folder.remove_perm: %s ✕ %s/%s", req.Username, req.ShareName, req.RelPath)
+		return Response{Ok: true}
+
+	case "folder.delete":
+		if err := checkShareName(req.ShareName); err != nil {
+			return Response{Error: err.Error()}
+		}
+		if err := checkFolderRelPath(req.RelPath); err != nil {
+			return Response{Error: err.Error()}
+		}
+		sharePath, err := getSharePath(req.ShareName)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		folderPath := filepath.Join(sharePath, req.RelPath)
+		if _, statErr := os.Stat(folderPath); statErr != nil {
+			return Response{Error: "folder not found"}
+		}
+		// v1: NO se borra si tiene contenido. Sin borrado recursivo.
+		empty, eerr := dirIsEmpty(folderPath)
+		if eerr != nil {
+			return Response{Error: fmt.Sprintf("cannot check folder: %v", eerr)}
+		}
+		if !empty {
+			return Response{Error: "folder_not_empty"}
+		}
+		if out, ok := runSafe("btrfs", "subvolume", "delete", folderPath); !ok {
+			return Response{Error: fmt.Sprintf("btrfs subvolume delete failed: %s", out)}
+		}
+		logMsg("folder.delete: %s en share %s", req.RelPath, req.ShareName)
 		return Response{Ok: true}
 
 	case "share.add_app":
