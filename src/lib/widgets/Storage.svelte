@@ -105,7 +105,7 @@
           {:else}
             <!-- 2×1: cabecera compacta en una sola línea -->
             <div class="pool-head compact">
-              <span class="badge {anyBad ? 'bad' : ''}">{anyBad ? 'ATENCIÓN' : 'OK'}</span>
+              <span class="badge {hc}">{hc === 'ok' ? 'OK' : 'ATENCIÓN'}</span>
               <span class="name">{p.name}</span>
               <span class="cap">{fmtBytes(p.usage?.used_bytes)} / {fmtBytes(p.usage?.total_bytes)}</span>
             </div>
@@ -137,10 +137,16 @@
                     <path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6Z" />
                     <path d="M9 12l2 2 4-4" />
                   </svg>
-                {:else}
+                {:else if hc === 'crit'}
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
                     <path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6Z" />
-                    <path d="M12 8v4M12 15h.01" />
+                    <path d="M9.5 9.5l5 5M14.5 9.5l-5 5" />
+                  </svg>
+                {:else}
+                  <!-- warning: triángulo de alerta -->
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">
+                    <path d="M12 4 22 19 2 19 Z" />
+                    <path d="M12 10v4M12 17h.01" />
                   </svg>
                 {/if}
               </span>
@@ -233,7 +239,8 @@
     padding: 1px 5px;
     flex-shrink: 0;
   }
-  .pool-head.compact .badge.bad { color: var(--warn); border-color: var(--warn); }
+  .pool-head.compact .badge.warn { color: var(--warn); border-color: var(--warn); }
+  .pool-head.compact .badge.crit { color: var(--crit); border-color: var(--crit); }
   .pool-head.compact .name { font-size: 14px; flex: 1; }
   .pool-head.compact .cap { font-size: 10.5px; }
 
