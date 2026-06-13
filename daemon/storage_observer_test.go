@@ -129,7 +129,7 @@ func TestObserver_InvalidateNowTriggersScan(t *testing.T) {
 // ─── Fingerprint skip ──────────────────────────────────────────────────────
 
 func TestObserver_FingerprintSkipsRedundantScans(t *testing.T) {
-	o, mp, _ := newTestObserver(t, 1*time.Hour)
+	o, mp, _ := newTestObserver(t, 50*time.Millisecond)
 
 	skipped := atomic.Int32{}
 	o.onSnapshot = func(snap *ObservedSnapshot, changed bool) {
@@ -144,19 +144,76 @@ func TestObserver_FingerprintSkipsRedundantScans(t *testing.T) {
 	// Esperar primer scan
 	waitForCalls(t, mp, 1, 2*time.Second)
 
-	// Múltiples InvalidateNow con MISMO fingerprint → debería skipear
-	for i := 0; i < 5; i++ {
-		o.InvalidateNow()
-		time.Sleep(50 * time.Millisecond)
-	}
-	time.Sleep(200 * time.Millisecond)
+	// Dejar correr varios TICKS PERIÓDICOS con el mismo fingerprint.
+	// El tick periódico ("¿cambió algo solo?") SÍ debe skipear por fingerprint
+	// para no re-escanear discos cada 50ms sin motivo.
+	time.Sleep(300 * time.Millisecond)
 
-	// Generation no incrementa más
+	// Generation no incrementa: los ticks periódicos con misma huella skipean.
 	if o.Generation() > 1 {
-		t.Errorf("generation = %d, want 1 (subsequent same-fp scans should skip)", o.Generation())
+		t.Errorf("generation = %d, want 1 (periodic same-fp scans should skip)", o.Generation())
 	}
 	if skipped.Load() == 0 {
 		t.Error("expected at least 1 fingerprint-skip but got 0")
+	}
+}
+
+// TestObserver_InvalidateNowBypassesFingerprint blinda el fix del bug 13/06:
+// una invalidación EXPLÍCITA (destroy/export/wipe) NO debe saltarse por
+// fingerprint. El caller ya sabe que el estado cambió; skipear dejaba la card
+// huérfana fantasma en la UI hasta el siguiente tick de 60s.
+func TestObserver_InvalidateNowBypassesFingerprint(t *testing.T) {
+	o, mp, _ := newTestObserver(t, 1*time.Hour)
+
+	o.Start()
+	defer o.Stop()
+	waitForCalls(t, mp, 1, 2*time.Second)
+
+	genBefore := o.Generation()
+
+	// InvalidateNow explícito con MISMO fingerprint → debe forzar scan igual.
+	o.InvalidateNow()
+	time.Sleep(200 * time.Millisecond)
+
+	if o.Generation() <= genBefore {
+		t.Errorf("generation = %d, want > %d (forced invalidation must re-scan despite same fingerprint)",
+			o.Generation(), genBefore)
+	}
+}
+
+// TestObserver_ForcedInvalidationNotLostUnderContention blinda la otra mitad
+// del bug: si una invalidación llega mientras OTRO reconcile ya corre, el
+// TryLock la descartaba y el cambio tardaba hasta 60s en verse. Ahora se
+// re-encola. Verificamos que tras invalidaciones concurrentes el observer
+// acaba ejecutando un scan que refleja el estado nuevo.
+func TestObserver_ForcedInvalidationNotLostUnderContention(t *testing.T) {
+	o, mp, _ := newTestObserver(t, 1*time.Hour)
+
+	// probe lento para forzar solape: mientras un reconcile escanea, llegan más.
+	o.probeFn = func() ([]ObservedBtrfs, []ObservedDevice, bool) {
+		mp.calls.Add(1)
+		time.Sleep(80 * time.Millisecond)
+		return mp.filesystems, mp.looseDevices, mp.ok
+	}
+
+	o.Start()
+	defer o.Stop()
+	waitForCalls(t, mp, 1, 2*time.Second)
+
+	callsBefore := mp.calls.Load()
+
+	// Ráfaga de invalidaciones explícitas mientras el probe es lento.
+	for i := 0; i < 5; i++ {
+		o.InvalidateNow()
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(400 * time.Millisecond)
+
+	// Debe haberse ejecutado al menos un scan adicional tras la ráfaga;
+	// ninguna invalidación forzada se pierde silenciosamente.
+	if mp.calls.Load() <= callsBefore {
+		t.Errorf("probe calls = %d, want > %d (forced invalidations must not be dropped under contention)",
+			mp.calls.Load(), callsBefore)
 	}
 }
 

@@ -56,6 +56,14 @@ type StorageObserver struct {
 	// Single-flight para reconcile (no spawn 2 scans paralelos)
 	mu sync.Mutex
 
+	// forceNext: una invalidación EXPLÍCITA (destroy/export/wipe/import) marca
+	// esto. Garantiza que el próximo reconcile (a) no se salte por fingerprint
+	// y (b) se re-encole si llega mientras otro reconcile ya está en curso —
+	// si no, el trigger se perdía por TryLock y el huérfano tardaba hasta 60s
+	// en desaparecer de la UI. (bug 13/06: card fantasma 15-20s tras destruir)
+	forceMu   sync.Mutex
+	forceNext bool
+
 	// Fingerprint last seen (protegido por mu, solo escrito durante reconcile)
 	lastFingerprint [32]byte
 
@@ -136,6 +144,12 @@ func (o *StorageObserver) Snapshot() *ObservedSnapshot {
 //   · Storage scheduler reconciler si detecta cambio
 //   · Endpoint /api/storage/observed?refresh=true
 func (o *StorageObserver) InvalidateNow() {
+	// Marca que el próximo reconcile es forzado: no se salta por fingerprint
+	// y, si llega tarde (otro reconcile ya corriendo), se re-encola al terminar.
+	o.forceMu.Lock()
+	o.forceNext = true
+	o.forceMu.Unlock()
+
 	select {
 	case o.triggerCh <- struct{}{}:
 	default:
@@ -174,9 +188,28 @@ func (o *StorageObserver) loop() {
 // Si lo hay, sale silenciosamente (el otro cubrirá).
 func (o *StorageObserver) tryReconcile() {
 	if !o.mu.TryLock() {
+		// Otro reconcile en curso. Si esta llamada venía de una invalidación
+		// EXPLÍCITA (forceNext), no podemos descartarla: el reconcile en curso
+		// pudo arrancar ANTES del cambio y captaría estado viejo. Re-encolamos
+		// para que se ejecute en cuanto el actual libere el lock.
+		o.forceMu.Lock()
+		pending := o.forceNext
+		o.forceMu.Unlock()
+		if pending {
+			select {
+			case o.triggerCh <- struct{}{}:
+			default:
+			}
+		}
 		return
 	}
 	defer o.mu.Unlock()
+
+	// Consumir la bandera de forzado para ESTE reconcile.
+	o.forceMu.Lock()
+	forced := o.forceNext
+	o.forceNext = false
+	o.forceMu.Unlock()
 
 	start := time.Now()
 
@@ -188,8 +221,10 @@ func (o *StorageObserver) tryReconcile() {
 		fp = computeFingerprint()
 	}
 
-	// Si el fingerprint no cambió, skip del scan caro.
-	if fp == o.lastFingerprint && o.generation.Load() > 0 {
+	// Si el fingerprint no cambió, skip del scan caro — SALVO que sea un
+	// reconcile forzado (destroy/export/wipe), donde el caller ya sabe que
+	// el estado cambió aunque el fingerprint barato no lo capte todavía.
+	if !forced && fp == o.lastFingerprint && o.generation.Load() > 0 {
 		// generation > 0 evita skip del primer scan (lastFingerprint zero-valued)
 		if o.onSnapshot != nil {
 			o.onSnapshot(o.snapshot.Load(), false)
