@@ -271,7 +271,7 @@ func buildManagedFolderView(shareName, folderID string) (*ManagedFolderView, err
 	}
 
 	// Uso real: best-effort vía qgroup. No fatal si falla.
-	if sharePath, perr := getSharePath(shareName); perr == nil {
+	if sharePath, perr := getManagedSharePath(shareName); perr == nil {
 		folderPath := sharePath + "/" + f.RelPath
 		v.UsedBytes = folderUsedBytes(folderPath)
 	}

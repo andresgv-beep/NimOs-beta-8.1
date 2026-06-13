@@ -35,9 +35,9 @@ func groupName(shareName string) string {
 
 // Share represents a share in shares.json
 type Share struct {
-	Name           string                 `json:"name"`
-	Path           string                 `json:"path"`
-	Permissions    map[string]string      `json:"permissions"`
+	Name           string                   `json:"name"`
+	Path           string                   `json:"path"`
+	Permissions    map[string]string        `json:"permissions"`
 	AppPermissions []map[string]interface{} `json:"appPermissions"`
 }
 
@@ -118,6 +118,7 @@ type Response struct {
 	Fixed   int         `json:"fixed,omitempty"`
 	Data    interface{} `json:"data,omitempty"`
 }
+
 // ═══════════════════════════════════
 // Operations catalog
 // ═══════════════════════════════════
@@ -240,7 +241,7 @@ func handleOp(req Request) Response {
 		if err := checkFolderRelPath(req.RelPath); err != nil {
 			return Response{Error: err.Error()}
 		}
-		sharePath, err := getSharePath(req.ShareName)
+		sharePath, err := getManagedSharePath(req.ShareName)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
@@ -278,7 +279,7 @@ func handleOp(req Request) Response {
 		if err := checkFolderRelPath(req.RelPath); err != nil {
 			return Response{Error: err.Error()}
 		}
-		sharePath, err := getSharePath(req.ShareName)
+		sharePath, err := getManagedSharePath(req.ShareName)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
@@ -309,7 +310,7 @@ func handleOp(req Request) Response {
 		if err := checkUsername(req.Username); err != nil {
 			return Response{Error: err.Error()}
 		}
-		sharePath, err := getSharePath(req.ShareName)
+		sharePath, err := getManagedSharePath(req.ShareName)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
@@ -330,7 +331,7 @@ func handleOp(req Request) Response {
 		if err := checkUsername(req.Username); err != nil {
 			return Response{Error: err.Error()}
 		}
-		sharePath, err := getSharePath(req.ShareName)
+		sharePath, err := getManagedSharePath(req.ShareName)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
@@ -350,7 +351,7 @@ func handleOp(req Request) Response {
 		if err := checkUsername(req.Username); err != nil {
 			return Response{Error: err.Error()}
 		}
-		sharePath, err := getSharePath(req.ShareName)
+		sharePath, err := getManagedSharePath(req.ShareName)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
@@ -367,7 +368,7 @@ func handleOp(req Request) Response {
 		if err := checkFolderRelPath(req.RelPath); err != nil {
 			return Response{Error: err.Error()}
 		}
-		sharePath, err := getSharePath(req.ShareName)
+		sharePath, err := getManagedSharePath(req.ShareName)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
@@ -659,6 +660,7 @@ func writeResponse(conn net.Conn, resp Response) {
 	data, _ := json.Marshal(resp)
 	conn.Write(data)
 }
+
 // ═══════════════════════════════════
 // Socket server
 // ═══════════════════════════════════

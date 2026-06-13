@@ -12,6 +12,23 @@ import (
 // MANAGED FOLDERS · helpers de soporte para las ops folder.* · Beta 8.1
 // ═══════════════════════════════════════════════════════════════════════
 
+// getManagedSharePath resuelve el path de un share leyendo de SQLite (fuente
+// de verdad moderna), no del shares.json legacy. getSharePath() usa el JSON
+// viejo que en sistemas migrados no existe; las ops folder.* deben usar esta.
+func getManagedSharePath(shareName string) (string, error) {
+	if err := checkShareName(shareName); err != nil {
+		return "", err
+	}
+	share, err := dbSharesGetRaw(shareName)
+	if err != nil {
+		return "", fmt.Errorf("share %q not found: %w", shareName, err)
+	}
+	if share.Path == "" {
+		return "", fmt.Errorf("share %q has no path", shareName)
+	}
+	return share.Path, nil
+}
+
 // checkFolderRelPath valida la ruta relativa de una carpeta gestionada.
 // v1 es PLANO: solo primer nivel dentro del share. Reglas:
 //   - no vacía
