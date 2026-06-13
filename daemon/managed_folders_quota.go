@@ -33,21 +33,40 @@ import (
 func btrfsQuotaEnabled(mountPoint string) (bool, error) {
 	opts := CmdOptions{Timeout: 15 * time.Second}
 	res, err := runCmd("btrfs", []string{"qgroup", "show", mountPoint}, opts)
+	enabled, classifyErr := interpretQuotaShow(res, err)
+	if classifyErr != nil {
+		return false, fmt.Errorf("btrfs qgroup show %s: %w", mountPoint, classifyErr)
+	}
+	return enabled, nil
+}
+
+// interpretQuotaShow traduce el resultado de `btrfs qgroup show` a un estado
+// de quota. Función PURA (sin ejecutar nada) para poder testear los tres
+// casos sin BTRFS real:
+//   - éxito (code 0)                  → (true, nil)   quota habilitada
+//   - "quotas not enabled"            → (false, nil)  quota deshabilitada (no es error)
+//   - cualquier otro fallo            → (false, err)  error real
+//
+// CLAVE: cuando runCmd falla (código != 0), devuelve CmdResult VACÍO y mete
+// el stderr DENTRO del error. Por eso inspeccionamos también err.Error().
+func interpretQuotaShow(res CmdResult, err error) (bool, error) {
 	if err == nil && res.Code == 0 {
-		// Listó qgroups sin error → quota habilitada.
 		return true, nil
 	}
-	// BTRFS responde "quotas not enabled" (o variantes) en stderr cuando no
-	// está habilitada. Eso NO es un fallo de ejecución, es la respuesta "no".
-	combined := strings.ToLower(res.Stderr + res.Stdout)
-	if strings.Contains(combined, "quota") && strings.Contains(combined, "not enabled") {
+
+	msg := strings.ToLower(res.Stderr + " " + res.Stdout)
+	if err != nil {
+		msg += " " + strings.ToLower(err.Error())
+	}
+
+	if strings.Contains(msg, "quota") && strings.Contains(msg, "not enabled") {
 		return false, nil
 	}
-	// Cualquier otra cosa es un error real (path inexistente, no es btrfs...).
+
 	if err != nil {
-		return false, fmt.Errorf("btrfs qgroup show %s: %w (stderr: %s)", mountPoint, err, res.Stderr)
+		return false, err
 	}
-	return false, fmt.Errorf("btrfs qgroup show %s: code=%d stderr=%s", mountPoint, res.Code, res.Stderr)
+	return false, fmt.Errorf("code=%d stderr=%s", res.Code, res.Stderr)
 }
 
 // ensureBtrfsQuotaEnabled habilita la quota en el pool si no lo está ya.
@@ -64,7 +83,7 @@ func ensureBtrfsQuotaEnabled(mountPoint string) error {
 	opts := CmdOptions{Timeout: 30 * time.Second}
 	res, err := runCmd("btrfs", []string{"quota", "enable", mountPoint}, opts)
 	if err != nil {
-		return fmt.Errorf("btrfs quota enable %s: %w (stderr: %s)", mountPoint, err, res.Stderr)
+		return fmt.Errorf("btrfs quota enable %s: %w", mountPoint, err)
 	}
 	if res.Code != 0 {
 		return fmt.Errorf("btrfs quota enable %s: code=%d stderr=%s", mountPoint, res.Code, res.Stderr)
