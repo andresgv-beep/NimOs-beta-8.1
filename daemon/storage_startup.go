@@ -461,8 +461,14 @@ func appendFstab(uuid, mountPoint, filesystem string) {
 	}
 	logMsg("appendFstab: read /etc/fstab (%d bytes)", len(existing))
 
-	if strings.Contains(string(existing), mountPoint) {
-		logMsg("appendFstab: skip — mount point %s already in fstab", mountPoint)
+	// BUG (saga 12-13/06): el check anterior usaba strings.Contains sobre el
+	// fstab entero. Eso da FALSO POSITIVO cuando el mountpoint es substring de
+	// otra entrada (p.ej. /nimos/pools/datatest1 contiene /nimos/pools/datatest,
+	// o un residuo viejo), provocando un skip silencioso → la entrada NUNCA se
+	// escribe → el pool se monta en caliente pero NO sobrevive al reinicio →
+	// cae a directorio hueco en el disco de sistema. Comparar campo a campo.
+	if fstabHasMountpoint(string(existing), mountPoint) {
+		logMsg("appendFstab: skip — mount point %s already in fstab (exact match)", mountPoint)
 		return
 	}
 
@@ -487,4 +493,37 @@ func appendFstab(uuid, mountPoint, filesystem string) {
 		return
 	}
 	logMsg("appendFstab: added %s (wrote %d bytes)", mountPoint, n)
+
+	// Verificación post-escritura: releer y confirmar que la entrada quedó.
+	// Si no aparece, el pool quedaría sin ancla y caería a directorio hueco
+	// en el próximo reinicio — lo que provocó toda la saga. Mejor saberlo ya.
+	if after, rerr := os.ReadFile("/etc/fstab"); rerr == nil {
+		if !fstabHasMountpoint(string(after), mountPoint) {
+			logMsg("appendFstab: WARNING — entry for %s NOT found after write; pool won't auto-mount on reboot", mountPoint)
+		} else {
+			logMsg("appendFstab: verified entry for %s persisted", mountPoint)
+		}
+	}
+}
+
+// fstabHasMountpoint comprueba si el mountpoint ya existe como CAMPO EXACTO
+// (segunda columna) en alguna línea no comentada de fstab. Evita el falso
+// positivo de strings.Contains, que matchea substrings de otras rutas.
+func fstabHasMountpoint(fstabContent, mountPoint string) bool {
+	target := strings.TrimRight(mountPoint, "/")
+	for _, line := range strings.Split(fstabContent, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) < 2 {
+			continue
+		}
+		// fields[1] es el mountpoint en fstab. Comparación exacta (normalizada).
+		if strings.TrimRight(fields[1], "/") == target {
+			return true
+		}
+	}
+	return false
 }
