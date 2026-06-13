@@ -39,6 +39,13 @@ func handleSharesRoutes(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	method := r.Method
 
+	// Managed folders (Fase 3): /api/shares/{share}/folders[/{id}]
+	// Se intercepta antes del routing de shares para no chocar con el regex
+	// de recurso simple. Si la atiende, terminamos aquí.
+	if tryHandleFolderRoutes(w, r) {
+		return
+	}
+
 	// Colección · GET /api/shares · POST /api/shares
 	if path == "/api/shares" {
 		switch method {
