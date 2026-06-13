@@ -37,6 +37,11 @@
     <path d="M7 7h0.01M7 17h0.01" />
   {:else if name === 'download'}
     <path d="M12 3v12M7 11l5 5 5-5M4 20h16" />
+  {:else if name === 'folder'}
+    <path d="M3 7a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z" />
+  {:else if name === 'shield'}
+    <path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6Z" />
+    <path d="M9 12l2 2 4-4" />
   {:else}
     <rect x="4" y="4" width="16" height="16" rx="2" />
   {/if}
