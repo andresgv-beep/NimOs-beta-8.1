@@ -31,6 +31,8 @@ export const WIDGET_CATALOG = [
   {
     id: 'clock',
     name: 'Reloj',
+    icon: 'clock',
+    desc: 'Hora y fecha',
     w: 1,
     h: 1,
     topic: null,          // no necesita datos del backend
@@ -41,6 +43,8 @@ export const WIDGET_CATALOG = [
   {
     id: 'sysmon',
     name: 'Sistema',
+    icon: 'cpu',
+    desc: 'CPU · RAM',
     w: 2,
     h: 1,
     topic: 'system',      // /api/hardware/stats · CPU + RAM rings
@@ -51,6 +55,8 @@ export const WIDGET_CATALOG = [
   {
     id: 'syspanel',
     name: 'Sistema 2×2',
+    icon: 'cpu',
+    desc: 'CPU · RAM · temp · uptime',
     w: 2,
     h: 2,
     topic: 'system',      // mismo topic que sysmon · polling compartido
@@ -61,6 +67,8 @@ export const WIDGET_CATALOG = [
   {
     id: 'cpu',
     name: 'CPU',
+    icon: 'cpu',
+    desc: 'Uso de CPU',
     w: 1,
     h: 1,
     topic: 'system',      // mismo topic que sysmon · un solo polling compartido
@@ -72,6 +80,8 @@ export const WIDGET_CATALOG = [
   {
     id: 'ram',
     name: 'RAM',
+    icon: 'ram',
+    desc: 'Uso de memoria',
     w: 1,
     h: 1,
     topic: 'system',      // mismo topic que sysmon
@@ -82,17 +92,25 @@ export const WIDGET_CATALOG = [
   },
   {
     id: 'storage',
-    name: 'Storage',
+    name: 'Almacenamiento',
+    icon: 'hdd',
+    desc: 'Pools BTRFS',
     w: 2,
     h: 1,
     topic: 'storage',     // /api/storage/v2/pools (+smart en el widget)
     component: Storage,
     defaultOn: true,
     sizes: [[2, 1], [2, 2]],
+    // Widget configurable: el usuario elige qué pools ver (config.pools).
+    // Lista vacía/ausente = todos los pools. La fuente de opciones es
+    // el propio topic 'storage'. Ver WidgetConfig.svelte.
+    configurable: 'pools',
   },
   {
     id: 'network',
     name: 'Red',
+    icon: 'activity',
+    desc: 'Tráfico de interfaces',
     w: 2,
     h: 1,
     topic: 'network',     // /api/network · sparklines DL/UL
@@ -103,6 +121,8 @@ export const WIDGET_CATALOG = [
   {
     id: 'services',
     name: 'Servicios',
+    icon: 'services',
+    desc: 'Estado de servicios',
     w: 2,
     h: 1,
     topic: 'services',    // /api/services · NimHealth
@@ -115,6 +135,8 @@ export const WIDGET_CATALOG = [
   {
     id: 'nimtorrent',
     name: 'NimTorrent',
+    icon: 'download',
+    desc: 'Descargas torrent',
     w: 2,
     h: 1,
     topic: 'torrent',     // /api/torrent/torrents · proxy Go → torrentd
