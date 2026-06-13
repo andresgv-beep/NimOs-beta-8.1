@@ -44,3 +44,22 @@ func TestOrphanDirSweep_SkipsWhenNoPoolsKnown(t *testing.T) {
 		t.Errorf("skip no es error; got Err=%v", res.Err)
 	}
 }
+
+// SEGURIDAD (el escenario de Andrés): sin servicio disponible, la variante
+// GUARDED también se abstiene. Documenta que la tarea de mantenimiento nunca
+// limpia "a ciegas". El guard de operaciones-en-curso y el de ListPools-falla
+// se ejercitan en integración con hardware real; aquí fijamos el contrato de
+// que cualquier incertidumbre → Skipped, nunca borrado.
+func TestOrphanDirSweep_GuardedSkipsWithoutService(t *testing.T) {
+	orig := storageService
+	storageService = nil
+	defer func() { storageService = orig }()
+
+	_, _, skipped, reason := cleanOrphanPoolDirsGuarded()
+	if !skipped {
+		t.Error("guarded sin servicio debe SKIP")
+	}
+	if reason == "" {
+		t.Error("el skip debe explicar el motivo (se muestra en la UI)")
+	}
+}

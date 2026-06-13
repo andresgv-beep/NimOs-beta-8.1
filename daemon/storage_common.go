@@ -188,16 +188,56 @@ func cleanOrphanPoolDirs() {
 // la guarda de seguridad, y el motivo del skip. Misma lógica y mismas guardas
 // que antes — solo añade contabilidad para el módulo de mantenimiento.
 func cleanOrphanPoolDirsResult() (removed int64, bytesFreed int64, skipped bool, skipReason string) {
-	// Build set of known mount points (Beta 8.1: service v2)
+	return cleanOrphanPoolDirsCore(false)
+}
+
+// cleanOrphanPoolDirsGuarded es la variante para el subsistema de mantenimiento
+// (lanzada por el usuario o por schedule). Añade una salvaguarda extra: se
+// abstiene si hay CUALQUIER operación de storage en curso, porque un pool puede
+// estar en transición (p.ej. cambiando un disco: desmontado, a medio remontar).
+// Las llamadas internas (boot, post-destroy) usan cleanOrphanPoolDirsResult,
+// que NO aplica este guard porque corren en un contexto controlado donde la
+// propia operación que las dispara sigue in_progress.
+func cleanOrphanPoolDirsGuarded() (removed int64, bytesFreed int64, skipped bool, skipReason string) {
+	return cleanOrphanPoolDirsCore(true)
+}
+
+// cleanOrphanPoolDirsCore es el núcleo. checkActiveOps=true añade la salvaguarda
+// de "no limpiar si hay operaciones de storage en curso" (para la limpieza
+// manual/programada del mantenimiento).
+func cleanOrphanPoolDirsCore(checkActiveOps bool) (removed int64, bytesFreed int64, skipped bool, skipReason string) {
+	// ── SALVAGUARDA A · No limpiar durante operaciones de storage ──────────
+	// Solo para la limpieza del mantenimiento. Si hay una operación en curso
+	// (crear/destruir/añadir disco/reemplazar/convertir/renombrar/balance), un
+	// pool puede estar EN TRANSICIÓN: desmontado, a medio remontar, o con su
+	// entrada de BD en flujo. Limpiar ahí es el escenario peligroso. Ante una
+	// operación activa, NO tocamos nada.
+	if checkActiveOps && storageService != nil {
+		if ops, err := storageService.repo.ListPendingOperations(context.Background()); err != nil {
+			return 0, 0, true, "no se pudo verificar si hay operaciones de storage en curso — no se limpia por seguridad"
+		} else if len(ops) > 0 {
+			return 0, 0, true, fmt.Sprintf("hay %d operación(es) de storage en curso — la limpieza espera a que terminen", len(ops))
+		}
+	}
+
+	// ── SALVAGUARDA B · La lista de pools debe leerse SIN error ────────────
+	// Si ListPools falla (BD bloqueada, error transitorio), NO podemos saber
+	// qué dirs son legítimos → NO limpiamos. Antes el error se descartaba en
+	// silencio y se caía al guard de len==0; ahora es explícito.
 	knownMounts := map[string]bool{}
 	if storageService != nil {
-		if pools, err := storageService.ListPools(context.Background()); err == nil {
-			for _, p := range pools {
-				if p.MountPoint != "" {
-					knownMounts[p.MountPoint] = true
-				}
+		pools, err := storageService.ListPools(context.Background())
+		if err != nil {
+			return 0, 0, true, "no se pudo leer la lista de pools (BD ocupada o error) — no se limpia por seguridad"
+		}
+		for _, p := range pools {
+			if p.MountPoint != "" {
+				knownMounts[p.MountPoint] = true
 			}
 		}
+	} else {
+		// Sin servicio de storage no hay forma de saber qué es legítimo.
+		return 0, 0, true, "servicio de storage no disponible — no se limpia por seguridad"
 	}
 
 	// SAFETY GUARD: if we have no known pools, do nothing. A corrupt or

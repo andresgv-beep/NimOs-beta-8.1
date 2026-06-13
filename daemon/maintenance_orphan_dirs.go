@@ -40,7 +40,9 @@ func (t *orphanDirSweepTask) DefaultSchedule() Schedule {
 }
 
 func (t *orphanDirSweepTask) Run(ctx context.Context) MaintenanceResult {
-	removed, bytesFreed, skipped, skipReason := cleanOrphanPoolDirsResult()
+	// Usa la variante GUARDED: se abstiene si hay operaciones de storage en
+	// curso (un pool podría estar en transición, p.ej. cambiando un disco).
+	removed, bytesFreed, skipped, skipReason := cleanOrphanPoolDirsGuarded()
 	if skipped {
 		return MaintenanceResult{Skipped: true, SkipReason: skipReason}
 	}
