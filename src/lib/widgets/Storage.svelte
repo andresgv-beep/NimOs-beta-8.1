@@ -31,7 +31,11 @@
   $: allPools = Array.isArray($data?.data) ? $data.data : null;
   $: multi = h >= 2;
 
-  $: wanted = Array.isArray(config?.pools) ? config.pools : [];
+  // Modelo multi-instancia: cada caja muestra el pool de config.pool.
+  // Compatibilidad: config.pools (lista) y ausencia = auto.
+  $: wanted = config?.pool ? [config.pool]
+    : Array.isArray(config?.pools) ? config.pools
+    : [];
   $: shown = (() => {
     if (!allPools) return null;
     let sel = wanted.length
