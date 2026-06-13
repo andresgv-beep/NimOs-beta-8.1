@@ -24,8 +24,13 @@
 
   export let def;
   export let config = {};
+  export let size = null; // [cw, ch] talla actual del widget colocado
 
   const dispatch = createEventDispatcher();
+
+  // Cuántos pools admite la talla actual: 2×2 = varios, resto = 1.
+  // (regla junio 2026: el nuevo Storage apila cards solo en 2×2)
+  $: multiPool = Array.isArray(size) && size[0] >= 2 && size[1] >= 2;
 
   // Fuente de opciones según el tipo de configurable.
   const topic = def.configurable === 'pools' ? 'storage'
@@ -48,19 +53,32 @@
   // Selección local (copia editable). [] = todos.
   let selected = Array.isArray(config?.pools) ? [...config.pools] : [];
 
-  $: allMode = selected.length === 0; // vacío = todos
+  // En talla de 1 pool, normaliza a un único seleccionado.
+  $: if (!multiPool && selected.length > 1) selected = [selected[0]];
+
+  // "Todos" solo aplica en multiPool (varios). En talla de 1 pool,
+  // vacío significa "el primero/primario", no todos.
+  $: allMode = multiPool && selected.length === 0;
 
   function toggle(key) {
-    if (selected.includes(key)) selected = selected.filter(k => k !== key);
-    else selected = [...selected, key];
+    if (multiPool) {
+      // checkbox: añade/quita
+      if (selected.includes(key)) selected = selected.filter(k => k !== key);
+      else selected = [...selected, key];
+    } else {
+      // radio: reemplaza (un solo pool)
+      selected = selected.includes(key) && selected.length === 1 ? [] : [key];
+    }
   }
   function setAll() { selected = []; }
 
   function apply() {
-    // Si selecciona todos los que hay, lo normalizamos a [] (= todos)
     const next = { ...config };
-    if (options && selected.length === options.length) next.pools = [];
-    else next.pools = [...selected];
+    if (multiPool && options && selected.length === options.length) {
+      next.pools = []; // todos
+    } else {
+      next.pools = [...selected];
+    }
     dispatch('save', next);
     dispatch('close');
   }
@@ -79,15 +97,22 @@
 
   <div class="body">
     {#if def.configurable === 'pools'}
-      <div class="hint">Elige qué pools muestra este widget.</div>
+      <div class="hint">
+        {#if multiPool}
+          Elige qué pools muestra este widget.
+        {:else}
+          Elige el pool a mostrar. <small>Esta talla muestra un solo pool; usa 2×2 para ver varios.</small>
+        {/if}
+      </div>
 
-      <button class="row all" class:on={allMode} on:click={setAll}>
-        <span class="chk">{allMode ? '✓' : ''}</span>
-        <span class="row-label">Todos los pools</span>
-        <span class="row-meta">automático</span>
-      </button>
-
-      <div class="sep"></div>
+      {#if multiPool}
+        <button class="row all" class:on={allMode} on:click={setAll}>
+          <span class="chk">{allMode ? '✓' : ''}</span>
+          <span class="row-label">Todos los pools</span>
+          <span class="row-meta">automático</span>
+        </button>
+        <div class="sep"></div>
+      {/if}
 
       {#if options === null}
         <div class="state">Cargando pools…</div>
@@ -100,7 +125,13 @@
             class:on={selected.includes(o.key)}
             on:click={() => toggle(o.key)}
           >
-            <span class="chk">{selected.includes(o.key) ? '✓' : ''}</span>
+            <span class="chk" class:radio={!multiPool}>
+              {#if multiPool}
+                {selected.includes(o.key) ? '✓' : ''}
+              {:else}
+                <span class="dot" class:fill={selected.includes(o.key)}></span>
+              {/if}
+            </span>
             <span class="disk" aria-hidden="true">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
                 <rect x="3" y="5" width="18" height="14" rx="1" />
@@ -179,6 +210,29 @@
     font-size: 11px;
     color: var(--ink-mute);
     margin-bottom: 10px;
+  }
+  .hint small {
+    display: block;
+    margin-top: 3px;
+    font-size: 10px;
+    color: var(--ink-faint);
+  }
+  .chk.radio {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .dot {
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    border: 1.5px solid var(--line-strong, var(--line-bright));
+    box-sizing: border-box;
+  }
+  .dot.fill {
+    border-color: var(--signal);
+    background:
+      radial-gradient(circle, var(--signal) 0 45%, transparent 47%);
   }
   .row {
     display: flex;

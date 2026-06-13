@@ -518,6 +518,7 @@
     catalog={WIDGET_CATALOG}
     {activeIds}
     on:add={(e) => addWidget(e.detail)}
+    on:configure={(e) => openConfig(e.detail.id)}
     on:close={() => (pickerOpen = false)}
   />
 
@@ -526,6 +527,7 @@
     <WidgetConfig
       def={configDef}
       config={configEntry?.config || {}}
+      size={currentSize(configFor)}
       on:save={(e) => saveConfig(e.detail)}
       on:close={closeConfig}
     />

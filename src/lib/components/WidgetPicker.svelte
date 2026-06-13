@@ -37,7 +37,10 @@
   // escala para caber aquí manteniendo proporción de la talla real.
   const PREVIEW_MAX_W = 150;
 
-  $: available = catalog.filter(w => !activeIds.has(w.id));
+  // Filtra los ya colocados, EXCEPTO los configurables (ej. Storage):
+  // esos siguen ofreciéndose porque su contenido (pools) se ajusta
+  // desde la config, no añadiendo más instancias.
+  $: available = catalog.filter(w => w.configurable || !activeIds.has(w.id));
 
   // Construye los "tiles" (opciones de talla) de una entrada: cada uno
   // recuerda de qué id/componente sale, para que al elegir se añada la
@@ -117,7 +120,13 @@
   }
 
   function choose(id, size) {
-    dispatch('add', { id, size });
+    // Si ya está colocado (caso de los configurables como Storage),
+    // no se re-añade: se abre su configuración directamente.
+    if (activeIds.has(id)) {
+      dispatch('configure', { id });
+    } else {
+      dispatch('add', { id, size });
+    }
     dispatch('close');
   }
   function close() { dispatch('close'); }
