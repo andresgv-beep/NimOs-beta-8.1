@@ -20,16 +20,23 @@
    *   add   { id, size: [w,h] }
    *   close
    */
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, onMount } from 'svelte';
   import WidgetIcon from '$lib/widgets/parts/WidgetIcon.svelte';
   import { GROUP_ORDER } from '$lib/widgets/index.js';
   import { portal } from '$lib/actions/portal.js';
+  import { topicStore, acquire } from '$lib/stores/widgetData.js';
 
   export let open = false;
   export let catalog = [];
   export let activeIds = new Set();
 
   const dispatch = createEventDispatcher();
+
+  // Pools en vivo, para expandir widgets multi-instancia (Storage).
+  // Se suscribe solo mientras el picker está montado.
+  const storageData = topicStore('storage');
+  onMount(() => acquire('storage'));
+  $: pools = Array.isArray($storageData?.data) ? $storageData.data : [];
 
   // Celda base (igual que WidgetLayer) para escalar el preview.
   const CELL = 144, GAP = 14;
@@ -40,14 +47,37 @@
   // Filtra los ya colocados, EXCEPTO los configurables (ej. Storage):
   // esos siguen ofreciéndose porque su contenido (pools) se ajusta
   // desde la config, no añadiendo más instancias.
-  $: available = catalog.filter(w => w.configurable || !activeIds.has(w.id));
+  // Lista de entradas a ofrecer. Los widgets normales se filtran por
+  // "ya colocado". Los multi-instancia (instancePer) se EXPANDEN: una
+  // entrada virtual por cada pool que aún no tenga su caja, con id
+  // derivado "storage:<pool>" y su config.pool.
+  $: available = catalog.flatMap(w => {
+    if (w.instancePer === 'pools') {
+      return pools
+        .map(p => p.name)
+        .filter(name => !activeIds.has(`${w.id}:${name}`))
+        .map(name => ({
+          ...w,
+          _instanceId: `${w.id}:${name}`,
+          _config: { pool: name },
+          name: name,                 // el nombre del pool es el título
+          desc: `Pool · ${w.desc}`,
+        }));
+    }
+    // normal: oculto si ya está (los configurables siguen visibles)
+    return (w.configurable || !activeIds.has(w.id)) ? [w] : [];
+  });
 
-  // Construye los "tiles" (opciones de talla) de una entrada: cada uno
-  // recuerda de qué id/componente sale, para que al elegir se añada la
-  // entrada correcta.
+  // Construye los "tiles" (opciones de talla) de una entrada. Para
+  // entradas virtuales (multi-instancia) usa el id derivado y arrastra
+  // su config, de modo que al elegir se añade la instancia correcta.
   function tilesOf(w) {
     return (w.sizes || [[w.w, w.h]]).map(([cw, ch]) => ({
-      id: w.id, cw, ch, component: w.component, props: w.props || {},
+      id: w._instanceId || w.id,
+      cw, ch,
+      component: w.component,
+      props: w.props || {},
+      config: w._config || {},
     }));
   }
 
@@ -87,7 +117,7 @@
             }
           } else {
             items.push({
-              key: w.id,
+              key: w._instanceId || w.id,
               name: w.name, icon: w.icon, desc: w.desc,
               order: w.order ?? 0,
               tiles: tilesOf(w),
@@ -119,13 +149,12 @@
     return Math.min(1, PREVIEW_MAX_W / realW);
   }
 
-  function choose(id, size) {
-    // Si ya está colocado (caso de los configurables como Storage),
-    // no se re-añade: se abre su configuración directamente.
+  function choose(id, size, config) {
+    // Si ya está colocado (caso de los configurables), abre su config.
     if (activeIds.has(id)) {
       dispatch('configure', { id });
     } else {
-      dispatch('add', { id, size });
+      dispatch('add', { id, size, config });
     }
     dispatch('close');
   }
@@ -163,7 +192,7 @@
                   {@const px = cellPx(t.cw, t.ch)}
                   {@const sc = scaleFor(t.cw)}
                   <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
-                  <div class="opt" on:click={() => choose(t.id, [t.cw, t.ch])}>
+                  <div class="opt" on:click={() => choose(t.id, [t.cw, t.ch], t.config)}>
                     <div
                       class="frame"
                       style="width:{px.w * sc}px; height:{px.h * sc}px;"
@@ -180,7 +209,7 @@
                             this={t.component}
                             w={t.cw} h={t.ch}
                             {...t.props}
-                            config={{}}
+                            config={t.config || {}}
                           />
                         </div>
                       {:else}

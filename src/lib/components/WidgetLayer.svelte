@@ -334,9 +334,10 @@
     closeMenu();
   }
 
-  // Añade un widget con una talla concreta elegida en el picker.
-  // Reusa la colocación de toggleWidget (preset o primer hueco libre).
-  function addWidget({ id, size }) {
+  // Añade un widget con talla y config concretos elegidos en el picker.
+  // Para multi-instancia, `id` ya viene derivado ("storage:data1") y
+  // `config` trae { pool }.
+  function addWidget({ id, size, config }) {
     if (activeIds.has(id)) return; // ya está
     const def = WIDGET_BY_ID[id];
     if (!def) return;
@@ -357,6 +358,10 @@
     // Talla elegida en el picker (si no es la de serie, se guarda)
     if (Array.isArray(size) && (size[0] !== def.w || size[1] !== def.h)) {
       entry.size = [size[0], size[1]];
+    }
+    // Config de instancia (ej. { pool: 'data1' } para storage:data1)
+    if (config && Object.keys(config).length) {
+      entry.config = { ...config };
     }
     saveLayout([...layout, entry]);
   }
