@@ -39,8 +39,20 @@
 
   $: available = catalog.filter(w => !activeIds.has(w.id));
 
-  // Agrupa por familia (group) en el orden de GROUP_ORDER, y dentro
-  // de cada familia por `order`. Familias sin nombre caen en 'Otros'.
+  // Construye los "tiles" (opciones de talla) de una entrada: cada uno
+  // recuerda de qué id/componente sale, para que al elegir se añada la
+  // entrada correcta.
+  function tilesOf(w) {
+    return (w.sizes || [[w.w, w.h]]).map(([cw, ch]) => ({
+      id: w.id, cw, ch, component: w.component, props: w.props || {},
+    }));
+  }
+
+  // Agrupa por familia (group) y, dentro, fusiona las entradas que
+  // comparten `mergeKey` en un solo apartado (ej. sysmon 2×1 + syspanel
+  // 2×2 → un único "Sistema" con dos tallas). El apartado fusionado
+  // toma nombre/icono/desc de la entrada de menor `order`, y junta los
+  // tiles de todas. Entradas sin mergeKey = apartado propio.
   $: grouped = (() => {
     const byGroup = {};
     for (const w of available) {
@@ -48,12 +60,48 @@
       (byGroup[g] ||= []).push(w);
     }
     const order = [...GROUP_ORDER, 'Otros'];
+
     return order
       .filter(g => byGroup[g]?.length)
-      .map(g => ({
-        name: g,
-        items: byGroup[g].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
-      }));
+      .map(g => {
+        // fusión por mergeKey dentro de la familia
+        const merged = {};   // mergeKey -> item
+        const items = [];
+        for (const w of byGroup[g].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))) {
+          if (w.mergeKey) {
+            if (!merged[w.mergeKey]) {
+              merged[w.mergeKey] = {
+                key: w.mergeKey,
+                // Nombre base sin la talla (ej. "Sistema", no "Sistema 2×2")
+                name: w.name.replace(/\s*\d+×\d+\s*$/, '').trim(),
+                icon: w.icon, desc: w.desc,
+                order: w.order ?? 0,
+                tiles: [...tilesOf(w)],
+              };
+              items.push(merged[w.mergeKey]);
+            } else {
+              merged[w.mergeKey].tiles.push(...tilesOf(w));
+            }
+          } else {
+            items.push({
+              key: w.id,
+              name: w.name, icon: w.icon, desc: w.desc,
+              order: w.order ?? 0,
+              tiles: tilesOf(w),
+            });
+          }
+        }
+        // dedupe de tallas iguales dentro de un apartado fusionado
+        for (const it of items) {
+          const seen = new Set();
+          it.tiles = it.tiles.filter(t => {
+            const k = t.cw + 'x' + t.ch;
+            if (seen.has(k)) return false;
+            seen.add(k); return true;
+          });
+        }
+        return { name: g, items };
+      });
   })();
 
   function cellPx(cw, ch) {
@@ -93,25 +141,25 @@
       {#each grouped as fam (fam.name)}
         <div class="group">
           <div class="group-head">{fam.name}</div>
-          {#each fam.items as w (w.id)}
+          {#each fam.items as item (item.key)}
             <section class="sec">
               <div class="sec-head">
-                <span class="sec-ic"><WidgetIcon name={w.icon} size={16} /></span>
-                <span class="sec-name">{w.name}</span>
-                <span class="sec-desc">{w.desc || ''}</span>
+                <span class="sec-ic"><WidgetIcon name={item.icon} size={16} /></span>
+                <span class="sec-name">{item.name}</span>
+                <span class="sec-desc">{item.desc || ''}</span>
               </div>
 
               <div class="opts">
-                {#each (w.sizes || [[w.w, w.h]]) as [cw, ch] (cw + 'x' + ch)}
-                  {@const px = cellPx(cw, ch)}
-                  {@const sc = scaleFor(cw)}
+                {#each item.tiles as t (t.cw + 'x' + t.ch)}
+                  {@const px = cellPx(t.cw, t.ch)}
+                  {@const sc = scaleFor(t.cw)}
                   <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
-                  <div class="opt" on:click={() => choose(w.id, [cw, ch])}>
+                  <div class="opt" on:click={() => choose(t.id, [t.cw, t.ch])}>
                     <div
                       class="frame"
                       style="width:{px.w * sc}px; height:{px.h * sc}px;"
                     >
-                      {#if w.component}
+                      {#if t.component}
                         <div
                           class="scaler"
                           style="
@@ -120,17 +168,17 @@
                           "
                         >
                           <svelte:component
-                            this={w.component}
-                            w={cw} h={ch}
-                            {...(w.props || {})}
+                            this={t.component}
+                            w={t.cw} h={t.ch}
+                            {...t.props}
                             config={{}}
                           />
                         </div>
                       {:else}
-                        <div class="ph">{cw}×{ch}</div>
+                        <div class="ph">{t.cw}×{t.ch}</div>
                       {/if}
                     </div>
-                    <span class="opt-label">{cw}×{ch}</span>
+                    <span class="opt-label">{t.cw}×{t.ch}</span>
                   </div>
                 {/each}
               </div>
