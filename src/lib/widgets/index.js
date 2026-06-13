@@ -115,10 +115,11 @@ export const WIDGET_CATALOG = [
     component: Storage,
     defaultOn: true,
     sizes: [[2, 1], [2, 2]],
-    // Widget configurable: el usuario elige qué pools ver (config.pools).
-    // Lista vacía/ausente = todos los pools. La fuente de opciones es
-    // el propio topic 'storage'. Ver WidgetConfig.svelte.
-    configurable: 'pools',
+    // Multi-instancia: una caja por pool. El picker lee el topic
+    // 'storage' y ofrece añadir un widget por cada pool que aún no
+    // tenga el suyo. El id de instancia es "storage:<pool>"; el
+    // componente recibe config.pool con el nombre. Ver splitInstanceId.
+    instancePer: 'pools',
   },
   {
     id: 'network',
@@ -196,9 +197,38 @@ export const WIDGET_CATALOG = [
 ];
 
 /** Lookup rápido por id. */
-export const WIDGET_BY_ID = Object.fromEntries(
-  WIDGET_CATALOG.map(w => [w.id, w])
-);
+/**
+ * splitInstanceId · separa un id de instancia en { base, variant }.
+ * Los widgets multi-instancia usan ids derivados "base:variant"
+ * (ej. "storage:data1"). El motor sigue tratando el id completo como
+ * instancia única; solo el lookup de definición y la config saben
+ * descomponerlo.
+ */
+export function splitInstanceId(id) {
+  const i = (id || '').indexOf(':');
+  if (i === -1) return { base: id, variant: null };
+  return { base: id.slice(0, i), variant: id.slice(i + 1) };
+}
+
+const _byId = Object.fromEntries(WIDGET_CATALOG.map(w => [w.id, w]));
+
+// Proxy: un id derivado "storage:data1" resuelve a la def base
+// "storage" sin que el resto del motor tenga que cambiar.
+export const WIDGET_BY_ID = new Proxy(_byId, {
+  get(target, key) {
+    if (typeof key === 'string' && !(key in target)) {
+      const { base } = splitInstanceId(key);
+      if (base in target) return target[base];
+    }
+    return target[key];
+  },
+  has(target, key) {
+    if (typeof key === 'string' && !(key in target)) {
+      return splitInstanceId(key).base in target;
+    }
+    return key in target;
+  },
+});
 
 /**
  * Talla efectiva de una instancia de widget.
@@ -228,9 +258,11 @@ export function widgetSize(item, def) {
 export const DEFAULT_LAYOUT = [
   { id: 'clock', col:-1, row: 0 },
   { id: 'sysmon', col:-2, row: 1 },
-  { id: 'storage', col:-2, row: 2 },
   { id: 'network', col:-2, row: 3 },
   { id: 'services', col:-2, row: 4 },
+  // Storage ya no va por defecto: es multi-instancia (una caja por
+  // pool, id "storage:<pool>"). El usuario añade las que quiera desde
+  // el picker, que lee los pools en runtime.
 ];
 
 /** Orden de familias en la ventana de añadir widgets. */
