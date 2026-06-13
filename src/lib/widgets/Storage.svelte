@@ -47,11 +47,15 @@
 
   $: anyBad = (allPools || []).some(p => healthClass(p) !== 'ok');
 
+  // Estados reales del daemon (HealthStatus en nimos_health.go):
+  // healthy | degraded | failed | partial | incomplete | unknown | stale
   function healthClass(p) {
     const s = p?.health?.status;
-    if (!p?.mounted || s === 'critical') return 'crit';
-    if (s === 'at_risk' || s === 'unstable' || s === 'degraded') return 'warn';
-    return 'ok';
+    if (s == null) return 'ok';            // aún sin dato → no alarmar (skeleton)
+    if (!p?.mounted || s === 'failed') return 'crit';
+    if (s === 'healthy') return 'ok';
+    // degraded | partial | incomplete | stale | unknown | cualquier otro
+    return 'warn';
   }
   function barClass(pct) {
     if (pct >= 90) return 'crit';
