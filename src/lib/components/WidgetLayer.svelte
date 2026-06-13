@@ -28,6 +28,8 @@
   import { onMount } from 'svelte';
   import { prefs, setPrefImmediate } from '$lib/stores/theme.js';
   import { WIDGET_CATALOG, WIDGET_BY_ID, DEFAULT_LAYOUT, widgetSize } from '$lib/widgets/index.js';
+  import WidgetPicker from './WidgetPicker.svelte';
+  import WidgetConfig from './WidgetConfig.svelte';
 
   // ─── Geometría del grid ───
   // 1×1 = 144×144 · 2×1 = 302×144 (px CSS, pre-uiScale).
@@ -111,6 +113,7 @@
 
       out.push({
         id: item.id, def, col: c, row: r,
+        config: item.config || null, // config por instancia (ej. pools elegidos)
         cw: sz.w, ch: sz.h, // talla efectiva en celdas
         x: PAD + c * (CELL + GAP),
         y: PAD + r * (CELL + GAP),
@@ -322,6 +325,66 @@
     closeMenu();
   }
 
+  // ═══ Ventana de añadir widgets ═══
+  let pickerOpen = false;
+  $: activeIds = new Set(layout.map(it => it.id));
+
+  function openPicker() {
+    pickerOpen = true;
+    closeMenu();
+  }
+
+  // Añade un widget con una talla concreta elegida en el picker.
+  // Reusa la colocación de toggleWidget (preset o primer hueco libre).
+  function addWidget({ id, size }) {
+    if (activeIds.has(id)) return; // ya está
+    const def = WIDGET_BY_ID[id];
+    if (!def) return;
+    const preset = DEFAULT_LAYOUT.find(d => d.id === id);
+    let entry = preset ? { ...preset } : null;
+    if (!entry) {
+      outer:
+      for (let r = 0; r <= gridRows - def.h; r++) {
+        for (let c = gridCols - def.w; c >= 0; c--) {
+          if (targetFree(c, r, def.w, def.h, null)) {
+            entry = { id, ...encodeIntent(c, r, def.w, def.h) };
+            break outer;
+          }
+        }
+      }
+    }
+    if (!entry) entry = { id, col: -def.w, row: 0 };
+    // Talla elegida en el picker (si no es la de serie, se guarda)
+    if (Array.isArray(size) && (size[0] !== def.w || size[1] !== def.h)) {
+      entry.size = [size[0], size[1]];
+    }
+    saveLayout([...layout, entry]);
+  }
+
+  // ═══ Config de instancia (hover → engranaje) ═══
+  let configFor = null; // id del widget en configuración, o null
+
+  function openConfig(id) {
+    configFor = id;
+    closeMenu();
+  }
+  function closeConfig() { configFor = null; }
+
+  $: configDef = configFor ? WIDGET_BY_ID[configFor] : null;
+  $: configEntry = configFor ? layout.find(it => it.id === configFor) : null;
+
+  function saveConfig(nextConfig) {
+    if (!configFor) return;
+    saveLayout(layout.map(it =>
+      it.id === configFor ? { ...it, config: nextConfig } : it
+    ));
+  }
+
+  function removeWidget(id) {
+    saveLayout(layout.filter(it => it.id !== id));
+    closeConfig();
+  }
+
   function onWindowKeydown(e) {
     if (e.key === 'Escape') closeMenu();
   }
@@ -367,11 +430,38 @@
       on:pointercancel={onWidgetPointerUp}
       on:contextmenu|stopPropagation={(e) => openMenu(e, p.id)}
     >
+      <!-- Controles de hover: configurar (si aplica) + eliminar.
+           Aparecen al pasar por encima; no inician drag (botones). -->
+      <div class="widget-controls">
+        {#if p.def.configurable}
+          <button
+            class="wc-btn"
+            title="Configurar"
+            on:click|stopPropagation={() => openConfig(p.id)}
+            on:pointerdown|stopPropagation
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" />
+            </svg>
+          </button>
+        {/if}
+        <button
+          class="wc-btn"
+          title="Eliminar"
+          on:click|stopPropagation={() => removeWidget(p.id)}
+          on:pointerdown|stopPropagation
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        </button>
+      </div>
       {#if p.def.component}
         <!-- Contrato mínimo: el widget SOLO conoce su talla en celdas
              (+ props estáticas declaradas en el catálogo, ej. metric).
              Nada de col/row/px — el grid es asunto del contenedor. -->
-        <svelte:component this={p.def.component} w={p.cw} h={p.ch} {...(p.def.props || {})} />
+        <svelte:component this={p.def.component} w={p.cw} h={p.ch} {...(p.def.props || {})} config={p.config || {}} />
       {:else}
         <!-- Placeholder · fase contenedor · se sustituye al registrar
              el componente en el catálogo -->
@@ -404,20 +494,41 @@
         <button class="ctx-item" on:click={() => toggleWidget(menu.widgetId)}>
           Ocultar {WIDGET_BY_ID[menu.widgetId]?.name}
         </button>
+        {#if WIDGET_BY_ID[menu.widgetId]?.configurable}
+          <button class="ctx-item" on:click={() => openConfig(menu.widgetId)}>
+            Configurar {WIDGET_BY_ID[menu.widgetId]?.name}…
+          </button>
+        {/if}
         <div class="ctx-sep"></div>
       {/if}
-      <div class="ctx-label">Widgets</div>
-      {#each WIDGET_CATALOG as w (w.id)}
-        <button class="ctx-item" on:click={() => toggleWidget(w.id)}>
-          <span class="ctx-check">{isActive(w.id) ? '✓' : ''}</span>
-          {w.name}
-        </button>
-      {/each}
+      <button class="ctx-item" on:click={openPicker}>
+        <span class="ctx-check">+</span>
+        Añadir widget…
+      </button>
       <div class="ctx-sep"></div>
       <button class="ctx-item" on:click={resetLayout}>
         Restablecer disposición
       </button>
     </div>
+  {/if}
+
+  <!-- Ventana de añadir widgets -->
+  <WidgetPicker
+    open={pickerOpen}
+    catalog={WIDGET_CATALOG}
+    {activeIds}
+    on:add={(e) => addWidget(e.detail)}
+    on:close={() => (pickerOpen = false)}
+  />
+
+  <!-- Config de instancia (pools/carpetas) -->
+  {#if configFor && configDef}
+    <WidgetConfig
+      def={configDef}
+      config={configEntry?.config || {}}
+      on:save={(e) => saveConfig(e.detail)}
+      on:close={closeConfig}
+    />
   {/if}
 </div>
 
@@ -473,6 +584,44 @@
     box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
     transition: none;
     z-index: 3;
+  }
+
+  /* ─── Controles de hover (config + eliminar) ─── */
+  .widget-controls {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    display: flex;
+    gap: 4px;
+    z-index: 4;
+    opacity: 0;
+    transform: translateY(-2px);
+    transition: opacity 0.12s ease, transform 0.12s ease;
+    pointer-events: none;
+  }
+  .widget:hover .widget-controls {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+  .wc-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 1px solid var(--line-bright);
+    border-radius: var(--radius-sm);
+    background: var(--panel-elev);
+    color: var(--ink-mute);
+    cursor: pointer;
+    transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+  }
+  .wc-btn:hover {
+    color: var(--ink);
+    border-color: var(--signal);
+    background: var(--signal-soft);
   }
 
   /* ─── Placeholder fase contenedor ─── */
