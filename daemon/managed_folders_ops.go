@@ -67,3 +67,31 @@ func dirIsEmpty(path string) (bool, error) {
 	}
 	return false, nil
 }
+
+// parseQgroupReferenced extrae los bytes "Referenced" de la salida de
+// `btrfs qgroup show -f --raw <path>`. Con --raw los valores son enteros en
+// bytes. Formato típico:
+//
+//	Qgroupid    Referenced    Exclusive   Path
+//	--------    ----------    ---------   ----
+//	0/257       163840        163840      <path>
+//
+// Devuelve 0 si no encuentra una fila de datos parseable.
+func parseQgroupReferenced(out string) int64 {
+	lines := strings.Split(out, "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		// La fila de datos empieza por un qgroupid "N/M".
+		if !strings.Contains(fields[0], "/") {
+			continue
+		}
+		var ref int64
+		if _, err := fmt.Sscanf(fields[1], "%d", &ref); err == nil {
+			return ref
+		}
+	}
+	return 0
+}
