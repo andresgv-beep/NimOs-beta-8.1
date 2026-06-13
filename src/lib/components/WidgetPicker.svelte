@@ -22,6 +22,7 @@
    */
   import { createEventDispatcher } from 'svelte';
   import WidgetIcon from '$lib/widgets/parts/WidgetIcon.svelte';
+  import { GROUP_ORDER } from '$lib/widgets/index.js';
 
   export let open = false;
   export let catalog = [];
@@ -36,6 +37,23 @@
   const PREVIEW_MAX_W = 150;
 
   $: available = catalog.filter(w => !activeIds.has(w.id));
+
+  // Agrupa por familia (group) en el orden de GROUP_ORDER, y dentro
+  // de cada familia por `order`. Familias sin nombre caen en 'Otros'.
+  $: grouped = (() => {
+    const byGroup = {};
+    for (const w of available) {
+      const g = w.group || 'Otros';
+      (byGroup[g] ||= []).push(w);
+    }
+    const order = [...GROUP_ORDER, 'Otros'];
+    return order
+      .filter(g => byGroup[g]?.length)
+      .map(g => ({
+        name: g,
+        items: byGroup[g].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
+      }));
+  })();
 
   function cellPx(cw, ch) {
     return {
@@ -70,48 +88,53 @@
         <div class="empty">Todos los widgets están en el escritorio.</div>
       {/if}
 
-      {#each available as w (w.id)}
-        <section class="sec">
-          <div class="sec-head">
-            <span class="sec-ic"><WidgetIcon name={w.icon} size={16} /></span>
-            <span class="sec-name">{w.name}</span>
-            <span class="sec-desc">{w.desc || ''}</span>
-          </div>
-
-          <div class="opts">
-            {#each (w.sizes || [[w.w, w.h]]) as [cw, ch] (cw + 'x' + ch)}
-              {@const px = cellPx(cw, ch)}
-              {@const sc = scaleFor(cw)}
-              <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
-              <div class="opt" on:click={() => choose(w.id, [cw, ch])}>
-                <div
-                  class="frame"
-                  style="width:{px.w * sc}px; height:{px.h * sc}px;"
-                >
-                  {#if w.component}
-                    <div
-                      class="scaler"
-                      style="
-                        width:{px.w}px; height:{px.h}px;
-                        transform: scale({sc});
-                      "
-                    >
-                      <svelte:component
-                        this={w.component}
-                        w={cw} h={ch}
-                        {...(w.props || {})}
-                        config={{}}
-                      />
-                    </div>
-                  {:else}
-                    <div class="ph">{cw}×{ch}</div>
-                  {/if}
-                </div>
-                <span class="opt-label">{cw}×{ch}</span>
+      {#each grouped as fam (fam.name)}
+        <div class="group">
+          <div class="group-head">{fam.name}</div>
+          {#each fam.items as w (w.id)}
+            <section class="sec">
+              <div class="sec-head">
+                <span class="sec-ic"><WidgetIcon name={w.icon} size={16} /></span>
+                <span class="sec-name">{w.name}</span>
+                <span class="sec-desc">{w.desc || ''}</span>
               </div>
-            {/each}
-          </div>
-        </section>
+
+              <div class="opts">
+                {#each (w.sizes || [[w.w, w.h]]) as [cw, ch] (cw + 'x' + ch)}
+                  {@const px = cellPx(cw, ch)}
+                  {@const sc = scaleFor(cw)}
+                  <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+                  <div class="opt" on:click={() => choose(w.id, [cw, ch])}>
+                    <div
+                      class="frame"
+                      style="width:{px.w * sc}px; height:{px.h * sc}px;"
+                    >
+                      {#if w.component}
+                        <div
+                          class="scaler"
+                          style="
+                            width:{px.w}px; height:{px.h}px;
+                            transform: scale({sc});
+                          "
+                        >
+                          <svelte:component
+                            this={w.component}
+                            w={cw} h={ch}
+                            {...(w.props || {})}
+                            config={{}}
+                          />
+                        </div>
+                      {:else}
+                        <div class="ph">{cw}×{ch}</div>
+                      {/if}
+                    </div>
+                    <span class="opt-label">{cw}×{ch}</span>
+                  </div>
+                {/each}
+              </div>
+            </section>
+          {/each}
+        </div>
       {/each}
     </div>
   </div>
@@ -121,7 +144,7 @@
   .overlay {
     position: fixed;
     inset: 0;
-    z-index: 9300;
+    z-index: 9700;
     background: rgba(0, 0, 0, 0.45);
     backdrop-filter: blur(2px);
     pointer-events: auto;
@@ -132,7 +155,7 @@
     right: 0;
     bottom: 0;
     width: 360px;
-    z-index: 9310;
+    z-index: 9710;
     background: var(--side-bg);
     border-left: 1px solid var(--line);
     box-shadow: -20px 0 50px rgba(0, 0, 0, 0.5);
@@ -190,11 +213,21 @@
     color: var(--ink-faint);
   }
 
+  .group { margin-bottom: 4px; }
+  .group-head {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--signal);
+    padding: 14px 2px 2px;
+  }
+
   .sec {
-    padding: 16px 0;
+    padding: 12px 0;
     border-top: 1px solid var(--line);
   }
-  .sec:first-child { border-top: none; }
+  .group .sec:first-of-type { border-top: none; }
   .sec-head {
     display: flex;
     align-items: center;

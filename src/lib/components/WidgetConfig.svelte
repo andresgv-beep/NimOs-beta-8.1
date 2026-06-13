@@ -127,7 +127,7 @@
   .overlay {
     position: fixed;
     inset: 0;
-    z-index: 9400;
+    z-index: 9720;
     background: rgba(0, 0, 0, 0.5);
     backdrop-filter: blur(2px);
   }
@@ -136,7 +136,7 @@
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    z-index: 9410;
+    z-index: 9730;
     width: 340px;
     max-height: 78vh;
     display: flex;
