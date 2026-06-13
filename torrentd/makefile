@@ -2,7 +2,7 @@
 
 CXX = g++
 CXXFLAGS = -std=c++20 -O2 -Wall -Wextra
-LDFLAGS = -ltorrent-rasterbar -lpthread -lboost_system
+LDFLAGS = -ltorrent-rasterbar -lpthread
 
 TARGET = nimos-torrentd
 SOURCES = main.cpp torrent_engine.cpp
@@ -32,3 +32,4 @@ uninstall:
 	rm -f $(SERVICE_FILE)
 	systemctl daemon-reload 2>/dev/null || true
 	@echo "Uninstalled $(TARGET)"
+
