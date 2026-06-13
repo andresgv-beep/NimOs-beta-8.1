@@ -43,9 +43,14 @@ func setupTestService(t *testing.T) (*StorageService, *MockBtrfsExecutor, func()
 	applyPoolRenamePhysicalFn = func(*StorageService, context.Context, *Pool, string, string, string) error {
 		return nil
 	}
+	// El executor mock no monta de verdad; simulamos que la verificación de
+	// montaje post-creación tiene éxito.
+	origVerifyMount := verifyPoolMountedFn
+	verifyPoolMountedFn = func(string) bool { return true }
 	wrappedCleanup := func() {
 		devicePathExists = origPathExists
 		applyPoolRenamePhysicalFn = origRename
+		verifyPoolMountedFn = origVerifyMount
 		cleanupDB()
 	}
 

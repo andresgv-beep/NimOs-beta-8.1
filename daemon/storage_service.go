@@ -675,12 +675,31 @@ func (s *StorageService) CreatePool(ctx context.Context, req CreatePoolRequest) 
 		return s.repo.GetOperation(ctx, op.ID)
 	}
 
-	// Montar
+	// Montar. Usamos resolveDevicePath (verifica que el by-id EXISTE y, si no,
+	// cae a CurrentPath) en vez del ByIDPath crudo. Un by-id obsoleto/ausente
+	// hacía que el mount fallara o montara raro, dejando el pool sin montar y
+	// la carpeta sobre el disco de sistema. (Mismo patrón ya aplicado en las
+	// device ops; aquí faltaba.)
 	mountPoint := filepath.Join("/nimos/pools", req.Name)
-	if err := s.btrfs.MountFilesystem(ctx, byIDPaths[0], mountPoint); err != nil {
+	mountDevice := resolveDevicePath(devices[0])
+	if err := s.btrfs.MountFilesystem(ctx, mountDevice, mountPoint); err != nil {
 		s.markOperationFailed(ctx, op.ID, err.Error(), ErrCodeMountFailed)
 		return s.repo.GetOperation(ctx, op.ID)
 	}
+
+	// VERIFICAR que el montaje ocurrió de verdad. `mount` puede devolver éxito
+	// pero dejar el filesystem mal montado, o montarlo en un sitio que cae
+	// sobre el disco de sistema. Si isPoolMounted dice que NO está montado
+	// sobre un dispositivo distinto de /, es un fallo: no dejamos el pool a
+	// medias (creado pero escribiendo en el disco de sistema).
+	if !verifyPoolMountedFn(mountPoint) {
+		logMsg("CreatePool: ERROR — %s creado pero NO quedó montado (mount aparente OK pero isPoolMounted=false). Device=%s", mountPoint, mountDevice)
+		s.markOperationFailed(ctx, op.ID,
+			fmt.Sprintf("el pool se creó pero no se pudo montar en %s (¿by-id inválido?)", mountPoint),
+			ErrCodeMountFailed)
+		return s.repo.GetOperation(ctx, op.ID)
+	}
+	logMsg("CreatePool: %s montado y verificado sobre %s", mountPoint, mountDevice)
 
 	// ─── Persistir en /etc/fstab para que sobreviva al reinicio ──────────
 	// Simétrico con importPoolBtrfs (storage_btrfs_import.go), que ya lo hace.
@@ -968,6 +987,13 @@ type AddDeviceRequest struct {
 //   4. Ejecutar btrfs device add
 //   5. Persistir la asignación en DB
 //   6. Marcar Operation completed (o failed con rollback)
+// verifyPoolMountedFn verifica que un pool quedó realmente montado tras crearlo.
+// Inyectable: en producción usa isPoolMounted (consulta el kernel); en tests se
+// sustituye porque el executor mock no monta de verdad.
+var verifyPoolMountedFn = func(mountPoint string) bool {
+	return isPoolMounted(mountPoint)
+}
+
 // devicePathExists comprueba que un path de device existe realmente en /dev.
 // Es var (no func) para que los tests puedan inyectar un stub: en producción
 // usa os.Stat; en tests se sobreescribe para aceptar paths ficticios.
