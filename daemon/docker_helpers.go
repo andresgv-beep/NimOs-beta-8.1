@@ -56,10 +56,19 @@ func saveDockerConfigGo(config map[string]interface{}) {
 // Priority: docker.json path → primary pool → first pool → error
 // NEVER returns /var/lib/docker — data must live on a pool.
 func getDockerPath() (string, error) {
-	// 1. Try docker.json config
+	// 1. Try docker.json config — PERO solo si el pool está REALMENTE montado.
+	//    Confiar en el path guardado sin verificar el montaje es lo que hacía
+	//    que, tras un rename a medias o un pool desmontado, Docker escribiera
+	//    en un directorio vacío sobre el disco de sistema en vez de en el pool.
+	//    (Regla 16: la config no es autoridad; el estado de montaje sí.)
 	conf := getDockerConfigGo()
 	if p, _ := conf["path"].(string); p != "" && strings.HasPrefix(p, "/nimos/pools/") {
-		return p, nil
+		poolMount := filepath.Dir(p) // /nimos/pools/data9/docker → /nimos/pools/data9
+		if isPoolMounted(poolMount) {
+			return p, nil
+		}
+		logMsg("getDockerPath: docker.json apunta a %s pero %s NO está montado; buscando un pool montado", p, poolMount)
+		// No retornamos: caemos a la selección por pools montados de abajo.
 	}
 
 	// 2. Try to find from storage pools (Beta 8.1: usa service v2)
@@ -74,20 +83,9 @@ func getDockerPath() (string, error) {
 		return "", fmt.Errorf("no storage pools available")
 	}
 
-	// Find primary pool first
+	// Find primary pool first — debe estar REALMENTE montado.
 	for _, p := range pools {
-		if p.IsPrimary && p.MountPoint != "" {
-			dockerPath := filepath.Join(p.MountPoint, "docker")
-			// Save to docker.json for next time
-			conf["path"] = dockerPath
-			saveDockerConfigGo(conf)
-			return dockerPath, nil
-		}
-	}
-
-	// Use first pool with mount point
-	for _, p := range pools {
-		if p.MountPoint != "" {
+		if p.IsPrimary && p.MountPoint != "" && isPoolMounted(p.MountPoint) {
 			dockerPath := filepath.Join(p.MountPoint, "docker")
 			conf["path"] = dockerPath
 			saveDockerConfigGo(conf)
@@ -95,7 +93,17 @@ func getDockerPath() (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("no pool with valid mount point found")
+	// Use first pool with a mount point that is ACTUALLY mounted.
+	for _, p := range pools {
+		if p.MountPoint != "" && isPoolMounted(p.MountPoint) {
+			dockerPath := filepath.Join(p.MountPoint, "docker")
+			conf["path"] = dockerPath
+			saveDockerConfigGo(conf)
+			return dockerPath, nil
+		}
+	}
+
+	return "", fmt.Errorf("no hay ningún pool montado donde ubicar el data-root de Docker")
 }
 
 func isDockerInstalledGo() bool {
