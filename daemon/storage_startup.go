@@ -500,8 +500,19 @@ func appendFstab(uuid, mountPoint, filesystem string) {
 	if after, rerr := os.ReadFile("/etc/fstab"); rerr == nil {
 		if !fstabHasMountpoint(string(after), mountPoint) {
 			logMsg("appendFstab: WARNING — entry for %s NOT found after write; pool won't auto-mount on reboot", mountPoint)
+			return
+		}
+		logMsg("appendFstab: verified entry for %s persisted", mountPoint)
+
+		// systemd cachea fstab. Sin daemon-reload, la entrada recién escrita
+		// se ignora hasta el próximo arranque → el pool no se monta aunque la
+		// línea ya esté en fstab (segundo bug raíz de la saga 12-13/06: el
+		// propio `mount` avisaba "fstab modificado pero systemd usa la versión
+		// antigua"). Recargar deja la entrada activa de inmediato.
+		if _, ok := runSafe("systemctl", "daemon-reload"); ok {
+			logMsg("appendFstab: systemctl daemon-reload OK — fstab entry now active")
 		} else {
-			logMsg("appendFstab: verified entry for %s persisted", mountPoint)
+			logMsg("appendFstab: WARNING — systemctl daemon-reload failed; entry persisted but may need manual reload")
 		}
 	}
 }
