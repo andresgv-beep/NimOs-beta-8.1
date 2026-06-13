@@ -30,7 +30,7 @@ TimeoutStartSec=120
 # entero escribible). Lista cerrada: el daemon NO escribe en ningún otro sitio de
 # /etc. Los DATOS (apps, torrents, VMs) van al POOL, nunca al sistema.
 NoNewPrivileges=true
-ProtectSystem=strict
+ProtectSystem=false
 ProtectHome=false
 PrivateTmp=true
 # NOTA (13/06/2026): /etc completo, NO /etc/fstab puntual. Bajo
