@@ -46,6 +46,7 @@ export const WIDGET_CATALOG = [
     id: 'sysmon',
     group: 'Sistema',
     order: 2,
+    mergeKey: 'sistema',  // se funde con syspanel en un solo apartado
     name: 'Sistema',
     icon: 'cpu',
     desc: 'CPU · RAM',
@@ -60,6 +61,7 @@ export const WIDGET_CATALOG = [
     id: 'syspanel',
     group: 'Sistema',
     order: 3,
+    mergeKey: 'sistema',  // se funde con sysmon en un solo apartado
     name: 'Sistema 2×2',
     icon: 'cpu',
     desc: 'CPU · RAM · temp · uptime',
