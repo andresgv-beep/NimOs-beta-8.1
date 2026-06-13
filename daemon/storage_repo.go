@@ -277,6 +277,22 @@ func (r *StorageRepo) CreatePool(ctx context.Context, tx *sql.Tx, p *Pool) error
 	return err
 }
 
+// SetPoolMountPoint actualiza el mount point de un pool. Usado por el rename,
+// donde la ruta deriva del nombre (/nimos/pools/<name>). En transacción.
+func (r *StorageRepo) SetPoolMountPoint(ctx context.Context, tx *sql.Tx, id, mountPoint string) error {
+	res, err := tx.ExecContext(ctx,
+		`UPDATE storage_pools SET mount_point = ?, generation = generation + 1 WHERE id = ?`,
+		mountPoint, id)
+	if err != nil {
+		return fmt.Errorf("SetPoolMountPoint: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return fmt.Errorf("SetPoolMountPoint: pool %q not found", id)
+	}
+	return nil
+}
+
 // RenamePool cambia el name de un pool (el id interno NO cambia).
 // Debe llamarse dentro de una transacción.
 func (r *StorageRepo) RenamePool(ctx context.Context, tx *sql.Tx, id, newName string) error {

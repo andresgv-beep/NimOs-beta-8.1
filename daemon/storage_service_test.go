@@ -37,8 +37,15 @@ func setupTestService(t *testing.T) (*StorageService, *MockBtrfsExecutor, func()
 	// que la hacemos permisiva durante el test y la restauramos al limpiar.
 	origPathExists := devicePathExists
 	devicePathExists = func(string) bool { return true }
+	// El rename físico (btrfs label + fstab + mount) no es ejecutable en
+	// tests; lo sustituimos por un stub que solo simula éxito.
+	origRename := applyPoolRenamePhysicalFn
+	applyPoolRenamePhysicalFn = func(*StorageService, context.Context, *Pool, string, string, string) error {
+		return nil
+	}
 	wrappedCleanup := func() {
 		devicePathExists = origPathExists
+		applyPoolRenamePhysicalFn = origRename
 		cleanupDB()
 	}
 

@@ -330,11 +330,46 @@ func (s *StorageService) RenamePool(ctx context.Context, id, newName string) (*O
 		Data:   rawJSON(map[string]string{"from": pool.Name, "to": newName}),
 	}
 
+	// ── Renombrar es una operación COMPLETA, no solo cambiar la BD ──────────
+	// Regla 16: la etiqueta del filesystem y el mount point los posee el
+	// sistema (BTRFS/kernel/fstab), no la BD. Un rename que solo cambia el
+	// nombre en BD deja el pool desincronizado: etiqueta vieja en disco, fstab
+	// apuntando a una ruta que no monta → el pool queda sin montar y cualquier
+	// servicio escribe en el directorio vacío sobre el disco de sistema.
+	// (Este es el bug que dejaba data6→data9 a medias.)
+	//
+	// El orden importa y debe ser reversible: primero los cambios físicos
+	// (que pueden fallar), y solo si TODOS salen bien, confirmamos en BD.
+	oldMountPoint := pool.MountPoint
+	newMountPoint := filepath.Join("/nimos/pools", newName)
+
+	// El rename físico (etiqueta BTRFS + fstab + remontaje) es inyectable para
+	// tests: en producción aplica los cambios reales; en tests se sustituye por
+	// un stub que no toca el sistema. La lógica pura (transformFstabMountPoint)
+	// se testea aparte.
+	if err := applyPoolRenamePhysicalFn(s, ctx, pool, newName, oldMountPoint, newMountPoint); err != nil {
+		// Algo físico falló. NO tocamos la BD → el pool sigue coherente con su
+		// nombre viejo. Registramos la op como fallida.
+		_ = s.runInTx(ctx, func(tx *sql.Tx) error {
+			if e := s.repo.CreateOperation(ctx, tx, op); e != nil {
+				return e
+			}
+			return s.repo.UpdateOperationStatus(ctx, tx, op.ID, OpStatusFailed, nil, strPtr(err.Error()))
+		})
+		return nil, errFromCode(ErrCodeBtrfsCommandFailed,
+			fmt.Sprintf("no se pudo renombrar el pool físicamente: %v (la BD no se modificó, el pool sigue como %q)", err, pool.Name))
+	}
+
+	// Los cambios físicos salieron bien. Ahora confirmamos en BD (nombre +
+	// mount point nuevos) de forma atómica.
 	err = s.runInTx(ctx, func(tx *sql.Tx) error {
 		if err := s.repo.CreateOperation(ctx, tx, op); err != nil {
 			return err
 		}
 		if err := s.repo.RenamePool(ctx, tx, pool.ID, newName); err != nil {
+			return err
+		}
+		if err := s.repo.SetPoolMountPoint(ctx, tx, pool.ID, newMountPoint); err != nil {
 			return err
 		}
 		return s.repo.UpdateOperationStatus(ctx, tx, op.ID, OpStatusCompleted, nil, nil)
