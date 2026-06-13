@@ -2,28 +2,28 @@
   /**
    * Storage · Widget de pools · NimOS Beta 8.1 (rediseño jun 2026)
    * ──────────────────────────────────────────────────────────────
-   * Ficha por pool estilo "panel": nombre + barra de capacidad ancha
-   * + 4 cards-caja (Usado / Disponible / Tipo / Salud). Sin riel
-   * lateral. Números grandes; el % va en ámbar como acento.
+   * Ficha por pool con cards-caja (Usado / Disponible / Tipo / Salud).
    *
-   * config.pools (de WidgetConfig):
-   *   - 1×1 / 2×1 → UN pool (primero de config.pools, o el primero
-   *     disponible si está vacío).
-   *   - 2×2 → varios (config.pools o todos); pensado para ≥2 pools.
-   *     [El layout fino del 2×2 se ajustará con su diseño propio.]
+   * Dos densidades según talla, porque la ficha "holgada" no cabe en
+   * un 2×1 real (144px → presupuesto ~118px útiles):
+   *   - 2×1 (compacto): cabecera en UNA línea (estado · nombre · cap),
+   *     cards bajas (~52px) con número + sub. UN pool.
+   *   - 2×2 (holgado): cabecera del widget + nombre en líneas propias,
+   *     cards altas. Varios pools apilados con scroll.
    *
-   * Datos: /api/storage/v2/pools vía topic 'storage' (15s).
-   * Forma ENVUELTA: { data: [Pool] }. Pool: { name, profile, mounted,
+   * config.pools: [] o ausente = auto (todos / el primero según talla).
+   *
+   * Datos: /api/storage/v2/pools vía topic 'storage' (15s). Forma
+   * ENVUELTA { data:[Pool] }. Pool: { name, profile, mounted,
    *   usage:{usage_percent,used_bytes,available_bytes,total_bytes},
    *   health:{status} }.
-   * health.status ∈ healthy | at_risk | unstable | degraded | critical
    */
   import { onMount } from 'svelte';
   import { topicStore, acquire } from '$lib/stores/widgetData.js';
 
-  export const w = 2; // ambas tallas comparten anchura · contrato
+  export const w = 2;
   export let h = 1;
-  export let config = {}; // { pools: [name,...] } · [] o ausente = auto
+  export let config = {};
 
   const data = topicStore('storage');
   onMount(() => acquire('storage'));
@@ -54,7 +54,6 @@
     if (pct >= 80) return 'hot';
     return '';
   }
-  // "54 GB" / "3.6 TB" → { n, u } para número grande + unidad pequeña
   function split(b) {
     if (b == null) return { n: '—', u: '' };
     const TB = 1099511627776, GB = 1073741824;
@@ -67,13 +66,15 @@
   }
 </script>
 
-<div class="storage">
-  <div class="head">
-    <span class="title">Almacenamiento</span>
-    <span class="aux" class:bad={anyBad}>
-      {#if !allPools}—{:else if allPools.length === 0}sin pools{:else if anyBad}atención{:else}OK{/if}
-    </span>
-  </div>
+<div class="storage" class:big={multi}>
+  {#if multi}
+    <div class="head">
+      <span class="title">Almacenamiento</span>
+      <span class="aux" class:bad={anyBad}>
+        {#if !allPools}—{:else if allPools.length === 0}sin pools{:else if anyBad}atención{:else}OK{/if}
+      </span>
+    </div>
+  {/if}
 
   {#if !shown}
     <div class="empty">— · —</div>
@@ -87,10 +88,20 @@
         {@const used = split(p.usage?.used_bytes)}
         {@const avail = split(p.usage?.available_bytes)}
         <div class="pool">
-          <div class="pool-head">
-            <span class="name">{p.name}{#if !p.mounted}<small> · sin montar</small>{/if}</span>
-            <span class="cap">{fmtBytes(p.usage?.used_bytes)} / {fmtBytes(p.usage?.total_bytes)}</span>
-          </div>
+          {#if multi}
+            <!-- 2×2: nombre + capacidad en su propia línea -->
+            <div class="pool-head">
+              <span class="name">{p.name}{#if !p.mounted}<small> · sin montar</small>{/if}</span>
+              <span class="cap">{fmtBytes(p.usage?.used_bytes)} / {fmtBytes(p.usage?.total_bytes)}</span>
+            </div>
+          {:else}
+            <!-- 2×1: cabecera compacta en una sola línea -->
+            <div class="pool-head compact">
+              <span class="badge {anyBad ? 'bad' : ''}">{anyBad ? 'ATENCIÓN' : 'OK'}</span>
+              <span class="name">{p.name}</span>
+              <span class="cap">{fmtBytes(p.usage?.used_bytes)} / {fmtBytes(p.usage?.total_bytes)}</span>
+            </div>
+          {/if}
 
           <div class="bar"><i class={barClass(pct)} style="width:{pct}%"></i></div>
 
@@ -114,12 +125,12 @@
               <span class="c-label">Salud</span>
               <span class="c-shield {hc}" aria-hidden="true">
                 {#if hc === 'ok'}
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
                     <path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6Z" />
                     <path d="M9 12l2 2 4-4" />
                   </svg>
                 {:else}
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
                     <path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6Z" />
                     <path d="M12 8v4M12 15h.01" />
                   </svg>
@@ -138,9 +149,11 @@
     height: 100%;
     display: flex;
     flex-direction: column;
-    padding: 15px 17px;
+    padding: 12px 14px;
     user-select: none;
   }
+  .storage.big { padding: 15px 17px; }
+
   .head {
     display: flex;
     align-items: center;
@@ -177,6 +190,7 @@
 
   .pool { flex-shrink: 0; }
 
+  /* ── Cabecera 2×2 (dos bloques) ── */
   .pool-head {
     display: flex;
     align-items: baseline;
@@ -195,17 +209,38 @@
     color: var(--ink-mute);
   }
 
+  /* ── Cabecera 2×1 (una línea compacta) ── */
+  .pool-head.compact {
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 7px;
+  }
+  .pool-head.compact .badge {
+    font-family: var(--font-mono);
+    font-size: 8px;
+    letter-spacing: 0.1em;
+    color: var(--signal);
+    border: 1px solid var(--signal-dim);
+    border-radius: var(--radius-sm);
+    padding: 1px 5px;
+    flex-shrink: 0;
+  }
+  .pool-head.compact .badge.bad { color: var(--warn); border-color: var(--warn); }
+  .pool-head.compact .name { font-size: 14px; flex: 1; }
+  .pool-head.compact .cap { font-size: 10.5px; }
+
   .bar {
-    height: 8px;
-    border-radius: 5px;
+    height: 6px;
+    border-radius: 4px;
     background: rgba(255, 255, 255, 0.07);
     overflow: hidden;
-    margin-bottom: 14px;
+    margin-bottom: 10px;
   }
+  .big .bar { height: 8px; border-radius: 5px; margin-bottom: 14px; }
   .bar i {
     display: block;
     height: 100%;
-    border-radius: 5px;
+    border-radius: inherit;
     background: linear-gradient(90deg, var(--signal), hsl(155, 100%, 42%));
     box-shadow: 0 0 12px var(--signal-glow);
     transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
@@ -213,51 +248,60 @@
   .bar i.hot  { background: linear-gradient(90deg, var(--warn), #f59e0b); box-shadow: 0 0 12px var(--warn); }
   .bar i.crit { background: linear-gradient(90deg, var(--crit), #ef4444); box-shadow: 0 0 12px var(--crit); }
 
-  /* cards-caja independientes */
   .cards {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: 9px;
+    gap: 7px;
   }
+  .big .cards { gap: 9px; }
   .c {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 5px;
-    padding: 11px 6px;
+    gap: 3px;
+    padding: 7px 5px;
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: var(--bev-md);
-    min-height: 78px;
+    min-height: 52px;
   }
+  .big .c { gap: 5px; padding: 11px 6px; min-height: 78px; }
+
   .c-label {
     font-family: var(--font-mono);
-    font-size: 8.5px;
-    letter-spacing: 0.12em;
+    font-size: 7.5px;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--ink-faint);
   }
+  .big .c-label { font-size: 8.5px; letter-spacing: 0.12em; }
   .c-num {
     font-family: var(--font-mono);
-    font-size: 19px;
+    font-size: 15px;
     font-weight: 600;
     color: var(--ink);
     line-height: 1;
   }
+  .big .c-num { font-size: 19px; }
   .c-num small {
-    font-size: 11px;
+    font-size: 9px;
     font-weight: 500;
     color: var(--ink-mute);
     margin-left: 2px;
   }
+  .big .c-num small { font-size: 11px; }
   .c-sub {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: 8.5px;
     color: var(--ink-faint);
   }
+  .big .c-sub { font-size: 10px; }
   .c-sub.accent { color: var(--warn); }
+
   .c-shield { display: flex; align-items: center; justify-content: center; }
+  .c-shield svg { width: 16px; height: 16px; }
+  .big .c-shield svg { width: 22px; height: 22px; }
   .c-shield.ok   { color: var(--signal); }
   .c-shield.warn { color: var(--warn); }
   .c-shield.crit { color: var(--crit); }
