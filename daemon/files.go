@@ -164,21 +164,50 @@ func isPathOnMountedPool(path string) bool {
 	if path == "" {
 		return false
 	}
-	// Must be under /nimos/pools/
+	// Debe estar bajo /nimos/pools/
 	if !strings.HasPrefix(path, nimosPoolsDir+"/") {
 		return false
 	}
-	// Check that the path is on a different mount than /
-	out, ok := runSafe("findmnt", "-n", "-o", "SOURCE", "--target", path)
-	if !ok || out == "" {
+
+	// INVARIANTE FUNDAMENTAL DE NimOS: si el pool no está montado, NUNCA se
+	// escribe — los datos jamás deben caer al disco de sistema. (Regression
+	// 13/06: este check usaba `findmnt --target path`, que RESUELVE HACIA ARRIBA
+	// hasta el primer mount existente. Con el pool desmontado, ese mount es `/`
+	// (sda2) → devolvía el source de la raíz y, según la jerarquía, podía pasar
+	// el filtro → archivos al disco de sistema. Fix: comprobar que el MOUNTPOINT
+	// DEL POOL es un punto de montaje real del kernel, sin resolución hacia arriba.)
+	//
+	// El pool es /nimos/pools/<nombre>; extraemos ese segundo nivel exacto.
+	poolMount := poolMountFromPath(path)
+	if poolMount == "" {
 		return false
 	}
-	rootSource, _ := runSafe("findmnt", "-n", "-o", "SOURCE", "--target", "/")
-	// If the path's mount source is the same as /, it's writing to system disk
-	if strings.TrimSpace(out) == strings.TrimSpace(rootSource) {
+
+	// `mountpoint -q <ruta>` pregunta al kernel: ¿es ESTA ruta exacta un punto
+	// de montaje? No resuelve hacia arriba. Si el pool no está montado → false.
+	if _, ok := runSafe("mountpoint", "-q", poolMount); !ok {
 		return false
 	}
 	return true
+}
+
+// poolMountFromPath devuelve el mountpoint del pool (/nimos/pools/<nombre>) que
+// contiene `path`, o "" si path no está bajo /nimos/pools/. Función pura: NO
+// extrae más allá del segundo nivel, así una ruta profunda dentro del pool
+// resuelve al mountpoint del pool, no a un subdirectorio.
+func poolMountFromPath(path string) string {
+	if !strings.HasPrefix(path, nimosPoolsDir+"/") {
+		return ""
+	}
+	rest := strings.TrimPrefix(path, nimosPoolsDir+"/")
+	poolName := rest
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		poolName = rest[:i]
+	}
+	if poolName == "" {
+		return ""
+	}
+	return nimosPoolsDir + "/" + poolName
 }
 
 // requireShareMounted checks if a share's pool is mounted, returns error response if not
