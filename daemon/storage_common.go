@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -176,6 +177,17 @@ func fstabContentIsValid(content string) bool {
 // of pools to compare against. "Empty list" is treated as "I don't know
 // what's there", which is the safe default.
 func cleanOrphanPoolDirs() {
+	// Wrapper sin retorno para las llamadas existentes (boot, post-destroy).
+	// La lógica vive en cleanOrphanPoolDirsResult, que devuelve métricas para
+	// que el subsistema de mantenimiento pueda reportarlas en la UI.
+	_, _, _, _ = cleanOrphanPoolDirsResult()
+}
+
+// cleanOrphanPoolDirsResult es el núcleo de la limpieza de directorios huérfanos.
+// Devuelve: nº de dirs borrados, bytes liberados (best-effort), si se saltó por
+// la guarda de seguridad, y el motivo del skip. Misma lógica y mismas guardas
+// que antes — solo añade contabilidad para el módulo de mantenimiento.
+func cleanOrphanPoolDirsResult() (removed int64, bytesFreed int64, skipped bool, skipReason string) {
 	// Build set of known mount points (Beta 8.1: service v2)
 	knownMounts := map[string]bool{}
 	if storageService != nil {
@@ -192,18 +204,17 @@ func cleanOrphanPoolDirs() {
 	// missing config would otherwise lead to mass deletion under
 	// /nimos/pools/.
 	if len(knownMounts) == 0 {
-		// Check if there's anything at all in /nimos/pools/. If yes,
-		// it's suspicious — log a warning so the admin notices.
 		if entries, err := os.ReadDir(nimosPoolsDir); err == nil && len(entries) > 0 {
 			logMsg("cleanOrphanPoolDirs: REFUSING to clean — config has no pools but %d directories exist in %s. Possible corrupt config.",
 				len(entries), nimosPoolsDir)
+			return 0, 0, true, fmt.Sprintf("config sin pools pero %d directorios presentes (posible config corrupta) — no se limpia por seguridad", len(entries))
 		}
-		return
+		return 0, 0, true, "no hay pools conocidos en la configuración"
 	}
 
 	entries, err := os.ReadDir(nimosPoolsDir)
 	if err != nil {
-		return
+		return 0, 0, true, "no se pudo leer el directorio de pools"
 	}
 
 	for _, e := range entries {
@@ -247,7 +258,9 @@ func cleanOrphanPoolDirs() {
 			continue
 		}
 		logMsg("Cleaned orphan directory: %s", dirPath)
+		removed++
 	}
+	return removed, bytesFreed, false, ""
 }
 
 // ─── Torrent Config ──────────────────────────────────────────────────────────

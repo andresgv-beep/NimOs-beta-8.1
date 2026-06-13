@@ -171,6 +171,7 @@ func bootHTTP() {
 	// Subsistema de mantenimiento (Fase 1): init tablas + registro de tareas.
 	startMaintenance()
 	maintenanceManager.Register(&torrentTmpSweepTask{})
+	maintenanceManager.Register(&orphanDirSweepTask{})
 	startMaintenanceScheduler()
 }
 
