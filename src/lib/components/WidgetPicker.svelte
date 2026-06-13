@@ -146,7 +146,12 @@
 <style>
   .overlay {
     position: fixed;
-    inset: 0;
+    top: 0;
+    left: 0;
+    right: 0;
+    /* Respeta la taskbar: el velo para a su altura, la barra queda
+       a plena luz junto con el panel apoyado encima. */
+    bottom: var(--taskbar-height, 52px);
     z-index: 9700;
     background: rgba(0, 0, 0, 0.45);
     backdrop-filter: blur(2px);
@@ -156,11 +161,14 @@
     position: fixed;
     top: 0;
     right: 0;
-    bottom: 0;
+    /* Se apoya encima de la taskbar en vez de taparla: queda más
+       limpio y la barra sigue visible/usable. */
+    bottom: var(--taskbar-height, 52px);
     width: 360px;
     z-index: 9710;
     background: var(--side-bg);
     border-left: 1px solid var(--line);
+    border-top-left-radius: var(--bev-lg);
     box-shadow: -20px 0 50px rgba(0, 0, 0, 0.5);
     display: flex;
     flex-direction: column;
