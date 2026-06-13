@@ -207,27 +207,47 @@ func cleanOrphanPoolDirsGuarded() (removed int64, bytesFreed int64, skipped bool
 // manual/programada del mantenimiento).
 func cleanOrphanPoolDirsCore(checkActiveOps bool) (removed int64, bytesFreed int64, skipped bool, skipReason string) {
 	// ── SALVAGUARDA A · No limpiar durante operaciones de storage ──────────
-	// Solo para la limpieza del mantenimiento. Si hay una operación en curso
-	// (crear/destruir/añadir disco/reemplazar/convertir/renombrar/balance), un
-	// pool puede estar EN TRANSICIÓN: desmontado, a medio remontar, o con su
-	// entrada de BD en flujo. Limpiar ahí es el escenario peligroso. Ante una
-	// operación activa, NO tocamos nada.
+	// Solo para la limpieza del mantenimiento. Si hay una operación RECIENTE en
+	// curso (crear/destruir/añadir disco/reemplazar/convertir/renombrar/
+	// balance), un pool puede estar EN TRANSICIÓN. Ante una operación activa
+	// reciente, NO tocamos nada.
+	//
+	// IMPORTANTE: solo cuentan operaciones recientes. Una operación "colgada"
+	// en in_progress de hace horas (p.ej. un rename que no se cerró por un bug)
+	// NO debe bloquear la limpieza para siempre — eso convertiría una
+	// protección en un bloqueo permanente. Si lleva > stuckOpThreshold, se
+	// considera abandonada y se ignora a efectos de este guard.
 	if checkActiveOps && storageService != nil {
-		if ops, err := storageService.repo.ListPendingOperations(context.Background()); err != nil {
+		ops, err := storageService.repo.ListPendingOperations(context.Background())
+		if err != nil {
+			logMsg("orphan_dir_sweep: SKIP — no se pudo verificar operaciones en curso: %v", err)
 			return 0, 0, true, "no se pudo verificar si hay operaciones de storage en curso — no se limpia por seguridad"
-		} else if len(ops) > 0 {
-			return 0, 0, true, fmt.Sprintf("hay %d operación(es) de storage en curso — la limpieza espera a que terminen", len(ops))
+		}
+		recent := 0
+		const stuckOpThreshold = 30 * time.Minute
+		for _, op := range ops {
+			// StartedAt reciente = operación de verdad activa. Antigua =
+			// probablemente colgada/abandonada, no bloquea.
+			if !op.StartedAt.IsZero() && time.Since(op.StartedAt) < stuckOpThreshold {
+				recent++
+			} else {
+				logMsg("orphan_dir_sweep: ignorando operación %s (in_progress pero antigua, probablemente colgada)", op.ID)
+			}
+		}
+		if recent > 0 {
+			logMsg("orphan_dir_sweep: SKIP — %d operación(es) de storage recientes en curso", recent)
+			return 0, 0, true, fmt.Sprintf("hay %d operación(es) de storage en curso — la limpieza espera a que terminen", recent)
 		}
 	}
 
 	// ── SALVAGUARDA B · La lista de pools debe leerse SIN error ────────────
 	// Si ListPools falla (BD bloqueada, error transitorio), NO podemos saber
-	// qué dirs son legítimos → NO limpiamos. Antes el error se descartaba en
-	// silencio y se caía al guard de len==0; ahora es explícito.
+	// qué dirs son legítimos → NO limpiamos.
 	knownMounts := map[string]bool{}
 	if storageService != nil {
 		pools, err := storageService.ListPools(context.Background())
 		if err != nil {
+			logMsg("orphan_dir_sweep: SKIP — no se pudo leer la lista de pools: %v", err)
 			return 0, 0, true, "no se pudo leer la lista de pools (BD ocupada o error) — no se limpia por seguridad"
 		}
 		for _, p := range pools {
@@ -236,9 +256,10 @@ func cleanOrphanPoolDirsCore(checkActiveOps bool) (removed int64, bytesFreed int
 			}
 		}
 	} else {
-		// Sin servicio de storage no hay forma de saber qué es legítimo.
+		logMsg("orphan_dir_sweep: SKIP — servicio de storage no disponible")
 		return 0, 0, true, "servicio de storage no disponible — no se limpia por seguridad"
 	}
+	logMsg("orphan_dir_sweep: %d pools conocidos en BD: %v", len(knownMounts), knownMounts)
 
 	// SAFETY GUARD: if we have no known pools, do nothing. A corrupt or
 	// missing config would otherwise lead to mass deletion under
@@ -300,6 +321,7 @@ func cleanOrphanPoolDirsCore(checkActiveOps bool) (removed int64, bytesFreed int
 		logMsg("Cleaned orphan directory: %s", dirPath)
 		removed++
 	}
+	logMsg("orphan_dir_sweep: completado — %d directorios huérfanos borrados de %s", removed, nimosPoolsDir)
 	return removed, bytesFreed, false, ""
 }
 
