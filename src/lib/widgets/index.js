@@ -30,6 +30,8 @@ import Torrent from './Torrent.svelte';
 export const WIDGET_CATALOG = [
   {
     id: 'clock',
+    group: 'General',
+    order: 0,
     name: 'Reloj',
     icon: 'clock',
     desc: 'Hora y fecha',
@@ -42,6 +44,8 @@ export const WIDGET_CATALOG = [
   },
   {
     id: 'sysmon',
+    group: 'Sistema',
+    order: 2,
     name: 'Sistema',
     icon: 'cpu',
     desc: 'CPU · RAM',
@@ -54,6 +58,8 @@ export const WIDGET_CATALOG = [
   },
   {
     id: 'syspanel',
+    group: 'Sistema',
+    order: 3,
     name: 'Sistema 2×2',
     icon: 'cpu',
     desc: 'CPU · RAM · temp · uptime',
@@ -66,6 +72,8 @@ export const WIDGET_CATALOG = [
   },
   {
     id: 'cpu',
+    group: 'Sistema',
+    order: 0,
     name: 'CPU',
     icon: 'cpu',
     desc: 'Uso de CPU',
@@ -79,6 +87,8 @@ export const WIDGET_CATALOG = [
   },
   {
     id: 'ram',
+    group: 'Sistema',
+    order: 1,
     name: 'RAM',
     icon: 'ram',
     desc: 'Uso de memoria',
@@ -92,6 +102,8 @@ export const WIDGET_CATALOG = [
   },
   {
     id: 'storage',
+    group: 'Almacenamiento',
+    order: 0,
     name: 'Almacenamiento',
     icon: 'hdd',
     desc: 'Pools BTRFS',
@@ -108,6 +120,8 @@ export const WIDGET_CATALOG = [
   },
   {
     id: 'network',
+    group: 'Red',
+    order: 0,
     name: 'Red',
     icon: 'activity',
     desc: 'Tráfico de interfaces',
@@ -120,6 +134,8 @@ export const WIDGET_CATALOG = [
   },
   {
     id: 'services',
+    group: 'General',
+    order: 1,
     name: 'Servicios',
     icon: 'services',
     desc: 'Estado de servicios',
@@ -133,7 +149,38 @@ export const WIDGET_CATALOG = [
     // running al final. Lo que falla sube arriba solo.
   },
   {
+    id: 'folders',
+    group: 'Carpetas',
+    order: 0,
+    name: 'Carpetas compartidas',
+    icon: 'folder',
+    desc: 'Carpetas gestionadas',
+    w: 2,
+    h: 1,
+    topic: 'folders',     // pendiente: endpoint de carpetas
+    component: null,      // placeholder · fase contenedor
+    defaultOn: false,
+    sizes: [[2, 1], [2, 2]],
+    configurable: 'folders', // mismo patrón que pools (futuro)
+  },
+  {
+    id: 'nimshield',
+    group: 'Seguridad',
+    order: 0,
+    name: 'NimShield',
+    icon: 'shield',
+    desc: 'Estado de seguridad',
+    w: 2,
+    h: 1,
+    topic: 'nimshield',   // pendiente: endpoint NimShield
+    component: null,      // placeholder · fase contenedor
+    defaultOn: false,
+    sizes: [[1, 1], [2, 1], [2, 2]],
+  },
+  {
     id: 'nimtorrent',
+    group: 'Descargas',
+    order: 0,
     name: 'NimTorrent',
     icon: 'download',
     desc: 'Descargas torrent',
@@ -177,9 +224,12 @@ export function widgetSize(item, def) {
  * render (WidgetLayer), nunca aquí ni al guardar.
  */
 export const DEFAULT_LAYOUT = [
-  { id: 'clock',    col: -1, row: 0 },
-  { id: 'sysmon',   col: -2, row: 1 },
-  { id: 'storage',  col: -2, row: 2 },
-  { id: 'network',  col: -2, row: 3 },
-  { id: 'services', col: -2, row: 4 },
+  { id: 'clock', col:-1, row: 0 },
+  { id: 'sysmon', col:-2, row: 1 },
+  { id: 'storage', col:-2, row: 2 },
+  { id: 'network', col:-2, row: 3 },
+  { id: 'services', col:-2, row: 4 },
 ];
+
+/** Orden de familias en la ventana de añadir widgets. */
+export const GROUP_ORDER = ['Sistema', 'Almacenamiento', 'Carpetas', 'General', 'Seguridad', 'Descargas', 'Red'];
