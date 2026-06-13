@@ -33,7 +33,13 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=false
 PrivateTmp=true
-ReadWritePaths=/opt/nimos /var/lib/nimos /var/log/nimos /etc/nimos /etc/exports /etc/samba /etc/docker /etc/containerd /etc/fstab /mnt /srv /home /nimos
+# NOTA (13/06/2026): /etc completo, NO /etc/fstab puntual. Bajo
+# ProtectSystem=strict, exponer un ARCHIVO individual dentro de un directorio
+# protegido falla silenciosamente (el daemon ve /etc/fstab como read-only pese
+# a estar listado), y appendFstab no puede persistir → los pools no se anclan →
+# se desmontan → caen a /nimos/pools sobre el DISCO DE SISTEMA. Causó 3 días de
+# depuración. Whitelistear el directorio padre /etc es lo robusto.
+ReadWritePaths=/opt/nimos /var/lib/nimos /var/log/nimos /etc /mnt /srv /home /nimos
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
