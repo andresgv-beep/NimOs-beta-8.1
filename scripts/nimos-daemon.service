@@ -30,18 +30,34 @@ TimeoutStartSec=120
 # entero escribible). Lista cerrada: el daemon NO escribe en ningún otro sitio de
 # /etc. Los DATOS (apps, torrents, VMs) van al POOL, nunca al sistema.
 NoNewPrivileges=true
-ProtectSystem=false
-ProtectHome=false
-PrivateTmp=true
-# NOTA (13/06/2026): /etc completo, NO /etc/fstab puntual. Bajo
-# ProtectSystem=strict, exponer un ARCHIVO individual dentro de un directorio
-# protegido falla silenciosamente (el daemon ve /etc/fstab como read-only pese
-# a estar listado), y appendFstab no puede persistir → los pools no se anclan →
-# se desmontan → caen a /nimos/pools sobre el DISCO DE SISTEMA. Causó 3 días de
-# depuración. Whitelistear el directorio padre /etc es lo robusto.
-ReadWritePaths=/opt/nimos /var/lib/nimos /var/log/nimos /etc /mnt /srv /home /nimos
-ProtectKernelTunables=true
-ProtectControlGroups=true
+# ─────────────────────────────────────────────────────────────────────────────
+# AISLAMIENTO DE MONTAJES DESACTIVADO — confirmado en hardware (prueba A/B,
+# 13/06/2026). Las directivas Protect*/Private* de systemd meten al daemon en un
+# namespace de montajes PRIVADO. Para un daemon cuyo trabajo ES montar/gestionar
+# el storage del host, eso es fatal: los pools que monta NO se propagan al host
+# (Samba/Docker/usuario no los ven), no ve montajes del host, no escribe fstab,
+# y `btrfs` falla con "not a btrfs filesystem" sobre pools montados en otra
+# burbuja. Causó que los datos cayeran al DISCO DE SISTEMA. 3 días de depuración.
+# Se probó: con TODO el aislamiento en 'no' + MountFlags=shared, el daemon
+# comparte el árbol de montajes con el host (PID 1) y el storage funciona.
+# PENDIENTE (no urgente): afinar qué directiva concreta basta desactivar para
+# conservar el máximo hardening. PrivateMounts=no por sí solo NO basta (probado).
+# NO reintroducir Protect*/Private* sin verificar que los namespaces de montaje
+# de PID1 y del daemon siguen siendo IGUALES (ls -l /proc/1/ns/mnt vs daemon).
+ProtectSystem=no
+ProtectHome=no
+PrivateTmp=no
+PrivateMounts=no
+PrivateDevices=no
+ProtectKernelTunables=no
+ProtectControlGroups=no
+ProtectKernelModules=no
+RestrictNamespaces=no
+MountFlags=shared
+# MountFlags=shared: propaga los montajes del daemon al host y viceversa, para
+# que el árbol de montajes sea único (ver bloque de arriba sobre el aislamiento).
+#
+# Hardening que NO crea namespace de montajes (compatible con el storage):
 RestrictSUIDSGID=true
 RestrictRealtime=true
 LockPersonality=true
