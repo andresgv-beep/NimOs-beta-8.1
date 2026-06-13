@@ -20,6 +20,7 @@
    */
   import { createEventDispatcher, onMount } from 'svelte';
   import { topicStore, acquire } from '$lib/stores/widgetData.js';
+  import { portal } from '$lib/actions/portal.js';
 
   export let def;
   export let config = {};
@@ -66,6 +67,8 @@
   function close() { dispatch('close'); }
 </script>
 
+<!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+<div class="portal-root" use:portal>
 <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
 <div class="overlay" on:click={close}></div>
 <div class="modal" role="dialog" aria-label="Configurar {def.name}">
@@ -121,6 +124,7 @@
     <button class="btn ghost" on:click={close}>Cancelar</button>
     <button class="btn primary" on:click={apply}>Aplicar</button>
   </div>
+</div>
 </div>
 
 <style>

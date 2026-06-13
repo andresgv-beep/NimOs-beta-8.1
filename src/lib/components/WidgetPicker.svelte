@@ -23,6 +23,7 @@
   import { createEventDispatcher } from 'svelte';
   import WidgetIcon from '$lib/widgets/parts/WidgetIcon.svelte';
   import { GROUP_ORDER } from '$lib/widgets/index.js';
+  import { portal } from '$lib/actions/portal.js';
 
   export let open = false;
   export let catalog = [];
@@ -75,9 +76,10 @@
 </script>
 
 {#if open}
-  <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
-  <div class="overlay" on:click={close}></div>
-  <div class="panel" role="dialog" aria-label="Añadir widget">
+  <div class="portal-root" use:portal>
+    <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+    <div class="overlay" on:click={close}></div>
+    <div class="panel" role="dialog" aria-label="Añadir widget">
     <div class="panel-header">
       <span class="panel-title">Añadir widget</span>
       <button class="x" on:click={close} aria-label="Cerrar">✕</button>
@@ -136,6 +138,7 @@
           {/each}
         </div>
       {/each}
+    </div>
     </div>
   </div>
 {/if}
